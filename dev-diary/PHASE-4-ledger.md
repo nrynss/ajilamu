@@ -22,7 +22,7 @@ requires:   T1.3
 fixture-ok: no
 size:       L · frontier
 owns:       internal/ledger/client.go, internal/ledger/queue.go
-status:     not-started
+status:     done
 ```
 Initialize the ClickHouse database client and configure write resilience.
 
@@ -146,4 +146,14 @@ Provide population aggregates across all users to address cold starts. Shift wei
 
 ## Handoff Log
 
-_(Fill on completion: record write queue implementation notes and ClickHouse cluster performance.)_
+### T4.1 implementation handoff
+
+`internal/ledger` now journals each JSONEachRow insert to a local directory before it sends the
+request. The queue batches adjacent rows with one insert statement, removes files only after a
+successful response, and replays retained files in insertion order after reconnecting.
+
+T1.3 natural event keys make a retry after an ambiguous network failure safe. A failed flush
+returns `ErrPending`, so callers cannot mistake locally retained events for delivered events.
+
+T4.1 owns no test path. The client exposes its transport and endpoint as options so its assigned
+reviewer can run network-drop checks with a local HTTP server without changing production code.
