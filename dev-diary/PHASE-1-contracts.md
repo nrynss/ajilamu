@@ -123,14 +123,50 @@ The frontend consumes the identical JSON payload to render the timeline during s
 
 ## Exit Criteria
 
-- [ ] `Fit` enforces signed delta comparisons in `internal/types`.
-- [ ] Cost model tracks Gemini and TTS calls without double counting.
-- [ ] `sql/schema.sql` reproduces the entire database schema from scratch.
-- [ ] Matching wire types exist in Go and TypeScript.
-- [ ] Fixture loader serves mock data to Go tests and the frontend.
+- [x] `Fit` enforces signed delta comparisons in `internal/types`.
+- [x] Cost model tracks Gemini and TTS calls without double counting.
+- [x] `sql/schema.sql` reproduces the entire database schema from scratch.
+- [x] Matching wire types exist in Go and TypeScript.
+- [x] Fixture loader serves mock data to Go tests and the frontend.
 
 ---
 
 ## Handoff Log
 
-_(Fill on completion: what exists now, what surprised you, and notes for the next developer.)_
+### What exists now
+
+All five P1 tasks are done. `internal/types` enforces signed fit deltas. `internal/cost`
+tracks every API call once in nanodollars. `sql/schema.sql` builds five `_raw` tables,
+five `FINAL` views and two read views on Cloud and local ClickHouse. `internal/api` and
+`web/src/lib/types.ts` define matching wire payloads. `internal/fixtures` loads the full
+workspace from `testdata/manifest.json`, and `testdata/wire/` stores one example payload
+per structure.
+
+The production `default` database now runs the ledger schema. The pre-T1.3 validation
+table survives as `takes_legacy_pre_t13` with its 8 rows intact.
+
+### What surprised us
+
+The schema took five adversarial rounds. Dedup needs natural-event keys, never client
+ids. The preflight guard must compare expressions and engine parameters exactly, or an
+incompatible table passes and silently collapses distinct events.
+
+The T1.3 block named four tables. The schema ships five tables and seven views, because
+`timeline_state`, `take_rates` and `timeline_at_commit` close T4.5 and T4.7. Review
+records in `adversarial-review/t1.3-round*.md` carry the reasoning.
+
+`internal/cost` declares `Charge.TakeID` as an int. `charges.take_id` is a String. T4.2
+must bridge the two.
+
+### Notes for the next developer
+
+Contracts freeze after this phase. Code against the wire types in `internal/api` and the
+schema in `sql/schema.sql`, never against earlier names.
+
+T4.1 needs three write rules recorded in `PHASE-4-ledger.md`. Writes name the `_raw`
+table. Reads name the plain view. A genuine repeat call must raise `attempt`. T4.5 needs
+the snapshot rule recorded too, that a `timeline_state_raw` writer copies every field
+forward.
+
+The schema loads through `clickhouse client --queries-file`. The HTTP endpoint refuses a
+multi statement body. T4.1 must split statements if it applies the schema over HTTP.

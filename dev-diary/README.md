@@ -139,7 +139,7 @@ Protect this core flow above auxiliary features.
 | Phase | Tasks Complete | Status |
 |---|---|---|
 | P0 | 4 / 4 | Complete. Close review approved with zero residue. See [p0-close-round2.md](adversarial-review/p0-close-round2.md). |
-| P1 | 0 / 5 | Ready to start. Unblocked by P0. |
+| P1 | 5 / 5 | Complete. Contracts frozen. See [PHASE-1-contracts.md](PHASE-1-contracts.md). |
 | P2 | 0 / 7 | Not started. |
 | P3 | 0 / 5 | Not started. |
 | P4 | 0 / 7 | Not started. |
