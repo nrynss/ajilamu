@@ -301,11 +301,23 @@ func TestBedRejectsInvalidInputsAndPreservesOutputs(t *testing.T) {
 	if _, err := BuildBed(source, "", source); err == nil {
 		t.Fatal("allowed overwriting source")
 	}
-	alias := filepath.Join(dir, "alias.mp4")
-	if err := os.Link(source, alias); err != nil {
+	// A hard link cannot cross a filesystem boundary. t.TempDir often sits on a
+	// different filesystem from the repository, so linking the fixture directly
+	// fails with EXDEV on both Linux and macOS. Copy the clip into the temporary
+	// directory first, then link the copy beside it.
+	localSource := filepath.Join(dir, "source.mp4")
+	clip, err := os.ReadFile(source)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BuildBed(source, "", alias); err == nil {
+	if err := os.WriteFile(localSource, clip, 0600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(dir, "alias.mp4")
+	if err := os.Link(localSource, alias); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BuildBed(localSource, "", alias); err == nil {
 		t.Fatal("allowed overwriting source alias")
 	}
 	if err := os.WriteFile(output, []byte("previous render"), 0600); err != nil {

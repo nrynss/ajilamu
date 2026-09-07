@@ -105,6 +105,55 @@ A star (★) marks tasks on the critical demo path.
 6. **Ground metrics in reality:** Connect every displayed number to real measurements and costs.
 7. **Use creator language:** Follow terminology rules in `ui-ux.md` Section 8.
 8. **Document handoffs:** Update the handoff log when finishing a phase or task.
+9. **Write tests that pass on any machine:** A test must not assume where `t.TempDir()` lands.
+
+---
+
+### Portable tests, and one fix already applied
+
+A test that passes only on the machine that wrote it hides real failures everywhere else.
+
+`t.TempDir()` returns a path under the system temporary directory. On Linux that is often
+`tmpfs`, and on macOS it sits under `/var/folders`. Either way it usually belongs to a different
+filesystem from the repository checkout.
+
+Two consequences follow. A hard link from a repository fixture into `t.TempDir()` fails with
+`EXDEV`, because a hard link cannot cross a filesystem. Any check that compares device numbers
+also behaves differently across the boundary.
+
+Copy the fixture into the temporary directory first, then work on the copy. `os.Rename` across
+the same boundary carries the same trap, so prefer a copy there too.
+
+**Fixed 2026-09-07 in `internal/assemble/bed_test.go`.**
+`TestBedRejectsInvalidInputsAndPreservesOutputs` linked `testdata/clip.mp4` straight into
+`t.TempDir()`. It passed where the temporary directory shared a filesystem with the repository
+and failed elsewhere with `invalid cross-device link`. P3 closed while the test failed on
+another machine. The test now copies the clip into the temporary directory and links the
+copy beside it. That keeps both paths on one filesystem. It still gives `os.SameFile` two names
+for one inode, which is all the assertion needs. Verified passing with the default temporary
+directory and with `TMPDIR` set inside the repository.
+
+A red suite costs more than the one test it names. It teaches the next agent to read a failure
+as noise.
+
+### macOS, which P5 will build on
+
+P5 runs on a Mac. Two macOS behaviours differ from the Linux boxes the other tracks use, and
+both stay invisible until Linux rejects work that passed locally.
+
+**The filesystem ignores case by default.** APFS treats `Timeline.svelte` and `timeline.svelte`
+as one file. An import whose casing does not match its file resolves on a Mac and fails on
+Linux. Vite reports nothing on the machine that wrote it. This bites component imports hardest,
+because a track full of them only needs one wrong letter. Match the casing exactly, and let CI
+on Linux stay the authority.
+
+**System paths hide a symlink.** `/var` points at `/private/var`, and `t.TempDir()` returns a
+path underneath it. A path that arrives resolved and a path that arrives unresolved name one
+file while comparing unequal as strings. Compare with `os.SameFile` rather than with `==`, or
+run both sides through `filepath.EvalSymlinks` first.
+
+Nothing here blocks P5. Both traps cost minutes when a reader expects them and hours when
+nobody does.
 
 ---
 
