@@ -53,7 +53,7 @@ requires:   T1.1
 fixture-ok: no
 size:       M · frontier
 owns:       internal/cost/cost.go
-status:     not-started
+status:     done
 ```
 Track expenses per operation. The validation script double-counted retries and omitted Gemini calls entirely.
 
@@ -71,7 +71,7 @@ requires:   T1.1
 fixture-ok: no
 size:       M · frontier
 owns:       sql/schema.sql
-status:     not-started
+status:     claimed:claude-opus-5
 ```
 Write reproducible SQL DDL into `sql/schema.sql`.
 
