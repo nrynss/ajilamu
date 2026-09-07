@@ -24,7 +24,7 @@ requires:   T1.1, T1.2, T0.2
 fixture-ok: yes
 size:       M · mid
 owns:       internal/gemini/segment.go
-status:     not-started
+status:     done
 ```
 Execute one multimodal pass returning timestamped segments, speakers, and emotional tone. Port the proven prompt and JSON response schema from Python.
 
@@ -44,7 +44,7 @@ requires:   T1.1, T1.2, T0.2
 fixture-ok: yes
 size:       S · mid
 owns:       internal/gemini/translate.go
-status:     not-started
+status:     claimed:orchestrator-track-a
 ```
 Translate dialogue under a time budget. Implement three modes: normal, shorter (for overruns), and fuller (for underruns).
 
@@ -158,3 +158,7 @@ Emit progress events and charges at every stage. Call ledger logging through int
 ## Handoff Log
 
 _(Fill on completion: record chosen stretch thresholds, listening evaluations, and implementation details.)_
+
+### T2.1: Segmentation client (done 2026-09-07)
+
+Client lives in `internal/gemini/segment.go`. It sends the proven prompt byte verbatim (658 bytes) and parses the JSON schema into `types.Segment` with strict validation. One `Charge` (kind segment, 658 units) records only after full parse. Auth uses `golang.org/x/oauth2` v0.36.0 through `FindDefaultCredentials` (owner-approved stack exception). It covers `authorized_user` ADC and the GCE metadata server. Live evidence ran three probe passes: gemini-2.5-flash returned 11 segments, gemini-3.8-flash returned 10, and the remediated probe passed twice with 8. Every pass billed $0.0000658. The probe asserts structure (ordered ids, clip bounds, no overlaps, speaker coverage) and prints a drift table instead of exact counts. The `.env` model id carries a `google/` prefix that 404s on Vertex, so probes export working values. Next agent: T2.2 consumes `endpointURL`, `postGenerate`, and `envelopeText` from this file.
