@@ -182,8 +182,10 @@ the token counts the response reported. The offline suite passes with no network
 requires:   T1.1, T1.2, T0.2, T2.2dev
 fixture-ok: yes
 size:       M · mid
-owns:       internal/tts/chirp.go, internal/tts/voices.go
-status:     not-started
+owns:       internal/tts/chirp.go, internal/tts/voices.go,
+            internal/tts/chirp_test.go, internal/tts/voices_test.go,
+            go.mod, go.sum
+status:     done
 ```
 Synthesize speech with Google Cloud Chirp 3 HD voices in LINEAR16 format. Save each take as an independent WAV file.
 
@@ -200,8 +202,8 @@ Implement voice assignment. Map speakers to distinct voices based on language an
 requires:   T1.1, T0.3
 fixture-ok: yes
 size:       XS · light
-owns:       internal/fit/measure.go
-status:     not-started
+owns:       internal/fit/measure.go, internal/fit/measure_test.go
+status:     done
 ```
 Accept a rendered WAV take and target duration, then return a populated `Fit` struct.
 
@@ -289,7 +291,7 @@ Client lives in `internal/gemini/segment.go`. It sends the proven prompt byte ve
 
 Client lives in `internal/gemini/translate.go`. Normal and shorter prompts render byte identical to the Python f-string. The new fuller prompt diagnoses the empty slot, names the budget, demands complete natural phrasing, and bans padding. Each successful request records one `ChargeTranslate` with `TakeID` from `SegmentID`. Live evidence used segment 8 under the proven config (gemini-2.5-flash, global). All three modes returned natural Malayalam with itemized charges ($0.0000509, $0.0000479, $0.0000529). The as-configured `.env` model id 404s on Vertex. The probe records that instead of masking it. Next agent: T2.6 consumes `Translator` with `ModeShorter` and `ModeFuller` for repairs.
 
-### T2.2dev: Adopt the Gen AI SDK and ADC (in progress 2026-09-07)
+### T2.2dev: Adopt the Gen AI SDK and ADC (done 2026-09-07)
 
 Both Gemini clients now call `google.golang.org/genai` v1.71.0. Constructors are
 `NewSegmenter(cfg, rec, card, client *genai.Client)` and the same shape for
@@ -331,3 +333,47 @@ project `nryn-personal`):
   - normal: "അതുപോലെ തന്നെ, പുറത്തുനിന്നൊരു ബലം പ്രവർത്തിക്കാത്തിടത്തോളം, ചലിച്ചുകൊണ്ടിരിക്കുന്ന ഒരു വസ്തു ആ ചലനത്തിൽ തന്നെ തുടർന്നുകൊണ്ടേയിരിക്കും." prompt 107, candidate 40, $0.00004005
   - shorter: "പിന്നെ, ബാഹ്യബലമില്ലെങ്കിൽ ചലിക്കുന്ന വസ്തു ചലിച്ചുകൊണ്ടേയിരിക്കും." prompt 99, candidate 22, $0.00002805
   - fuller: "അതുപോലെ തന്നെ, പുറത്തുനിന്നുള്ള മറ്റൊരു ബലം അതിൽ സ്വാധീനം ചെലുത്താത്തിടത്തോളം കാലം, ചലിച്ചുകൊണ്ടിരിക്കുന്ന ഏതൊരു വസ്തുവും അതേ ചലനാവസ്ഥയിൽ തന്നെ തുടരാനാണ് പ്രവണത കാണിക്കുന്നത്." prompt 110, candidate 54, $0.0000489
+
+### T2.3: Synthesis client (done 2026-09-07)
+
+Client lives in `internal/tts`. Production calls `cloud.google.com/go/texttospeech`
+v1.22.0 through `TTSClient`. A nil client is `texttospeech.NewClient(ctx)` on ADC.
+No API key, no key file, no hand-rolled REST.
+
+`Assign` gives Suni `ml-IN-Chirp3-HD-Achernar` and Mark `ml-IN-Chirp3-HD-Achird`.
+Unknown speakers error. Requests send `languageCode=ml-IN`, LINEAR16, and leave
+`SampleRateHertz` unset. That is the 16 kHz Python defect. LINEAR16 already
+carries a WAV header. Write those bytes once to the caller-chosen `OutPath`.
+Do not wrap them. Do not overwrite.
+
+One `ChargeSynthesize` per successful write, billed on rune count. Token fields
+stay zero. `NewFixtureSynthesizer` copies `testdata/takes/seg_{id}_try1.wav`
+and still bills. Offline tests never need ADC.
+
+What surprised us. The official proto already documents the WAV header on
+LINEAR16. The SDK client method takes `gax.CallOption`, so a thin adapter is
+the test seam. Malayalam rune count is not byte length. `go mod tidy` pulled
+`oauth2` as an indirect of the TTS module. Keep it off the direct require list.
+
+Next agent. T2.6 and T2.7 should not re-derive the voice table, the native-rate
+omission, or the WAV-header rule. Language is hardcoded `ml-IN` on the
+synthesizer. `Assign` already takes a language code. German or Spanish needs a
+request-field contract change. T2.7 chooses `OutPath` names (`seg_1_try1.wav`).
+This package writes that path once.
+
+### T2.4: Measure (done 2026-09-07)
+
+Measure lives in `internal/fit/measure.go` as
+`Measure(path string, slot time.Duration) (types.Fit, error)`. It probes with
+`media.Duration` and builds the result with `types.NewFit`. It does not
+recompute Measured minus Slot by hand. An empty path, a missing file, or an
+ffprobe failure returns a zero Fit and an error.
+
+`go test ./internal/fit/` measured every `testdata/takes/seg_N_try1.wav`
+against `metrics.json` slots. All eight golden rows matched, including segment 8
+at Slot 7110 ms, Measured 4200 ms, Delta -2910 ms, TooShort true, Fits false.
+Stretched pins also matched: `seg_3_stretched.wav` 5338 ms and
+`seg_4_stretched.wav` 5662 ms.
+
+Next agent. T2.5 consumes `Measure` to re-probe after `atempo`. Do not stub
+Duration. Do not treat a take inside 8 percent as a one-sided overrun check.
