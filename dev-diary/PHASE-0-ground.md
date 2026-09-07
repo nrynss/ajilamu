@@ -40,7 +40,7 @@ requires:   []
 fixture-ok: no
 size:       S · mid
 owns:       internal/config/config.go, .env.example
-status:     not-started
+status:     done
 ```
 The initial test script contained a fallback ClickHouse password.
 
