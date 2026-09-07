@@ -44,7 +44,7 @@ requires:   T1.1, T1.2, T0.2
 fixture-ok: yes
 size:       S · mid
 owns:       internal/gemini/translate.go
-status:     claimed:orchestrator-track-a
+status:     done
 ```
 Translate dialogue under a time budget. Implement three modes: normal, shorter (for overruns), and fuller (for underruns).
 
@@ -162,3 +162,7 @@ _(Fill on completion: record chosen stretch thresholds, listening evaluations, a
 ### T2.1: Segmentation client (done 2026-09-07)
 
 Client lives in `internal/gemini/segment.go`. It sends the proven prompt byte verbatim (658 bytes) and parses the JSON schema into `types.Segment` with strict validation. One `Charge` (kind segment, 658 units) records only after full parse. Auth uses `golang.org/x/oauth2` v0.36.0 through `FindDefaultCredentials` (owner-approved stack exception). It covers `authorized_user` ADC and the GCE metadata server. Live evidence ran three probe passes: gemini-2.5-flash returned 11 segments, gemini-3.8-flash returned 10, and the remediated probe passed twice with 8. Every pass billed $0.0000658. The probe asserts structure (ordered ids, clip bounds, no overlaps, speaker coverage) and prints a drift table instead of exact counts. The `.env` model id carries a `google/` prefix that 404s on Vertex, so probes export working values. Next agent: T2.2 consumes `endpointURL`, `postGenerate`, and `envelopeText` from this file.
+
+### T2.2: Duration-budgeted translation (done 2026-09-07)
+
+Client lives in `internal/gemini/translate.go`. Normal and shorter prompts render byte identical to the Python f-string. The new fuller prompt diagnoses the empty slot, names the budget, demands complete natural phrasing, and bans padding. Each successful request records one `ChargeTranslate` with `TakeID` from `SegmentID`. Live evidence used segment 8 under the proven config (gemini-2.5-flash, global). All three modes returned natural Malayalam with itemized charges ($0.0000509, $0.0000479, $0.0000529). The as-configured `.env` model id 404s on Vertex. The probe records that instead of masking it. Next agent: T2.6 consumes `Translator` with `ModeShorter` and `ModeFuller` for repairs.
