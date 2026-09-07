@@ -141,7 +141,7 @@ Protect this core flow above auxiliary features.
 | P0 | 4 / 4 | Complete. Close review approved with zero residue. See [p0-close-round2.md](adversarial-review/p0-close-round2.md). |
 | P1 | 0 / 5 | Ready to start. Unblocked by P0. |
 | P2 | 0 / 7 | Not started. |
-| P3 | 0 / 5 | Not started. |
+| P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
 | P4 | 0 / 7 | Not started. |
 | P5 | 0 / 6 | Not started. |
 | P6 | 0 / 5 | Not started. |

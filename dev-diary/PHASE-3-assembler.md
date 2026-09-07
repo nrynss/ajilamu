@@ -111,11 +111,11 @@ Pre-computing waveform peaks eliminates heavy audio file reads during user scrub
 
 ## Exit Criteria
 
-- [ ] Background audio survives intact outside dialogue intervals.
-- [ ] Tail audio measures within 0.5 dB of the original soundtrack.
-- [ ] Implements dynamic ducking without volume attenuation on speech.
-- [ ] Enforces and records take overrun collision policies.
-- [ ] All unit tests pass offline using fixture data.
+- [x] Background audio survives intact outside dialogue intervals.
+- [x] Tail audio measures within 0.5 dB of the original soundtrack.
+- [x] Implements dynamic ducking without volume attenuation on speech.
+- [x] Enforces and records take overrun collision policies.
+- [x] All unit tests pass offline using fixture data.
 
 ---
 
