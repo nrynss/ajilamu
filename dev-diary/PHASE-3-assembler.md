@@ -63,7 +63,7 @@ requires:   T3.2
 fixture-ok: yes
 size:       L · frontier
 owns:       internal/assemble/duck.go, internal/assemble/duck_test.go
-status:     claimed:t33-impl-cursor
+status:     done
 ```
 Implement dynamic ducking using ffmpeg filters.
 
@@ -82,8 +82,8 @@ Pass `normalize=0` to prevent unintended 6 dB volume drops on dubbed speech. Ski
 requires:   T3.3
 fixture-ok: yes
 size:       S · mid
-owns:       internal/assemble/export.go
-status:     not-started
+owns:       internal/assemble/export.go, internal/assemble/export_test.go
+status:     claimed:t34-impl-cursor
 ```
 Multiplex assembled audio with untouched video streams using `-c:v copy` and `-map 0:v -map 1:a`. Video frames are never re-encoded.
 
