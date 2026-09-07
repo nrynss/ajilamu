@@ -23,8 +23,8 @@ runs-parallel-with: P2, P3, P4, P6, P7
 requires:   T1.4, T1.5
 fixture-ok: yes
 size:       M · mid
-owns:       web/src/app.html, web/src/routes/+layout.svelte, web/src/lib/tokens.css
-status:     not-started
+owns:       web/package.json, web/vite.config.ts, web/svelte.config.js, web/tsconfig.json, web/src/app.d.ts, web/src/app.html, web/src/routes/+layout.svelte, web/src/routes/+page.svelte, web/src/routes/new/+page.svelte, web/src/routes/d/[id]/+page.svelte, web/src/routes/config/+page.svelte, web/src/lib/tokens.css
+status:     done
 ```
 Initialize Svelte 5 with runes and Vite. Implement routes: `/`, `/new`, `/d/{id}`, and `/config`. Build the 46px header chrome.
 
