@@ -1,0 +1,112 @@
+[
+  {
+    "segment_id": 1,
+    "slot_ms": 1820,
+    "take_ms": 1680,
+    "delta_ms": -140,
+    "delta_pct": -7.7,
+    "repair": "none",
+    "outcome": "short",
+    "take_file": "seg_1_try1.wav",
+    "takes": {
+      "seg_1_try1.wav": 1680
+    }
+  },
+  {
+    "segment_id": 2,
+    "slot_ms": 5480,
+    "take_ms": 5320,
+    "delta_ms": -160,
+    "delta_pct": -2.9,
+    "repair": "none",
+    "outcome": "fits",
+    "take_file": "seg_2_try1.wav",
+    "takes": {
+      "seg_2_try1.wav": 5320
+    }
+  },
+  {
+    "segment_id": 3,
+    "slot_ms": 5320,
+    "take_ms": 5720,
+    "delta_ms": 400,
+    "delta_pct": 7.5,
+    "repair": "atempo 1.075 -> 5338",
+    "repaired_duration_ms": 5338,
+    "outcome": "repaired",
+    "take_file": "seg_3_try1.wav",
+    "repaired_take_file": "seg_3_stretched.wav",
+    "takes": {
+      "seg_3_try1.wav": 5720,
+      "seg_3_stretched.wav": 5338
+    }
+  },
+  {
+    "segment_id": 4,
+    "slot_ms": 5660,
+    "take_ms": 5920,
+    "delta_ms": 260,
+    "delta_pct": 4.6,
+    "repair": "atempo 1.046 -> 5662",
+    "repaired_duration_ms": 5662,
+    "outcome": "repaired",
+    "take_file": "seg_4_try1.wav",
+    "repaired_take_file": "seg_4_stretched.wav",
+    "takes": {
+      "seg_4_try1.wav": 5920,
+      "seg_4_stretched.wav": 5662
+    }
+  },
+  {
+    "segment_id": 5,
+    "slot_ms": 4840,
+    "take_ms": 4720,
+    "delta_ms": -120,
+    "delta_pct": -2.5,
+    "repair": "none",
+    "outcome": "fits",
+    "take_file": "seg_5_try1.wav",
+    "takes": {
+      "seg_5_try1.wav": 4720
+    }
+  },
+  {
+    "segment_id": 6,
+    "slot_ms": 4630,
+    "take_ms": 4440,
+    "delta_ms": -190,
+    "delta_pct": -4.1,
+    "repair": "none",
+    "outcome": "short",
+    "take_file": "seg_6_try1.wav",
+    "takes": {
+      "seg_6_try1.wav": 4440
+    }
+  },
+  {
+    "segment_id": 7,
+    "slot_ms": 7040,
+    "take_ms": 6800,
+    "delta_ms": -240,
+    "delta_pct": -3.4,
+    "repair": "none",
+    "outcome": "fits",
+    "take_file": "seg_7_try1.wav",
+    "takes": {
+      "seg_7_try1.wav": 6800
+    }
+  },
+  {
+    "segment_id": 8,
+    "slot_ms": 7110,
+    "take_ms": 4200,
+    "delta_ms": -2910,
+    "delta_pct": -40.9,
+    "repair": "none",
+    "outcome": "broken, reported as fit",
+    "take_file": "seg_8_try1.wav",
+    "takes": {
+      "seg_8_try1.wav": 4200
+    }
+  }
+]

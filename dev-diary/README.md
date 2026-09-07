@@ -138,8 +138,8 @@ Protect this core flow above auxiliary features.
 
 | Phase | Tasks Complete | Status |
 |---|---|---|
-| P0 | 0 / 4 | Not started. Foundational setup. |
-| P1 | 0 / 5 | Not started. Blocked on T0.1, T0.3. |
+| P0 | 4 / 4 | Landed in `b1f4275`, `351137e`, `24d3165`, `9e4fa10`. Close review open with 1 H and 1 M. See [p0-close-round1.md](adversarial-review/p0-close-round1.md). |
+| P1 | 0 / 5 | Ready to start. Unblocked by P0. |
 | P2 | 0 / 7 | Not started. |
 | P3 | 0 / 5 | Not started. |
 | P4 | 0 / 7 | Not started. |

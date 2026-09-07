@@ -82,7 +82,7 @@ requires:   T0.1
 fixture-ok: no
 size:       S · mid
 owns:       testdata/
-status:     not-started
+status:     done
 ```
 The validation run produced real audio assets. Commit them to `testdata/` to unblock parallel tracks.
 
@@ -98,13 +98,32 @@ Copy these files into `testdata/`:
 
 ## Exit Criteria
 
-- [ ] Repository contains initial commits and tracks `tools/validate_pipeline.py`.
-- [ ] Rotated credentials and removed hardcoded secrets from source code.
-- [ ] `internal/media` measures duration and stretches audio in both directions.
-- [ ] Committed `testdata/` fixtures to git.
+- [x] Repository contains initial commits and tracks `tools/validate_pipeline.py`.
+- [x] Rotated credentials and removed hardcoded secrets from source code.
+- [x] `internal/media` measures duration and stretches audio in both directions.
+- [x] Committed `testdata/` fixtures to git.
 
 ---
 
 ## Handoff Log
 
-_(Fill on completion: what exists now, what surprised you, and notes for the next developer.)_
+### What exists now
+All four foundational tasks in Phase 0 are complete.
+We established git version control with a private GitHub repository.
+We rotated the ClickHouse Cloud database password and verified zero hardcoded credentials remain.
+The Go module `github.com/nrynss/ajilamu` builds under Go 1.27.1.
+Package `internal/config` loads required secrets and sets default values.
+Package `internal/media` measures audio duration, inspects format, demuxes mono audio, and executes bidirectional time stretching via `atempo`.
+Committed test fixtures in `testdata/` provide the reference 75-second clip, 8 segments, 10 WAV takes, golden metrics, and automated duration tests.
+
+### What surprised us
+ClickHouse Cloud enforces password complexity requirements, requiring at least one special character.
+The ClickHouse Cloud OpenAPI accepts a PATCH request on the password endpoint to rotate credentials securely.
+Go ignores directories named `testdata` when using `...` package wildcards.
+Targeting `./testdata` directly runs the fixture test suite as expected.
+
+### Notes for the next developer
+Phase P1 (Contracts and fixtures) is now unblocked.
+You can run all audio and ledger tests offline against `testdata/` without live API keys.
+When implementing P1 data contracts, bind `Take` structs to the measured millisecond durations and golden metrics in `testdata/expected/metrics.json`.
+
