@@ -1,0 +1,22 @@
+# Environment variables
+.env
+*.env.local
+
+# Binaries and build outputs
+/bin/
+/dist/
+ajilamu
+
+# Go artifacts
+vendor/
+
+# Node / Svelte
+node_modules/
+.svelte-kit/
+
+# Media and temporary scratch
+assets/source/
+scratch/
+*.tgz
+*.tmp
+*.log
