@@ -107,7 +107,7 @@ requires:   T0.4, T1.1, T1.4
 fixture-ok: no
 size:       S · mid
 owns:       testdata/manifest.json, internal/fixtures/load.go
-status:     not-started
+status:     done
 ```
 Build a fixture loader that converts `testdata/` files into typed objects.
 
