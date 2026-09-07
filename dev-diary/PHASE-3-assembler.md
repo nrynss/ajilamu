@@ -21,8 +21,8 @@ runs-parallel-with: P2, P4, P5, P6, P7
 requires:   T1.1, T0.3, T0.4
 fixture-ok: yes
 size:       L · frontier
-owns:       internal/assemble/bed.go
-status:     not-started
+owns:       internal/assemble/bed.go, internal/assemble/bed_test.go
+status:     done
 ```
 Preserve original background audio outside dialogue slots. The initial script muted 20.5 seconds of soundtrack after the final line by replacing audio streams wholesale.
 
@@ -44,8 +44,8 @@ Resample speech takes up to match the background bed. Never downsample the film 
 requires:   T3.1
 fixture-ok: yes
 size:       M · frontier
-owns:       internal/assemble/place.go
-status:     not-started
+owns:       internal/assemble/place.go, internal/assemble/place_test.go
+status:     done
 ```
 Place each final take at its segment start offset over the background audio bed.
 
@@ -62,8 +62,8 @@ The system allows audio to extend into trailing silence gaps. If speech still co
 requires:   T3.2
 fixture-ok: yes
 size:       L · frontier
-owns:       internal/assemble/duck.go
-status:     not-started
+owns:       internal/assemble/duck.go, internal/assemble/duck_test.go
+status:     done
 ```
 Implement dynamic ducking using ffmpeg filters.
 
@@ -82,8 +82,8 @@ Pass `normalize=0` to prevent unintended 6 dB volume drops on dubbed speech. Ski
 requires:   T3.3
 fixture-ok: yes
 size:       S · mid
-owns:       internal/assemble/export.go
-status:     not-started
+owns:       internal/assemble/export.go, internal/assemble/export_test.go
+status:     done
 ```
 Multiplex assembled audio with untouched video streams using `-c:v copy` and `-map 0:v -map 1:a`. Video frames are never re-encoded.
 
@@ -98,8 +98,8 @@ Use descriptive output names like `dubbed_ducked.mp4` and `dubbed_replaced.mp4`.
 requires:   T1.1, T0.3
 fixture-ok: yes
 size:       S · mid
-owns:       internal/assemble/peaks.go
-status:     not-started
+owns:       internal/assemble/peaks.go, internal/assemble/peaks_test.go
+status:     done
 ```
 Compute 64 to 128 normalized `uint8` peak values per take during rendering. Store vectors in ClickHouse for instant timeline waveform rendering.
 
@@ -111,14 +111,40 @@ Pre-computing waveform peaks eliminates heavy audio file reads during user scrub
 
 ## Exit Criteria
 
-- [ ] Background audio survives intact outside dialogue intervals.
-- [ ] Tail audio measures within 0.5 dB of the original soundtrack.
-- [ ] Implements dynamic ducking without volume attenuation on speech.
-- [ ] Enforces and records take overrun collision policies.
-- [ ] All unit tests pass offline using fixture data.
+- [x] Background audio survives intact outside dialogue intervals.
+- [x] Tail audio measures within 0.5 dB of the original soundtrack.
+- [x] Implements dynamic ducking without volume attenuation on speech.
+- [x] Enforces and records take overrun collision policies.
+- [x] All unit tests pass offline using fixture data.
 
 ---
 
 ## Handoff Log
 
-_(Fill on completion: document chosen overrun policies and ffmpeg filter configurations.)_
+- **T3.1:** `BuildBed` preserves source timing, stream gaps, native sample rate, and channel layout.
+  Separate music replaces the source bed and pads or trims to the video duration.
+  `PrepareTake` resamples speech with unity-gain channel duplication. The filter uses
+  `aresample=async=1:first_pts=0:min_hard_comp=0` to preserve short timestamp gaps.
+- **T3.2:** `Place` writes each take onto a silent speech layer at its segment start.
+  Fit keeps a take inside its slot. Gap uses trailing silence before the next take.
+  Truncate drops colliding tail silence at the next take start.
+  Crossfade overlaps colliding speech through the fade window and records it.
+  `Overlay` mixes the speech layer onto the bed without ducking.
+  Fixture segments 3 and 4 use Gap. Event start times round to the nearest 44.1 kHz frame.
+- **T3.3:** `Duck` keys `sidechaincompress` on the speech layer. The mix uses `amix` with `normalize=0`.
+  Compressor settings are threshold 0.016, ratio 12, attack 5 ms, and release 80 ms.
+  The knee is hard. Detection is peak. Makeup and mix stay at 1.
+  The published mix lasts as long as the bed.
+  A one second pad keeps the compressor from dropping the tail.
+  The first `amix` input is the original bed so `duration=first` holds that length.
+  `SeparateMusic` skips the compressor and calls `Overlay`.
+  Failed renders stay private. The output path never replaces an input.
+- **T3.5:** `Peaks` decodes a take to float PCM and returns 128 `uint8` values.
+  Each bin holds the max-abs of its frames, scaled to the take peak on 0 to 255.
+  A silent take is all zeros. The same path returns an identical slice.
+  T4.6 stores the vector on take rows. This task only computes it.
+- **T3.4:** `Export` muxes a finished mix onto the source video with `-c:v copy`.
+  Named outputs are `dubbed_replaced.mp4` and `dubbed_ducked.mp4`.
+  The mux does not use `-shortest`. Output duration follows the video.
+  Audio encodes as AAC at the film rate and channel count.
+  Failed muxes stay private. The output path never replaces an input.
