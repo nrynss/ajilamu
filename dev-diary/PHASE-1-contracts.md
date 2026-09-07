@@ -71,13 +71,15 @@ requires:   T1.1
 fixture-ok: no
 size:       M · frontier
 owns:       sql/schema.sql
-status:     claimed:claude-opus-5
+status:     done
 ```
 Write reproducible SQL DDL into `sql/schema.sql`.
 
-Create tables for `takes`, `commits`, `actions`, and `charges`. Store signed deltas instead of one-sided percentages.
+Create tables for `takes`, `commits`, `actions`, `charges`, and `timeline_state`. Store signed deltas instead of one-sided percentages.
 
 Store waveform peaks as `Array(UInt8)` on take rows. Use server-side timestamps (`DEFAULT now64(3)`) for `created_at`.
+
+The five `_raw` tables hold rows and dedup on the natural identity of each event. The five plain names are views that apply `FINAL`, so the obvious read never counts a retry twice. Two read views ship with the schema: `take_rates` for learned priors and `timeline_at_commit` for state at any commit. The preflight guard refuses to run against a database holding an incompatible legacy object.
 
 **Done when:** Executing `sql/schema.sql` on a fresh database successfully creates all tables and accepts sample inserts.
 
