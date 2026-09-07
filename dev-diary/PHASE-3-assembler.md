@@ -83,7 +83,7 @@ requires:   T3.3
 fixture-ok: yes
 size:       S · mid
 owns:       internal/assemble/export.go, internal/assemble/export_test.go
-status:     claimed:t34-impl-cursor
+status:     done
 ```
 Multiplex assembled audio with untouched video streams using `-c:v copy` and `-map 0:v -map 1:a`. Video frames are never re-encoded.
 
@@ -143,3 +143,8 @@ Pre-computing waveform peaks eliminates heavy audio file reads during user scrub
   Each bin holds the max-abs of its frames, scaled to the take peak on 0 to 255.
   A silent take is all zeros. The same path returns an identical slice.
   T4.6 stores the vector on take rows. This task only computes it.
+- **T3.4:** `Export` muxes a finished mix onto the source video with `-c:v copy`.
+  Named outputs are `dubbed_replaced.mp4` and `dubbed_ducked.mp4`.
+  The mux does not use `-shortest`. Output duration follows the video.
+  Audio encodes as AAC at the film rate and channel count.
+  Failed muxes stay private. The output path never replaces an input.
