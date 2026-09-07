@@ -60,7 +60,7 @@ requires:   T0.1
 fixture-ok: no
 size:       M · mid
 owns:       go.mod, go.sum, internal/media/probe.go, internal/media/ffmpeg.go
-status:     not-started
+status:     done
 ```
 Initialize the Go module. Implement five core media operations wrapping ffmpeg:
 
