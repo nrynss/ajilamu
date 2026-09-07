@@ -21,8 +21,8 @@ runs-parallel-with: P2, P4, P5, P6, P7
 requires:   T1.1, T0.3, T0.4
 fixture-ok: yes
 size:       L · frontier
-owns:       internal/assemble/bed.go
-status:     not-started
+owns:       internal/assemble/bed.go, internal/assemble/bed_test.go
+status:     done
 ```
 Preserve original background audio outside dialogue slots. The initial script muted 20.5 seconds of soundtrack after the final line by replacing audio streams wholesale.
 
@@ -121,4 +121,7 @@ Pre-computing waveform peaks eliminates heavy audio file reads during user scrub
 
 ## Handoff Log
 
-_(Fill on completion: document chosen overrun policies and ffmpeg filter configurations.)_
+- **T3.1:** `BuildBed` preserves source timing, stream gaps, native sample rate, and channel layout.
+  Separate music replaces the source bed and pads or trims to the video duration.
+  `PrepareTake` resamples speech with unity-gain channel duplication. The filter uses
+  `aresample=async=1:first_pts=0:min_hard_comp=0` to preserve short timestamp gaps.
