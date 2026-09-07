@@ -44,8 +44,8 @@ Resample speech takes up to match the background bed. Never downsample the film 
 requires:   T3.1
 fixture-ok: yes
 size:       M · frontier
-owns:       internal/assemble/place.go
-status:     not-started
+owns:       internal/assemble/place.go, internal/assemble/place_test.go
+status:     done
 ```
 Place each final take at its segment start offset over the background audio bed.
 
@@ -125,3 +125,9 @@ Pre-computing waveform peaks eliminates heavy audio file reads during user scrub
   Separate music replaces the source bed and pads or trims to the video duration.
   `PrepareTake` resamples speech with unity-gain channel duplication. The filter uses
   `aresample=async=1:first_pts=0:min_hard_comp=0` to preserve short timestamp gaps.
+- **T3.2:** `Place` writes each take onto a silent speech layer at its segment start.
+  Fit keeps a take inside its slot. Gap uses trailing silence before the next take.
+  Truncate drops colliding tail silence at the next take start.
+  Crossfade overlaps colliding speech through the fade window and records it.
+  `Overlay` mixes the speech layer onto the bed without ducking.
+  Fixture segments 3 and 4 use Gap. Event start times round to the nearest 44.1 kHz frame.
