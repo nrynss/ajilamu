@@ -69,6 +69,25 @@ func TestChargeTotal(t *testing.T) {
 	}
 }
 
+func TestChargeTotalSumsTokenKinds(t *testing.T) {
+	rates := DefaultRateCard()
+	c := Charge{
+		Kind:               ChargeSegment,
+		PromptTokens:       41,
+		CandidateTokens:    17,
+		PromptUnitPrice:    rates.SegmentPerPromptToken,
+		CandidateUnitPrice: rates.SegmentPerCandidateToken,
+	}
+	got := c.Total()
+	want := Price(41)*rates.SegmentPerPromptToken + Price(17)*rates.SegmentPerCandidateToken
+	if got != want {
+		t.Errorf("Charge.Total() = %d, want %d", got, want)
+	}
+	if c.Units != 0 {
+		t.Errorf("Gemini charge Units = %d, want 0", c.Units)
+	}
+}
+
 func TestRateCard(t *testing.T) {
 	rates := DefaultRateCard()
 	if rates.SegmentPerInputChar == 0 {
@@ -79,6 +98,18 @@ func TestRateCard(t *testing.T) {
 	}
 	if rates.SynthesizePerChar == 0 {
 		t.Error("DefaultRateCard SynthesizePerChar is zero")
+	}
+	if rates.SegmentPerPromptToken == 0 {
+		t.Error("DefaultRateCard SegmentPerPromptToken is zero")
+	}
+	if rates.SegmentPerCandidateToken == 0 {
+		t.Error("DefaultRateCard SegmentPerCandidateToken is zero")
+	}
+	if rates.TranslatePerPromptToken == 0 {
+		t.Error("DefaultRateCard TranslatePerPromptToken is zero")
+	}
+	if rates.TranslatePerCandidateToken == 0 {
+		t.Error("DefaultRateCard TranslatePerCandidateToken is zero")
 	}
 
 	customRates := RateCard{
@@ -94,14 +125,28 @@ func TestLedgerSimulateRun(t *testing.T) {
 	l := NewLedger()
 	rates := DefaultRateCard()
 
-	l.Add(Charge{Kind: ChargeSegment, TakeID: 0, Units: 5000, UnitPrice: rates.SegmentPerInputChar})
+	l.Add(Charge{
+		Kind:               ChargeSegment,
+		TakeID:             0,
+		PromptTokens:       5000,
+		CandidateTokens:    800,
+		PromptUnitPrice:    rates.SegmentPerPromptToken,
+		CandidateUnitPrice: rates.SegmentPerCandidateToken,
+	})
 
 	var expectedTotal Price
-	expectedTotal += Price(5000) * rates.SegmentPerInputChar
+	expectedTotal += Price(5000)*rates.SegmentPerPromptToken + Price(800)*rates.SegmentPerCandidateToken
 
 	for i := 1; i <= 8; i++ {
-		l.Add(Charge{Kind: ChargeTranslate, TakeID: i, Units: 100, UnitPrice: rates.TranslatePerInputChar})
-		expectedTotal += Price(100) * rates.TranslatePerInputChar
+		l.Add(Charge{
+			Kind:               ChargeTranslate,
+			TakeID:             i,
+			PromptTokens:       100,
+			CandidateTokens:    40,
+			PromptUnitPrice:    rates.TranslatePerPromptToken,
+			CandidateUnitPrice: rates.TranslatePerCandidateToken,
+		})
+		expectedTotal += Price(100)*rates.TranslatePerPromptToken + Price(40)*rates.TranslatePerCandidateToken
 
 		l.Add(Charge{Kind: ChargeSynthesize, TakeID: i, Units: 100, UnitPrice: rates.SynthesizePerChar})
 		expectedTotal += Price(100) * rates.SynthesizePerChar
@@ -116,12 +161,12 @@ func TestLedgerSimulateRun(t *testing.T) {
 		t.Errorf("TotalByKind(ChargeSynthesize) = %d, want %d", got, wantSynth)
 	}
 
-	wantSeg := Price(5000) * rates.SegmentPerInputChar
+	wantSeg := Price(5000)*rates.SegmentPerPromptToken + Price(800)*rates.SegmentPerCandidateToken
 	if got := l.TotalByKind(ChargeSegment); got != wantSeg {
 		t.Errorf("TotalByKind(ChargeSegment) = %d, want %d", got, wantSeg)
 	}
 
-	wantTake3 := (Price(100) * rates.TranslatePerInputChar) + (Price(100) * rates.SynthesizePerChar)
+	wantTake3 := (Price(100)*rates.TranslatePerPromptToken + Price(40)*rates.TranslatePerCandidateToken) + (Price(100) * rates.SynthesizePerChar)
 	if got := l.TotalForTake(3); got != wantTake3 {
 		t.Errorf("TotalForTake(3) = %d, want %d", got, wantTake3)
 	}

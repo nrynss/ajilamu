@@ -137,8 +137,8 @@ what exists now, what surprised you, and what the next agent should not work out
 Go 1.27.1, standard library first. Svelte 5 with runes on Vite, Node 26. ffmpeg n9.0.1, which
 supplies `atempo`, `amix`, `aresample`, and `sidechaincompress`.
 
-One exception applies. golang.org/x/oauth2/google supplies GCP credentials for the Gemini
-clients and covers the GCE metadata server.
+One exception applies. google.golang.org/genai supplies the Gemini clients.
+The SDK authenticates with Application Default Credentials and covers the GCE metadata server.
 
 ffmpeg does all audio work. We add no third-party AI audio dependency.
 

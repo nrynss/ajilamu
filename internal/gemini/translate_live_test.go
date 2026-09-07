@@ -10,36 +10,33 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/oauth2/google"
-
 	"github.com/nrynss/ajilamu/internal/config"
 	"github.com/nrynss/ajilamu/internal/cost"
 )
 
 // TestTranslateLive probes the real Vertex AI endpoint with golden segment 8.
 // Run it with: go test -tags live ./internal/gemini/
-// It never runs in CI and skips without Google Cloud credentials.
+// It never runs in CI and skips only when ADC is unusable.
 func TestTranslateLive(t *testing.T) {
 	loadDotEnv(t, filepath.Join("..", "..", ".env"))
+	os.Unsetenv("GEMINI_API_KEY")
+
 	project := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	if project == "" {
-		t.Skip("GOOGLE_CLOUD_PROJECT is unset")
-	}
-
-	ctx := context.Background()
-	creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
-	if err != nil {
-		t.Skipf("no usable application default credentials: %v", err)
+		t.Fatal("GOOGLE_CLOUD_PROJECT is unset")
 	}
 
 	cfg := &config.Config{
-		GeminiModel:         envDefault(t, "GEMINI_MODEL", config.DefaultGeminiModel),
+		GeminiModel:         config.DefaultGeminiModel,
 		GoogleCloudProject:  project,
-		GoogleCloudLocation: envDefault(t, "GOOGLE_CLOUD_LOCATION", config.DefaultGoogleLocation),
+		GoogleCloudLocation: config.DefaultGoogleLocation,
 	}
 	ledger := cost.NewLedger()
-	tr, err := NewTranslator(cfg, creds.TokenSource, ledger, nil, cost.DefaultRateCard())
+	tr, err := NewTranslator(cfg, ledger, cost.DefaultRateCard(), nil)
 	if err != nil {
+		if isADCUnusable(err) {
+			t.Skipf("application default credentials unusable: %v", err)
+		}
 		t.Fatalf("build translator: %v", err)
 	}
 
@@ -55,15 +52,14 @@ func TestTranslateLive(t *testing.T) {
 	for _, mode := range []TranslateMode{ModeNormal, ModeShorter, ModeFuller} {
 		req.Mode = mode
 		started := time.Now()
-		out, err := tr.Translate(ctx, req)
+		out, err := tr.Translate(context.Background(), req)
 		if err != nil {
-			// A live failure is evidence. Report it instead of masking it.
 			t.Fatalf("live translation (%s) failed: %v", mode, err)
 		}
 		fmt.Printf("  %s (%s): %q\n", mode, time.Since(started).Round(time.Millisecond), out)
 	}
 	for _, c := range ledger.Charges() {
-		fmt.Printf("  charge: kind=%v take=%d units=%d unitPrice=%v total=%v\n",
-			c.Kind, c.TakeID, c.Units, c.UnitPrice, c.Total())
+		fmt.Printf("  charge: kind=%v take=%d promptTokens=%d candidateTokens=%d total=%v\n",
+			c.Kind, c.TakeID, c.PromptTokens, c.CandidateTokens, c.Total())
 	}
 }

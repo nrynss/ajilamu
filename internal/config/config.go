@@ -16,11 +16,9 @@ type Config struct {
 
 	// Gemini and Google Cloud settings.
 	GeminiModel                  string
-	GeminiAPIKey                 string
 	GoogleCloudProject           string
 	GoogleCloudLocation          string
 	GoogleApplicationCredentials string
-	VertexOpenAPIBaseURL         string
 
 	// ClickHouse Cloud database settings.
 	ClickHouseHost     string
@@ -48,7 +46,7 @@ const (
 	DefaultClickHousePort     = 8443
 	DefaultClickHouseDatabase = "default"
 	DefaultClickHouseSecure   = true
-	DefaultGoogleLocation     = "us-central1"
+	DefaultGoogleLocation     = "global"
 )
 
 // Load reads configuration from process environment variables.
@@ -88,10 +86,8 @@ func LoadFromLookup(lookup LookupEnvFunc) (*Config, error) {
 	}
 
 	project := get("GOOGLE_CLOUD_PROJECT")
-	appCreds := get("GOOGLE_APPLICATION_CREDENTIALS")
-	geminiKey := get("GEMINI_API_KEY")
-	if project == "" && appCreds == "" && geminiKey == "" {
-		return nil, errors.New("missing required environment variable: GOOGLE_CLOUD_PROJECT (or GOOGLE_APPLICATION_CREDENTIALS or GEMINI_API_KEY)")
+	if project == "" {
+		return nil, errors.New("missing required environment variable: GOOGLE_CLOUD_PROJECT")
 	}
 
 	port := get("PORT")
@@ -105,6 +101,7 @@ func LoadFromLookup(lookup LookupEnvFunc) (*Config, error) {
 	}
 
 	geminiModel := get("GEMINI_MODEL")
+	geminiModel = strings.TrimPrefix(geminiModel, "google/")
 	if geminiModel == "" {
 		geminiModel = DefaultGeminiModel
 	}
@@ -141,11 +138,9 @@ func LoadFromLookup(lookup LookupEnvFunc) (*Config, error) {
 		Port:                         port,
 		Env:                          env,
 		GeminiModel:                  geminiModel,
-		GeminiAPIKey:                 geminiKey,
 		GoogleCloudProject:           project,
 		GoogleCloudLocation:          location,
-		GoogleApplicationCredentials: appCreds,
-		VertexOpenAPIBaseURL:         get("VERTEX_OPENAPI_BASE_URL"),
+		GoogleApplicationCredentials: get("GOOGLE_APPLICATION_CREDENTIALS"),
 		ClickHouseHost:               chHost,
 		ClickHousePort:               chPort,
 		ClickHouseUser:               chUser,

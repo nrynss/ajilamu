@@ -70,38 +70,67 @@ func (p Price) String() string {
 }
 
 // Charge represents a single billed operation.
+// Gemini kinds bill from UsageMetadata prompt and candidate token counts.
+// Synthesize still bills per character through Units and UnitPrice.
+// One Charge is one successful invocation. A take costs its own charges.
 type Charge struct {
 	// Kind specifies the API operation type.
 	Kind ChargeKind
 	// TakeID identifies the associated segment or take.
 	TakeID int
-	// Units counts the billed elements like characters or tokens.
+	// Units counts billed characters for synthesize. Gemini kinds leave this at zero.
 	Units int
-	// UnitPrice specifies the price per single unit.
+	// UnitPrice specifies the price per character for synthesize.
 	UnitPrice Price
+	// PromptTokens is the UsageMetadata prompt token count for Gemini kinds.
+	PromptTokens int
+	// CandidateTokens is the UsageMetadata candidate token count for Gemini kinds.
+	CandidateTokens int
+	// PromptUnitPrice is the price per prompt token for Gemini kinds.
+	PromptUnitPrice Price
+	// CandidateUnitPrice is the price per candidate token for Gemini kinds.
+	CandidateUnitPrice Price
 }
 
 // Total calculates the overall cost for this charge.
+// It sums character units and both Gemini token kinds.
 func (c Charge) Total() Price {
-	return Price(c.Units) * c.UnitPrice
+	return Price(c.Units)*c.UnitPrice +
+		Price(c.PromptTokens)*c.PromptUnitPrice +
+		Price(c.CandidateTokens)*c.CandidateUnitPrice
 }
 
 // RateCard holds unit pricing for various API operations.
+// T2.2dev amends frozen T1.2. Gemini bills on tokens. Synthesize stays per character.
+// SegmentPerInputChar and TranslatePerInputChar remain for fixture reconciliation.
 type RateCard struct {
-	// SegmentPerInputChar sets the price per character for Gemini segmentation.
+	// SegmentPerInputChar is the frozen T1.2 per-character proxy. Gemini no longer bills on it.
 	SegmentPerInputChar Price
-	// TranslatePerInputChar sets the price per character for Gemini translation.
+	// TranslatePerInputChar is the frozen T1.2 per-character proxy. Gemini no longer bills on it.
 	TranslatePerInputChar Price
 	// SynthesizePerChar sets the price per character for Chirp 3 HD TTS.
 	SynthesizePerChar Price
+	// SegmentPerPromptToken sets the price per prompt token for Gemini segmentation.
+	SegmentPerPromptToken Price
+	// SegmentPerCandidateToken sets the price per candidate token for Gemini segmentation.
+	SegmentPerCandidateToken Price
+	// TranslatePerPromptToken sets the price per prompt token for Gemini translation.
+	TranslatePerPromptToken Price
+	// TranslatePerCandidateToken sets the price per candidate token for Gemini translation.
+	TranslatePerCandidateToken Price
 }
 
 // DefaultRateCard provides standard pricing based on current Google Cloud rates.
+// Token prices are non-zero. Character Gemini prices stay for T1.5 fixture math.
 func DefaultRateCard() RateCard {
 	return RateCard{
-		SegmentPerInputChar:   100,
-		TranslatePerInputChar: 100,
-		SynthesizePerChar:     30_000,
+		SegmentPerInputChar:        100,
+		TranslatePerInputChar:      100,
+		SynthesizePerChar:          30_000,
+		SegmentPerPromptToken:      150,
+		SegmentPerCandidateToken:   600,
+		TranslatePerPromptToken:    150,
+		TranslatePerCandidateToken: 600,
 	}
 }
 

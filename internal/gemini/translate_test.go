@@ -2,16 +2,14 @@ package gemini
 
 import (
 	"context"
-	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
-	"golang.org/x/oauth2"
+	"google.golang.org/genai"
 
+	"github.com/nrynss/ajilamu/internal/config"
 	"github.com/nrynss/ajilamu/internal/cost"
 )
 
@@ -38,23 +36,11 @@ func TestTranslatePromptPerMode(t *testing.T) {
 		{ModeFuller, "This translation MUST fill its video slot naturally. The previous attempt left the 7.1 seconds (7110 ms) slot too empty. Use complete natural phrasing that fills it, no meaningless padding."},
 	}
 
-	var gotAuth string
-	var gotBody []byte
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
-		}
-		gotBody = body
-		w.Write(envelopeJSON(t, "ചലനം"))
-	}))
-	defer srv.Close()
-
 	ledger := cost.NewLedger()
-	tr, err := NewTranslator(testConfig(srv.URL), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "token-123"}), ledger, nil, cost.DefaultRateCard())
+	gen := &fakeGenerator{text: "ചലനം", promptTokens: 23, candTokens: 5}
+	tr, err := newTranslatorForTest(testConfig(), ledger, cost.DefaultRateCard(), gen)
 	if err != nil {
-		t.Fatalf("NewTranslator: %v", err)
+		t.Fatalf("newTranslatorForTest: %v", err)
 	}
 
 	req := TranslateRequest{
@@ -70,22 +56,17 @@ func TestTranslatePromptPerMode(t *testing.T) {
 				t.Fatalf("Translate: %v", err)
 			}
 
-			if gotAuth != "Bearer token-123" {
-				t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer token-123")
+			if gen.gotModel != "gemini-3.8-flash" {
+				t.Errorf("model = %q, want gemini-3.8-flash", gen.gotModel)
+			}
+			if len(gen.gotContents) != 1 || len(gen.gotContents[0].Parts) != 1 {
+				t.Fatalf("contents shape = %#v, want one content with one text part", gen.gotContents)
+			}
+			if gen.gotContents[0].Role != string(genai.RoleUser) && gen.gotContents[0].Role != "user" {
+				t.Errorf("role = %q, want user", gen.gotContents[0].Role)
 			}
 
-			var payload generateRequest
-			if err := json.Unmarshal(gotBody, &payload); err != nil {
-				t.Fatalf("decode request payload: %v", err)
-			}
-			if len(payload.Contents) != 1 || len(payload.Contents[0].Parts) != 1 {
-				t.Fatalf("payload shape = %#v, want one content with one text part", payload)
-			}
-			if payload.Contents[0].Role != "user" {
-				t.Errorf("role = %q, want user", payload.Contents[0].Role)
-			}
-
-			gotPrompt := payload.Contents[0].Parts[0].Text
+			gotPrompt := gen.gotContents[0].Parts[0].Text
 			want := wantTranslatePrompt(goldenText, "Explanatory", tc.wantConstraint)
 			if gotPrompt != want {
 				t.Errorf("prompt mismatch\n got: %q\nwant: %q", gotPrompt, want)
@@ -96,11 +77,14 @@ func TestTranslatePromptPerMode(t *testing.T) {
 			if !strings.Contains(gotPrompt, "Speaker emotion: Explanatory") {
 				t.Errorf("prompt misses the emotion line: %q", gotPrompt)
 			}
-			if payload.GenerationConfig.Temperature != 0.3 {
-				t.Errorf("temperature = %v, want 0.3", payload.GenerationConfig.Temperature)
+			if gen.gotConfig == nil || gen.gotConfig.Temperature == nil || *gen.gotConfig.Temperature != 0.3 {
+				t.Errorf("temperature = %v, want 0.3", gen.gotConfig)
 			}
-			if strings.Contains(string(gotBody), "responseMimeType") {
-				t.Errorf("payload carries responseMimeType, want it omitted: %s", gotBody)
+			if gen.gotConfig.ResponseMIMEType != "" {
+				t.Errorf("ResponseMIMEType = %q, want it omitted", gen.gotConfig.ResponseMIMEType)
+			}
+			if gen.gotConfig.ResponseSchema != nil {
+				t.Errorf("ResponseSchema is set, want it omitted")
 			}
 		})
 	}
@@ -108,27 +92,16 @@ func TestTranslatePromptPerMode(t *testing.T) {
 
 func TestTranslateChargeItemization(t *testing.T) {
 	var prompts []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
-			return
-		}
-		var payload generateRequest
-		if err := json.Unmarshal(body, &payload); err != nil {
-			t.Errorf("decode request payload: %v", err)
-			return
-		}
-		prompts = append(prompts, payload.Contents[0].Parts[0].Text)
-		w.Write(envelopeJSON(t, "ഗതിനിയമം"))
-	}))
-	defer srv.Close()
-
+	gen := &fakeGenerator{
+		text:         "ഗതിനിയമം",
+		promptTokens: 29,
+		candTokens:   11,
+	}
 	ledger := cost.NewLedger()
 	card := cost.DefaultRateCard()
-	tr, err := NewTranslator(testConfig(srv.URL), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "t"}), ledger, nil, card)
+	tr, err := newTranslatorForTest(testConfig(), ledger, card, gen)
 	if err != nil {
-		t.Fatalf("NewTranslator: %v", err)
+		t.Fatalf("newTranslatorForTest: %v", err)
 	}
 
 	reqs := []TranslateRequest{
@@ -140,6 +113,7 @@ func TestTranslateChargeItemization(t *testing.T) {
 		if _, err := tr.Translate(context.Background(), req); err != nil {
 			t.Fatalf("Translate(%s): %v", req.Mode, err)
 		}
+		prompts = append(prompts, gen.gotContents[0].Parts[0].Text)
 	}
 
 	charges := ledger.Charges()
@@ -148,33 +122,32 @@ func TestTranslateChargeItemization(t *testing.T) {
 	}
 	for i, req := range reqs {
 		want := cost.Charge{
-			Kind:      cost.ChargeTranslate,
-			TakeID:    req.SegmentID,
-			Units:     len(translatePrompt(req)),
-			UnitPrice: card.TranslatePerInputChar,
+			Kind:               cost.ChargeTranslate,
+			TakeID:             req.SegmentID,
+			PromptTokens:       29,
+			CandidateTokens:    11,
+			PromptUnitPrice:    card.TranslatePerPromptToken,
+			CandidateUnitPrice: card.TranslatePerCandidateToken,
 		}
 		if charges[i] != want {
 			t.Errorf("charge %d = %#v, want %#v", i, charges[i], want)
 		}
-		if charges[i].Total() != want.Total() {
-			t.Errorf("charge %d total = %v, want %v", i, charges[i].Total(), want.Total())
+		wantTotal := cost.Price(29)*card.TranslatePerPromptToken + cost.Price(11)*card.TranslatePerCandidateToken
+		if charges[i].Total() != wantTotal {
+			t.Errorf("charge %d total = %v, want %v", i, charges[i].Total(), wantTotal)
 		}
-		if charges[i].Units != len(prompts[i]) {
-			t.Errorf("charge %d units = %d, want the %d bytes actually sent", i, charges[i].Units, len(prompts[i]))
+		if charges[i].Units == len(prompts[i]) {
+			t.Errorf("charge %d billed on prompt character length %d, want UsageMetadata tokens", i, charges[i].Units)
 		}
 	}
 }
 
 func TestTranslateTrimsReply(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(envelopeJSON(t, "\n\t  ഒരു വസ്തു ചലനാവസ്ഥയിൽ തുടരുന്നു  \n"))
-	}))
-	defer srv.Close()
-
+	gen := &fakeGenerator{text: "\n\t  ഒരു വസ്തു ചലനാവസ്ഥയിൽ തുടരുന്നു  \n", promptTokens: 12, candTokens: 8}
 	ledger := cost.NewLedger()
-	tr, err := NewTranslator(testConfig(srv.URL), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "t"}), ledger, nil, cost.DefaultRateCard())
+	tr, err := newTranslatorForTest(testConfig(), ledger, cost.DefaultRateCard(), gen)
 	if err != nil {
-		t.Fatalf("NewTranslator: %v", err)
+		t.Fatalf("newTranslatorForTest: %v", err)
 	}
 
 	req := TranslateRequest{SegmentID: 8, Text: goldenText, TargetSlot: 7110 * time.Millisecond, Emotion: "Explanatory"}
@@ -190,28 +163,19 @@ func TestTranslateTrimsReply(t *testing.T) {
 
 func TestTranslateErrorsRecordNoCharges(t *testing.T) {
 	cases := []struct {
-		name    string
-		handler http.HandlerFunc
+		name string
+		gen  *fakeGenerator
 	}{
-		{"non-200", func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "upstream exploded", http.StatusInternalServerError)
-		}},
-		{"zero candidates", func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte(`{"candidates": []}`))
-		}},
-		{"empty text", func(w http.ResponseWriter, r *http.Request) {
-			w.Write(envelopeJSON(t, "   "))
-		}},
+		{"generate error", &fakeGenerator{err: errors.New("upstream exploded")}},
+		{"zero candidates", &fakeGenerator{candidates: []*genai.Candidate{}}},
+		{"empty text", &fakeGenerator{text: "   "}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(tc.handler)
-			defer srv.Close()
-
 			ledger := cost.NewLedger()
-			tr, err := NewTranslator(testConfig(srv.URL), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "t"}), ledger, nil, cost.DefaultRateCard())
+			tr, err := newTranslatorForTest(testConfig(), ledger, cost.DefaultRateCard(), tc.gen)
 			if err != nil {
-				t.Fatalf("NewTranslator: %v", err)
+				t.Fatalf("newTranslatorForTest: %v", err)
 			}
 
 			req := TranslateRequest{SegmentID: 8, Text: goldenText, TargetSlot: 7110 * time.Millisecond, Emotion: "Explanatory"}
@@ -226,28 +190,30 @@ func TestTranslateErrorsRecordNoCharges(t *testing.T) {
 }
 
 func TestNewTranslatorNilArguments(t *testing.T) {
-	cfg := testConfig("")
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "t"})
+	cfg := testConfig()
 	var rec ChargeRecorder = cost.NewLedger()
+	client := testSDKClient(t)
 
-	if _, err := NewTranslator(nil, ts, rec, nil, cost.DefaultRateCard()); err == nil {
+	if _, err := NewTranslator(nil, rec, cost.DefaultRateCard(), client); err == nil {
 		t.Error("nil config accepted, want error")
 	}
-	if _, err := NewTranslator(cfg, nil, rec, nil, cost.DefaultRateCard()); err == nil {
-		t.Error("nil token source accepted, want error")
-	}
-	if _, err := NewTranslator(cfg, ts, nil, nil, cost.DefaultRateCard()); err == nil {
+	if _, err := NewTranslator(cfg, nil, cost.DefaultRateCard(), client); err == nil {
 		t.Error("nil charge recorder accepted, want error")
 	}
-	built, err := NewTranslator(cfg, ts, rec, nil, cost.DefaultRateCard())
-	if err != nil {
-		t.Fatalf("valid arguments rejected: %v", err)
+	if _, err := NewTranslator(cfg, rec, cost.DefaultRateCard(), client); err != nil {
+		t.Errorf("valid arguments rejected: %v", err)
 	}
-	vt, ok := built.(*vertexTranslator)
-	if !ok {
-		t.Fatalf("NewTranslator returned %T, want *vertexTranslator", built)
+}
+
+func newTranslatorForTest(cfg *config.Config, rec ChargeRecorder, card cost.RateCard, gen contentGenerator) (Translator, error) {
+	if cfg == nil {
+		return nil, errors.New("gemini translator needs a config")
 	}
-	if vt.hc.Timeout != 60*time.Second {
-		t.Errorf("default client timeout = %v, want 60s", vt.hc.Timeout)
+	if rec == nil {
+		return nil, errors.New("gemini translator needs a charge recorder")
 	}
+	if gen == nil {
+		return nil, errors.New("gemini translator needs a generateContent client")
+	}
+	return &vertexTranslator{cfg: cfg, rec: rec, card: card, gen: gen}, nil
 }

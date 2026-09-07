@@ -3,21 +3,17 @@
 package gemini
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
-	"time"
+
+	"google.golang.org/genai"
 
 	"github.com/nrynss/ajilamu/internal/config"
 	"github.com/nrynss/ajilamu/internal/cost"
 	"github.com/nrynss/ajilamu/internal/types"
-	"golang.org/x/oauth2"
 )
 
 // segmentPrompt is the proven segmentation prompt from tools/validate_pipeline.py.
@@ -47,12 +43,6 @@ Return strictly valid JSON matching this schema:
 ]
 `
 
-// defaultBaseURL serves requests when the config base URL is empty.
-const defaultBaseURL = "https://aiplatform.googleapis.com"
-
-// defaultHTTPTimeout bounds one generateContent round trip on the default client.
-const defaultHTTPTimeout = 60 * time.Second
-
 // ChargeRecorder receives the itemized billing trail of API invocations.
 type ChargeRecorder interface {
 	// Add records one charge.
@@ -74,45 +64,9 @@ type Segmenter interface {
 	Segment(ctx context.Context, in Input) ([]types.Segment, error)
 }
 
-// generateRequest is the JSON body of one generateContent call.
-type generateRequest struct {
-	Contents         []generateContent        `json:"contents"`
-	GenerationConfig generateGenerationConfig `json:"generationConfig"`
-}
-
-// generateContent holds the role and ordered parts of one conversation turn.
-type generateContent struct {
-	Role  string         `json:"role"`
-	Parts []generatePart `json:"parts"`
-}
-
-// generatePart holds inline media or text. Go cannot express the union so
-// exactly one field carries a value.
-type generatePart struct {
-	InlineData *inlineData `json:"inlineData,omitempty"`
-	Text       string      `json:"text,omitempty"`
-}
-
-// inlineData carries base64 encoded media bytes.
-type inlineData struct {
-	MIMEType string `json:"mimeType"`
-	Data     string `json:"data"`
-}
-
-// generateGenerationConfig tunes one generateContent call.
-type generateGenerationConfig struct {
-	ResponseMIMEType string  `json:"responseMimeType,omitempty"`
-	Temperature      float64 `json:"temperature,omitempty"`
-}
-
-// generateResponse mirrors the Vertex AI envelope around the model output.
-type generateResponse struct {
-	Candidates []generateCandidate `json:"candidates"`
-}
-
-// generateCandidate holds one model reply.
-type generateCandidate struct {
-	Content generateContent `json:"content"`
+// contentGenerator is the Models.GenerateContent surface the clients call.
+type contentGenerator interface {
+	GenerateContent(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig) (*genai.GenerateContentResponse, error)
 }
 
 // wireSegment mirrors one snake_case segment inside the model JSON reply.
@@ -129,60 +83,52 @@ type wireSegment struct {
 // vertexSegmenter is the Vertex AI generateContent implementation of Segmenter.
 type vertexSegmenter struct {
 	cfg  *config.Config
-	ts   oauth2.TokenSource
 	rec  ChargeRecorder
-	hc   *http.Client
 	card cost.RateCard
+	gen  contentGenerator
 }
 
 // NewSegmenter builds the Vertex AI segmentation client.
-// A nil hc selects a client with a 60 second timeout.
-func NewSegmenter(cfg *config.Config, ts oauth2.TokenSource, rec ChargeRecorder, hc *http.Client, card cost.RateCard) (Segmenter, error) {
+// A nil client constructs the production ADC client.
+func NewSegmenter(cfg *config.Config, rec ChargeRecorder, card cost.RateCard, client *genai.Client) (Segmenter, error) {
 	if cfg == nil {
 		return nil, errors.New("gemini segmenter needs a config")
-	}
-	if ts == nil {
-		return nil, errors.New("gemini segmenter needs a token source")
 	}
 	if rec == nil {
 		return nil, errors.New("gemini segmenter needs a charge recorder")
 	}
-	if hc == nil {
-		hc = &http.Client{Timeout: defaultHTTPTimeout}
+	if client == nil {
+		built, err := newVertexClient(cfg)
+		if err != nil {
+			return nil, err
+		}
+		client = built
 	}
-	return &vertexSegmenter{cfg: cfg, ts: ts, rec: rec, hc: hc, card: card}, nil
+	if client.Models == nil {
+		return nil, errors.New("gemini segmenter needs a models service")
+	}
+	return &vertexSegmenter{cfg: cfg, rec: rec, card: card, gen: client.Models}, nil
 }
 
 // Segment sends the media buffer with the proven prompt and parses the reply.
-// The charge lands only after a successful HTTP round trip and a full parse.
+// The charge lands only after a successful round trip and a full parse.
 // A recorded charge therefore always implies a completed segmentation pass.
 func (v *vertexSegmenter) Segment(ctx context.Context, in Input) ([]types.Segment, error) {
-	tok, err := v.ts.Token()
-	if err != nil {
-		return nil, fmt.Errorf("fetch access token: %w", err)
+	contents := []*genai.Content{
+		genai.NewContentFromParts([]*genai.Part{
+			genai.NewPartFromBytes(in.Data, in.MIMEType),
+			genai.NewPartFromText(segmentPrompt),
+		}, genai.RoleUser),
 	}
-	endpoint, err := endpointURL(v.cfg)
-	if err != nil {
-		return nil, err
+	cfg := &genai.GenerateContentConfig{
+		ResponseMIMEType: "application/json",
+		ResponseSchema:   segmentResponseSchema(),
 	}
-	payload := generateRequest{
-		Contents: []generateContent{{
-			Role: "user",
-			Parts: []generatePart{
-				{InlineData: &inlineData{
-					MIMEType: in.MIMEType,
-					Data:     base64.StdEncoding.EncodeToString(in.Data),
-				}},
-				{Text: segmentPrompt},
-			},
-		}},
-		GenerationConfig: generateGenerationConfig{ResponseMIMEType: "application/json"},
-	}
-	body, err := postGenerate(ctx, v.hc, tok.AccessToken, endpoint, payload)
+	resp, err := v.gen.GenerateContent(ctx, v.cfg.GeminiModel, contents, cfg)
 	if err != nil {
 		return nil, err
 	}
-	text, err := envelopeText(body)
+	text, err := replyText(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -190,81 +136,87 @@ func (v *vertexSegmenter) Segment(ctx context.Context, in Input) ([]types.Segmen
 	if err != nil {
 		return nil, err
 	}
-	v.rec.Add(cost.Charge{
-		Kind:      cost.ChargeSegment,
-		TakeID:    0,
-		Units:     len(segmentPrompt),
-		UnitPrice: v.card.SegmentPerInputChar,
-	})
+	v.rec.Add(geminiCharge(cost.ChargeSegment, 0, resp.UsageMetadata, v.card))
 	return segments, nil
 }
 
-// endpointURL builds the generateContent URL from the config base URL, project,
-// location, and model. It never hardcodes the model or the location.
-func endpointURL(cfg *config.Config) (string, error) {
+// newVertexClient constructs the production ADC client.
+// It passes BackendVertexAI, Project, and Location. It passes no Credentials,
+// no APIKey, and no HTTPClient, so the SDK calls credentials.DetectDefault.
+func newVertexClient(cfg *config.Config) (*genai.Client, error) {
 	if cfg.GoogleCloudProject == "" {
-		return "", errors.New("config misses GOOGLE_CLOUD_PROJECT")
+		return nil, errors.New("config misses GOOGLE_CLOUD_PROJECT")
 	}
 	if cfg.GoogleCloudLocation == "" {
-		return "", errors.New("config misses GOOGLE_CLOUD_LOCATION")
+		return nil, errors.New("config misses GOOGLE_CLOUD_LOCATION")
 	}
 	if cfg.GeminiModel == "" {
-		return "", errors.New("config misses GEMINI_MODEL")
+		return nil, errors.New("config misses GEMINI_MODEL")
 	}
-	base := cfg.VertexOpenAPIBaseURL
-	if base == "" {
-		base = defaultBaseURL
-	}
-	return fmt.Sprintf("%s/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent",
-		strings.TrimSuffix(base, "/"), cfg.GoogleCloudProject, cfg.GoogleCloudLocation, cfg.GeminiModel), nil
+	return genai.NewClient(context.Background(), &genai.ClientConfig{
+		Backend:  genai.BackendVertexAI,
+		Project:  cfg.GoogleCloudProject,
+		Location: cfg.GoogleCloudLocation,
+	})
 }
 
-// postGenerate sends one authenticated generateContent payload and returns the body.
-// A non-200 reply becomes an error carrying the status and the trimmed body.
-func postGenerate(ctx context.Context, hc *http.Client, token, endpoint string, payload generateRequest) ([]byte, error) {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal generateContent payload: %w", err)
+// segmentResponseSchema is the strict JSON array schema for segmentation.
+func segmentResponseSchema() *genai.Schema {
+	return &genai.Schema{
+		Type: genai.TypeArray,
+		Items: &genai.Schema{
+			Type:     genai.TypeObject,
+			Required: []string{"id", "start_ms", "end_ms", "duration_ms", "text", "speaker", "emotion"},
+			Properties: map[string]*genai.Schema{
+				"id":          {Type: genai.TypeInteger},
+				"start_ms":    {Type: genai.TypeInteger},
+				"end_ms":      {Type: genai.TypeInteger},
+				"duration_ms": {Type: genai.TypeInteger},
+				"text":        {Type: genai.TypeString},
+				"speaker":     {Type: genai.TypeString},
+				"emotion":     {Type: genai.TypeString},
+			},
+		},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
-	if err != nil {
-		return nil, fmt.Errorf("build generateContent request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := hc.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("generateContent request: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read generateContent reply: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("generateContent failed: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return body, nil
 }
 
-// envelopeText extracts candidates[0].content.parts[0].text from the reply.
+// replyText extracts the first candidate text from a generateContent reply.
 // It rejects replies with zero candidates and replies without text.
-func envelopeText(body []byte) (string, error) {
-	var env generateResponse
-	if err := json.Unmarshal(body, &env); err != nil {
-		return "", fmt.Errorf("parse generateContent envelope: %w", err)
+func replyText(resp *genai.GenerateContentResponse) (string, error) {
+	if resp == nil {
+		return "", errors.New("generateContent reply is missing")
 	}
-	if len(env.Candidates) == 0 {
+	if len(resp.Candidates) == 0 {
 		return "", errors.New("generateContent reply carries no candidates")
 	}
-	parts := env.Candidates[0].Content.Parts
-	if len(parts) == 0 {
+	content := resp.Candidates[0].Content
+	if content == nil || len(content.Parts) == 0 {
 		return "", errors.New("generateContent reply carries no parts")
 	}
-	if strings.TrimSpace(parts[0].Text) == "" {
+	text := strings.TrimSpace(resp.Text())
+	if text == "" {
 		return "", errors.New("generateContent reply carries an empty parts text")
 	}
-	return parts[0].Text, nil
+	return text, nil
+}
+
+// geminiCharge maps UsageMetadata token counts onto one Charge.
+// A nil usage records zero tokens. Unit prices still come from the rate card.
+func geminiCharge(kind cost.ChargeKind, takeID int, usage *genai.GenerateContentResponseUsageMetadata, card cost.RateCard) cost.Charge {
+	c := cost.Charge{Kind: kind, TakeID: takeID}
+	switch kind {
+	case cost.ChargeSegment:
+		c.PromptUnitPrice = card.SegmentPerPromptToken
+		c.CandidateUnitPrice = card.SegmentPerCandidateToken
+	case cost.ChargeTranslate:
+		c.PromptUnitPrice = card.TranslatePerPromptToken
+		c.CandidateUnitPrice = card.TranslatePerCandidateToken
+	}
+	if usage != nil {
+		c.PromptTokens = int(usage.PromptTokenCount)
+		c.CandidateTokens = int(usage.CandidatesTokenCount)
+	}
+	return c
 }
 
 // decodeSegments parses the model JSON and maps it onto typed segments.

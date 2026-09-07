@@ -66,20 +66,16 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 			expectedErr: "CLICKHOUSE_PASSWORD",
 		},
 		{
-			name: "missing Google credentials",
+			name: "missing GOOGLE_CLOUD_PROJECT",
 			modifyEnv: func(env map[string]string) {
 				delete(env, "GOOGLE_CLOUD_PROJECT")
-				delete(env, "GOOGLE_APPLICATION_CREDENTIALS")
-				delete(env, "GEMINI_API_KEY")
 			},
 			expectedErr: "GOOGLE_CLOUD_PROJECT",
 		},
 		{
-			name: "empty Google credentials",
+			name: "empty GOOGLE_CLOUD_PROJECT",
 			modifyEnv: func(env map[string]string) {
-				env["GOOGLE_CLOUD_PROJECT"] = ""
-				env["GOOGLE_APPLICATION_CREDENTIALS"] = " "
-				env["GEMINI_API_KEY"] = ""
+				env["GOOGLE_CLOUD_PROJECT"] = " "
 			},
 			expectedErr: "GOOGLE_CLOUD_PROJECT",
 		},
@@ -104,9 +100,9 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 	}
 }
 
-// TestGoogleCredentialAlternatives verifies that providing any one Google credential succeeds.
-func TestGoogleCredentialAlternatives(t *testing.T) {
-	t.Run("GOOGLE_APPLICATION_CREDENTIALS alone satisfies requirement", func(t *testing.T) {
+// TestGoogleProjectIsRequired verifies that alternate credential env vars do not replace the project.
+func TestGoogleProjectIsRequired(t *testing.T) {
+	t.Run("GOOGLE_APPLICATION_CREDENTIALS alone fails", func(t *testing.T) {
 		env := map[string]string{
 			"CLICKHOUSE_HOST":                "ch.example.com",
 			"CLICKHOUSE_USER":                "default",
@@ -115,15 +111,18 @@ func TestGoogleCredentialAlternatives(t *testing.T) {
 		}
 
 		cfg, err := LoadFromMap(env)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		if err == nil {
+			t.Fatal("expected error naming GOOGLE_CLOUD_PROJECT, got nil")
 		}
-		if cfg.GoogleApplicationCredentials != "/path/to/key.json" {
-			t.Fatalf("expected /path/to/key.json, got %q", cfg.GoogleApplicationCredentials)
+		if cfg != nil {
+			t.Fatalf("expected nil config on failure, got %+v", cfg)
+		}
+		if !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
+			t.Fatalf("expected error containing GOOGLE_CLOUD_PROJECT, got %q", err.Error())
 		}
 	})
 
-	t.Run("GEMINI_API_KEY alone satisfies requirement", func(t *testing.T) {
+	t.Run("GEMINI_API_KEY alone fails", func(t *testing.T) {
 		env := map[string]string{
 			"CLICKHOUSE_HOST":     "ch.example.com",
 			"CLICKHOUSE_USER":     "default",
@@ -132,11 +131,14 @@ func TestGoogleCredentialAlternatives(t *testing.T) {
 		}
 
 		cfg, err := LoadFromMap(env)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		if err == nil {
+			t.Fatal("expected error naming GOOGLE_CLOUD_PROJECT, got nil")
 		}
-		if cfg.GeminiAPIKey != "test-api-key" {
-			t.Fatalf("expected test-api-key, got %q", cfg.GeminiAPIKey)
+		if cfg != nil {
+			t.Fatalf("expected nil config on failure, got %+v", cfg)
+		}
+		if !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
+			t.Fatalf("expected error containing GOOGLE_CLOUD_PROJECT, got %q", err.Error())
 		}
 	})
 }
@@ -168,8 +170,25 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ClickHouseSecure != true {
 		t.Errorf("expected default ClickHouseSecure true, got %v", cfg.ClickHouseSecure)
 	}
-	if cfg.GoogleCloudLocation != "us-central1" {
-		t.Errorf("expected default GoogleCloudLocation 'us-central1', got %q", cfg.GoogleCloudLocation)
+	if cfg.GoogleCloudLocation != "global" {
+		t.Errorf("expected default GoogleCloudLocation 'global', got %q", cfg.GoogleCloudLocation)
+	}
+	if cfg.GoogleApplicationCredentials != "" {
+		t.Errorf("expected empty GoogleApplicationCredentials, got %q", cfg.GoogleApplicationCredentials)
+	}
+}
+
+// TestLoadStripsGoogleModelPrefix verifies the Model Garden prefix cannot reach Vertex.
+func TestLoadStripsGoogleModelPrefix(t *testing.T) {
+	env := validBaseEnv()
+	env["GEMINI_MODEL"] = "google/gemini-3.8-flash"
+
+	cfg, err := LoadFromMap(env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.GeminiModel != "gemini-3.8-flash" {
+		t.Errorf("GeminiModel = %q, want gemini-3.8-flash", cfg.GeminiModel)
 	}
 }
 
@@ -210,9 +229,6 @@ func TestLoadValidCustomConfiguration(t *testing.T) {
 	if cfg.GeminiModel != "gemini-2.0-flash" {
 		t.Errorf("expected GeminiModel 'gemini-2.0-flash', got %q", cfg.GeminiModel)
 	}
-	if cfg.GeminiAPIKey != "my-gemini-key" {
-		t.Errorf("expected GeminiAPIKey 'my-gemini-key', got %q", cfg.GeminiAPIKey)
-	}
 	if cfg.GoogleCloudProject != "prod-project" {
 		t.Errorf("expected GoogleCloudProject 'prod-project', got %q", cfg.GoogleCloudProject)
 	}
@@ -221,9 +237,6 @@ func TestLoadValidCustomConfiguration(t *testing.T) {
 	}
 	if cfg.GoogleApplicationCredentials != "/var/run/secrets/google.json" {
 		t.Errorf("expected GoogleApplicationCredentials '/var/run/secrets/google.json', got %q", cfg.GoogleApplicationCredentials)
-	}
-	if cfg.VertexOpenAPIBaseURL != "https://vertex.custom.endpoint" {
-		t.Errorf("expected VertexOpenAPIBaseURL 'https://vertex.custom.endpoint', got %q", cfg.VertexOpenAPIBaseURL)
 	}
 	if cfg.ClickHouseHost != "prod-ch.cloud" {
 		t.Errorf("expected ClickHouseHost 'prod-ch.cloud', got %q", cfg.ClickHouseHost)

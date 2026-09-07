@@ -60,3 +60,13 @@ A bucket in `us-central1` archives raw uploads and final renders. Traffic betwee
 2. **ClickHouse Cloud:** Stores the commit DAG, take ledger, and pre-computed waveform peak arrays.
 3. **Vertex AI (`global`):** Runs Gemini 3.8 Flash for segmentation and translation.
 4. **Cloud Text-to-Speech:** Generates Chirp 3 HD voices in Malayalam, German, and Spanish.
+
+## Credentials
+
+The GCE host runs under an attached service account with the Vertex AI User role.
+The metadata server supplies the token. No key file reaches the virtual machine.
+No credential reaches an image layer.
+
+A developer machine authenticates with `gcloud auth application-default login`.
+It may instead point `GOOGLE_APPLICATION_CREDENTIALS` at a key file it already holds.
+Both paths satisfy `credentials.DetectDefault`. The code reads the same in both places.

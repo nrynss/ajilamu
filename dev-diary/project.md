@@ -142,7 +142,8 @@ The filesystem stores the raw discrete WAV takes and video files. ClickHouse sto
 | Frontend | Svelte 5 with runes, Vite |
 | Cloud Host | Google Compute Engine (e2-standard-2 in us-central1) |
 
-All AI services use Google Cloud.
+All AI services use Google Cloud. Gemini calls go through `google.golang.org/genai` on Vertex AI.
+The SDK authenticates with Application Default Credentials. Production passes no API key.
 
 ---
 

@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"strings"
 	"time"
 
-	"golang.org/x/oauth2"
+	"google.golang.org/genai"
 
 	"github.com/nrynss/ajilamu/internal/config"
 	"github.com/nrynss/ajilamu/internal/cost"
@@ -105,67 +103,54 @@ func translatePrompt(req TranslateRequest) string {
 // vertexTranslator is the Vertex AI generateContent implementation of Translator.
 type vertexTranslator struct {
 	cfg  *config.Config
-	ts   oauth2.TokenSource
 	rec  ChargeRecorder
-	hc   *http.Client
 	card cost.RateCard
+	gen  contentGenerator
 }
 
 // NewTranslator builds the Vertex AI translation client.
-// A nil hc selects a client with a 60 second timeout.
-func NewTranslator(cfg *config.Config, ts oauth2.TokenSource, rec ChargeRecorder, hc *http.Client, card cost.RateCard) (Translator, error) {
+// A nil client constructs the production ADC client.
+func NewTranslator(cfg *config.Config, rec ChargeRecorder, card cost.RateCard, client *genai.Client) (Translator, error) {
 	if cfg == nil {
 		return nil, errors.New("gemini translator needs a config")
-	}
-	if ts == nil {
-		return nil, errors.New("gemini translator needs a token source")
 	}
 	if rec == nil {
 		return nil, errors.New("gemini translator needs a charge recorder")
 	}
-	if hc == nil {
-		hc = &http.Client{Timeout: defaultHTTPTimeout}
+	if client == nil {
+		built, err := newVertexClient(cfg)
+		if err != nil {
+			return nil, err
+		}
+		client = built
 	}
-	return &vertexTranslator{cfg: cfg, ts: ts, rec: rec, hc: hc, card: card}, nil
+	if client.Models == nil {
+		return nil, errors.New("gemini translator needs a models service")
+	}
+	return &vertexTranslator{cfg: cfg, rec: rec, card: card, gen: client.Models}, nil
 }
 
 // Translate sends one line with its slot constraint and returns the Malayalam
 // text. The charge lands only after a successful round trip and a non-empty
 // reply. A recorded charge therefore always implies a completed translation.
 func (v *vertexTranslator) Translate(ctx context.Context, req TranslateRequest) (string, error) {
-	tok, err := v.ts.Token()
-	if err != nil {
-		return "", fmt.Errorf("fetch access token: %w", err)
-	}
-	endpoint, err := endpointURL(v.cfg)
-	if err != nil {
-		return "", err
-	}
 	prompt := translatePrompt(req)
-	payload := generateRequest{
-		Contents: []generateContent{{
-			Role:  "user",
-			Parts: []generatePart{{Text: prompt}},
-		}},
-		GenerationConfig: generateGenerationConfig{Temperature: 0.3},
+	contents := []*genai.Content{
+		genai.NewContentFromParts([]*genai.Part{
+			genai.NewPartFromText(prompt),
+		}, genai.RoleUser),
 	}
-	body, err := postGenerate(ctx, v.hc, tok.AccessToken, endpoint, payload)
+	cfg := &genai.GenerateContentConfig{
+		Temperature: genai.Ptr(float32(0.3)),
+	}
+	resp, err := v.gen.GenerateContent(ctx, v.cfg.GeminiModel, contents, cfg)
 	if err != nil {
 		return "", err
 	}
-	text, err := envelopeText(body)
+	out, err := replyText(resp)
 	if err != nil {
 		return "", err
 	}
-	out := strings.TrimSpace(text)
-	if out == "" {
-		return "", errors.New("translation reply is empty after trimming")
-	}
-	v.rec.Add(cost.Charge{
-		Kind:      cost.ChargeTranslate,
-		TakeID:    req.SegmentID,
-		Units:     len(prompt),
-		UnitPrice: v.card.TranslatePerInputChar,
-	})
+	v.rec.Add(geminiCharge(cost.ChargeTranslate, req.SegmentID, resp.UsageMetadata, v.card))
 	return out, nil
 }
