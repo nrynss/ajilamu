@@ -62,8 +62,8 @@ The system allows audio to extend into trailing silence gaps. If speech still co
 requires:   T3.2
 fixture-ok: yes
 size:       L · frontier
-owns:       internal/assemble/duck.go
-status:     not-started
+owns:       internal/assemble/duck.go, internal/assemble/duck_test.go
+status:     claimed:t33-impl-cursor
 ```
 Implement dynamic ducking using ffmpeg filters.
 
@@ -98,8 +98,8 @@ Use descriptive output names like `dubbed_ducked.mp4` and `dubbed_replaced.mp4`.
 requires:   T1.1, T0.3
 fixture-ok: yes
 size:       S · mid
-owns:       internal/assemble/peaks.go
-status:     not-started
+owns:       internal/assemble/peaks.go, internal/assemble/peaks_test.go
+status:     done
 ```
 Compute 64 to 128 normalized `uint8` peak values per take during rendering. Store vectors in ClickHouse for instant timeline waveform rendering.
 
@@ -131,3 +131,15 @@ Pre-computing waveform peaks eliminates heavy audio file reads during user scrub
   Crossfade overlaps colliding speech through the fade window and records it.
   `Overlay` mixes the speech layer onto the bed without ducking.
   Fixture segments 3 and 4 use Gap. Event start times round to the nearest 44.1 kHz frame.
+- **T3.3:** `Duck` keys `sidechaincompress` on the speech layer. The mix uses `amix` with `normalize=0`.
+  Compressor settings are threshold 0.016, ratio 12, attack 5 ms, and release 80 ms.
+  The knee is hard. Detection is peak. Makeup and mix stay at 1.
+  The published mix lasts as long as the bed.
+  A one second pad keeps the compressor from dropping the tail.
+  The first `amix` input is the original bed so `duration=first` holds that length.
+  `SeparateMusic` skips the compressor and calls `Overlay`.
+  Failed renders stay private. The output path never replaces an input.
+- **T3.5:** `Peaks` decodes a take to float PCM and returns 128 `uint8` values.
+  Each bin holds the max-abs of its frames, scaled to the take peak on 0 to 255.
+  A silent take is all zeros. The same path returns an identical slice.
+  T4.6 stores the vector on take rows. This task only computes it.
