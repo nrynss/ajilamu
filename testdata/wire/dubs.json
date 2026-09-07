@@ -1,0 +1,26 @@
+{
+  "dubs": [
+    {
+      "id": "6d9c2f1a-3b4e-4a8d-9c1e-7f2b5a3d8c40",
+      "title": "NASA 75-second clip",
+      "languages": [
+        "ml"
+      ],
+      "readiness": "review",
+      "total_nanodollars": 23414000,
+      "created_at": "2026-09-07T18:00:10Z",
+      "updated_at": "2026-09-07T18:06:00Z"
+    },
+    {
+      "id": "2e7a1b3c-5d4f-4b8e-a2c9-6f3d1e8b9a50",
+      "title": "Lunar Promo (French)",
+      "languages": [
+        "fr"
+      ],
+      "readiness": "ready",
+      "total_nanodollars": 15390000,
+      "created_at": "2026-08-30T09:12:00Z",
+      "updated_at": "2026-09-01T16:40:00Z"
+    }
+  ]
+}

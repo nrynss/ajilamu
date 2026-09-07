@@ -89,7 +89,7 @@ requires:   T1.1
 fixture-ok: no
 size:       M · mid
 owns:       internal/api/wire.go, web/src/lib/types.ts
-status:     not-started
+status:     done
 ```
 Define JSON payloads and server-sent events in Go and TypeScript.
 
