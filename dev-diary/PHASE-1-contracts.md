@@ -22,7 +22,7 @@ requires:   T0.3
 fixture-ok: no
 size:       M · frontier
 owns:       internal/types/types.go
-status:     not-started
+status:     done
 ```
 Define core Go structures: `Segment`, `Speaker`, `Take`, `Repair`, and `Fit`.
 
