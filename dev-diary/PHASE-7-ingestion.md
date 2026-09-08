@@ -137,9 +137,117 @@ Provide a one-click button to launch sample projects using the committed NASA 75
 
 ---
 
+### T7.2a: Ledger read settings
+```yaml
+requires:   T4.3, T4.5, T4.7
+fixture-ok: yes
+size:       S · light
+owns:       internal/ledger/client.go, internal/ledger/commits.go, internal/ledger/priors.go,
+            internal/ledger/history.go, internal/ledger/commits_test.go,
+            internal/ledger/priors_test.go, internal/ledger/history_test.go
+status:     not-started
+```
+Give every ClickHouse read the settings it needs, from one place.
+
+**Why this task exists.** `internal/ledger` holds three readers and only one pins its settings.
+T4.5 pinned `output_format_json_quote_64bit_integers` and
+`max_recursive_cte_evaluation_depth` in `history.go`, because T4.5 owned that file alone.
+`commits.go` and `priors.go` pin neither, and both decode `UInt64` out of JSON. Measured on
+ClickHouse 26.8.2.7 with the quoting setting at 1, `selectCommit` returns `"version_seq":"7"`
+and `selectDurationPrior` returns `"population_samples":"0"`. `Commit.VersionSeq` and
+`durationPriorStats.PopulationSamples` then fail to unmarshal.
+
+The runtime default is 0 on a stock server and on the live Cloud instance, so nothing is broken
+today. A settings profile that turns quoting on breaks two readers and not the third, and the
+failure reads as a client bug.
+
+Build one request helper and route all three readers through it. Copying the pin into each new
+reader is what created this, and T7.3 and T7.2c both add readers.
+
+**Done when:** One helper builds every ClickHouse read request. A test drives each of the three
+readers against a stand-in that serves the quoted shape and asserts each still decodes. No
+reader sets a setting on its own.
+
+---
+
+### T7.2b: Readiness probe budget
+```yaml
+requires:   T7.0
+fixture-ok: yes
+size:       XS · light
+owns:       internal/api/server.go, internal/api/server_test.go
+status:     not-started
+```
+Give `GET /api/ledger/ready` a budget that matches the deployment target.
+
+`probeClickHouse` bounds `clickHouseProbeClient` at 3 seconds against unauthenticated `/ping`.
+Measured against the live ClickHouse Cloud instance on 2026-09-08: a warm ping answers in under
+a second, but the first ping on a cold route took 13 seconds and failed both a 3 second and a 10
+second budget. An authenticated query answered in 3. With the service fully idle, an
+authenticated call needed more than 25 seconds.
+
+The budget is fine steady-state and too tight cold, which is when a readiness route gets asked:
+at startup, after a deploy, after idle. The route then reports that ClickHouse did not answer a
+ping while the ledger is healthy and merely waking.
+
+Decide the contract rather than only raising the number. A waking service is neither
+misconfigured nor broken, and the route says nothing about that today. Keep the route fast when
+the answer is already known.
+
+**Owns contention.** Three not-started tasks name `internal/api/server.go`: this one, T7.2c for
+its mux line, and T7.4a for its settings store. The graph rule forbids two concurrent tasks
+owning one path, so run these three serially in any order. Whoever claims one first edits the
+line before starting, as usual. T5.5 owns `web/src/lib/tabs/` and is done, so T7.2c takes
+`HistoryTab.svelte` without contention.
+
+**Done when:** A cold ClickHouse answers ready within the route's budget, or the route
+distinguishes waking from unreachable in its response. The route still fails fast when
+credentials are absent.
+
+---
+
+### T7.2c: Ledger read routes
+```yaml
+requires:   T7.0, T7.2a, T4.5, T5.5
+fixture-ok: yes
+size:       M · frontier
+owns:       internal/api/history.go, internal/api/history_test.go,
+            internal/api/server.go, web/src/lib/tabs/HistoryTab.svelte
+status:     not-started
+```
+Serve timeline state, the commit DAG, and branch comparison over HTTP.
+
+**Why this task exists.** No task read the ledger for the UI. T5.5 built the History tab against
+mock JSON and closed. P7 shipped and mounts `healthz`, `ledger/ready`, `GET /api/dubs`,
+`POST /api/config`, `POST /api/dubs/new` and `POST /api/dubs/sample`. None reads timeline state,
+commits, or costs. `cmd/ajilamu/main.go` imports `internal/ledger` only to build the client for
+the shutdown flush. So `TimelineAt` and `CompareBranches` shipped, were reviewed, were probed
+against a live server, and have no caller. Found on 2026-09-08. It is the same cause T7.0 names.
+Work nobody owns never gets built.
+
+T7.0 mounts handlers and owns nothing inside them, so this task writes the handler and T7.0's
+mux gains a line.
+
+**This task settles the branch cost question.** The P4 Handoff Log records that
+`BranchView.CostUSD` sums charges over an ancestry of commit ids, so it drops every whole pass
+charge carrying the default empty `commit_id`. A measured 0.75 whole pass charge left a 0.7508
+dub reporting 0.0003 and 0.0006 per branch. The number matches the stated contract and the field
+name does not. As the first caller, this task either attributes a whole pass charge to a commit
+at write time or renames the field to say it counts attributed charges only. Read that finding
+before choosing. Check whether an unattributed charge can reach `charges_raw` at all, because
+`internal/gemini/segment.go` and `internal/tts/chirp.go` build a `cost.Charge` with no
+`CommitID` while `internal/ledger/takes.go` rejects an empty one.
+
+**Done when:** The History tab renders a real commit DAG from ClickHouse rather than fixture
+JSON. Time travel to a commit returns that commit's timeline. Branch comparison returns a cost
+that a reviewer can tie to `charges` by hand, and the field's name matches what it counts. A
+clone with no credentials still serves the tab from fixtures.
+
+---
+
 ### T7.3: Run orchestration and progress ★
 ```yaml
-requires:   T1.4, T2.7, T3.4
+requires:   T1.4, T2.7, T3.4, T7.2a
 fixture-ok: yes
 size:       L · frontier
 owns:       internal/api/run.go, internal/api/events.go
