@@ -52,8 +52,9 @@ size:       M · mid
 owns:       deploy/, Caddyfile, systemd/
 status:     not-started
 ```
-Provision the machine described in [infrastructure.md](infrastructure.md). Run the Go server,
-the mcp-clickhouse container for agent reads, Caddy as reverse proxy, a 50 GB SSD at
+Provision the machine described in [infrastructure.md](infrastructure.md). Build the
+mcp-clickhouse image from `deploy/mcp-clickhouse/`, because no published image exists.
+Run the Go server, that container for agent reads, Caddy as reverse proxy, a 50 GB SSD at
 `/data/storage`, and the archive bucket.
 
 Provision configuration the way "Configuration and Secrets" in that document describes. Create

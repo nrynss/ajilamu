@@ -22,9 +22,7 @@ DIARY = ROOT / "dev-diary"
 
 # Modules named in the project.md stack table that are deliberately not in go.mod
 # yet, each with the task that lands it. Remove the entry when the task lands.
-PENDING_MODULES = {
-    "google.golang.org/adk/v2": "T6.6 lands the pin",
-}
+PENDING_MODULES = {}
 
 findings = []
 

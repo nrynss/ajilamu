@@ -51,6 +51,8 @@ const (
 	ChargeTranslate = "translate"
 	// ChargeSynthesize bills a Chirp voice render.
 	ChargeSynthesize = "synthesize"
+	// ChargeAgent bills an editor agent turn.
+	ChargeAgent = "agent"
 )
 
 // CommitAuthor names who caused a commit.

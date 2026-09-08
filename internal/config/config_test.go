@@ -387,3 +387,74 @@ func TestLoadWithOsEnv(t *testing.T) {
 		t.Errorf("expected Port '3000', got %q", cfg.Port)
 	}
 }
+
+// TestMCPOptionalSettingsAreRead reads all five MCP variables as settings.
+func TestMCPOptionalSettingsAreRead(t *testing.T) {
+	env := validBaseEnv()
+	env["CLICKHOUSE_MCP_URL"] = "http://127.0.0.1:8000/mcp"
+	env["CLICKHOUSE_MCP_SERVER_TRANSPORT"] = "http"
+	env["CLICKHOUSE_MCP_ALLOWED_HOSTS"] = "127.0.0.1:8000,localhost:8000"
+	env["CLICKHOUSE_MCP_AUTH_TOKEN"] = "token-value"
+	env["CLICKHOUSE_READONLY_PASSWORD"] = "readonly-pass"
+
+	cfg, err := LoadFromMap(env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ClickHouseMCPURL != "http://127.0.0.1:8000/mcp" {
+		t.Errorf("ClickHouseMCPURL = %q", cfg.ClickHouseMCPURL)
+	}
+	if cfg.ClickHouseMCPServerTransport != "http" {
+		t.Errorf("ClickHouseMCPServerTransport = %q", cfg.ClickHouseMCPServerTransport)
+	}
+	if cfg.ClickHouseMCPAllowedHosts != "127.0.0.1:8000,localhost:8000" {
+		t.Errorf("ClickHouseMCPAllowedHosts = %q", cfg.ClickHouseMCPAllowedHosts)
+	}
+	if cfg.ClickHouseMCPAuthToken != "token-value" {
+		t.Errorf("ClickHouseMCPAuthToken = %q", cfg.ClickHouseMCPAuthToken)
+	}
+	if cfg.ClickHouseReadonlyPassword != "readonly-pass" {
+		t.Errorf("ClickHouseReadonlyPassword = %q", cfg.ClickHouseReadonlyPassword)
+	}
+	if !cfg.MCPConfigured() {
+		t.Error("MCPConfigured() = false, want true with a URL and token")
+	}
+}
+
+// TestMissingMCPDisablesAgentNotServer pins the optional contract.
+// A missing MCP setting disables the editor agent and never stops the server.
+func TestMissingMCPDisablesAgentNotServer(t *testing.T) {
+	t.Run("fixture mode", func(t *testing.T) {
+		cfg, err := LoadFromMap(map[string]string{})
+		if err != nil {
+			t.Fatalf("LoadFromMap without MCP settings: %v", err)
+		}
+		if cfg.MCPConfigured() {
+			t.Error("MCPConfigured() = true without a URL and token")
+		}
+	})
+
+	t.Run("production without MCP", func(t *testing.T) {
+		env := validBaseEnv()
+		env["ENV"] = "production"
+		cfg, err := LoadFromMap(env)
+		if err != nil {
+			t.Fatalf("production without MCP settings: %v", err)
+		}
+		if cfg.MCPConfigured() {
+			t.Error("MCPConfigured() = true without a URL and token")
+		}
+	})
+
+	t.Run("token alone does not configure", func(t *testing.T) {
+		env := validBaseEnv()
+		env["CLICKHOUSE_MCP_AUTH_TOKEN"] = "token-value"
+		cfg, err := LoadFromMap(env)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.MCPConfigured() {
+			t.Error("MCPConfigured() = true without a URL")
+		}
+	})
+}

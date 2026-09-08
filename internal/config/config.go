@@ -35,6 +35,14 @@ type Config struct {
 	ClickHouseKeySecret string
 	ClickHouseServiceID string
 	ClickHouseOrgID     string
+
+	// ClickHouse MCP settings for the editor agent read path. All optional.
+	// A missing value disables the agent and never stops the server.
+	ClickHouseMCPURL             string
+	ClickHouseMCPServerTransport string
+	ClickHouseMCPAllowedHosts    string
+	ClickHouseMCPAuthToken       string
+	ClickHouseReadonlyPassword   string
 }
 
 // LookupEnvFunc reads an environment variable by name.
@@ -145,6 +153,11 @@ func LoadFromLookup(lookup LookupEnvFunc) (*Config, error) {
 		ClickHouseKeySecret:          get("CLICKHOUSE_KEY_SECRET"),
 		ClickHouseServiceID:          get("CLICKHOUSE_SERVICE_ID"),
 		ClickHouseOrgID:              get("CLICKHOUSE_ORG_ID"),
+		ClickHouseMCPURL:             get("CLICKHOUSE_MCP_URL"),
+		ClickHouseMCPServerTransport: get("CLICKHOUSE_MCP_SERVER_TRANSPORT"),
+		ClickHouseMCPAllowedHosts:    get("CLICKHOUSE_MCP_ALLOWED_HOSTS"),
+		ClickHouseMCPAuthToken:       get("CLICKHOUSE_MCP_AUTH_TOKEN"),
+		ClickHouseReadonlyPassword:   get("CLICKHOUSE_READONLY_PASSWORD"),
 	}
 	if cfg.Env == "production" {
 		if err := cfg.RequireProductionCredentials(); err != nil {
@@ -194,4 +207,14 @@ func (c *Config) RequireProductionCredentials() error {
 		return err
 	}
 	return c.RequireGoogleCloud()
+}
+
+// MCPConfigured reports whether the editor agent holds the settings it needs.
+// A false result disables the agent. It never stops the server.
+func (c *Config) MCPConfigured() bool {
+	if c == nil {
+		return false
+	}
+	return strings.TrimSpace(c.ClickHouseMCPURL) != "" &&
+		strings.TrimSpace(c.ClickHouseMCPAuthToken) != ""
 }

@@ -22,7 +22,7 @@ export type FitState = "fits" | "too_long" | "too_short"
 export type RepairKind = "none" | "atempo" | "rewrite" | "manual"
 
 // ChargeKind names the billed API operation.
-export type ChargeKind = "segment" | "translate" | "synthesize"
+export type ChargeKind = "segment" | "translate" | "synthesize" | "agent"
 
 // CommitAuthor names who caused a commit.
 export type CommitAuthor = "agent" | "command_bar" | "manual_ui"

@@ -62,7 +62,13 @@ A bucket in `us-central1` archives raw uploads and final renders. Traffic betwee
 4. **Cloud Text-to-Speech:** Generates Chirp 3 HD voices in Malayalam, German, and Spanish.
 
 mcp-clickhouse runs only for editor-agent reads. It listens on localhost and never reaches
-Caddy. It connects to the ClickHouse Cloud service with a dedicated read-only user.
+Caddy. It connects to the ClickHouse Cloud service with a dedicated read-only user. No
+published image exists, so `deploy/mcp-clickhouse/` builds the image from a pinned PyPI
+release.
+
+The `mcp_readonly` SELECT grant is the security boundary. The server flag
+`CLICKHOUSE_ALLOW_WRITE_ACCESS=false` guards against accidents. The upstream README
+declines to call that flag a boundary.
 
 ## Credentials
 

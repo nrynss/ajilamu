@@ -1,0 +1,26 @@
+# mcp-clickhouse for the Ajilamu editor agent read path.
+#
+# No published image exists, so compose builds deploy/mcp-clickhouse.
+# The server listens on host loopback and never reaches Caddy.
+services:
+  mcp-clickhouse:
+    build: .
+    # The container joins the host network so the server binds host loopback.
+    # Docker publishes no port, so nothing off the machine reaches it.
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST}
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8443}
+      # The writer user never reaches this container.
+      CLICKHOUSE_USER: mcp_readonly
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_READONLY_PASSWORD}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-default}
+      CLICKHOUSE_SECURE: ${CLICKHOUSE_SECURE:-true}
+      # The flag guards against accidents. The SELECT grant is the boundary.
+      CLICKHOUSE_ALLOW_WRITE_ACCESS: "false"
+      CLICKHOUSE_MCP_SERVER_TRANSPORT: ${CLICKHOUSE_MCP_SERVER_TRANSPORT:-http}
+      CLICKHOUSE_MCP_BIND_HOST: 127.0.0.1
+      CLICKHOUSE_MCP_BIND_PORT: "8000"
+      CLICKHOUSE_MCP_ALLOWED_HOSTS: ${CLICKHOUSE_MCP_ALLOWED_HOSTS:-127.0.0.1:8000,localhost:8000}
+      CLICKHOUSE_MCP_AUTH_TOKEN: ${CLICKHOUSE_MCP_AUTH_TOKEN}

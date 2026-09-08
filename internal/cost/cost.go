@@ -15,6 +15,8 @@ const (
 	ChargeTranslate
 	// ChargeSynthesize represents Chirp 3 HD TTS.
 	ChargeSynthesize
+	// ChargeAgent represents an editor agent turn on Gemini.
+	ChargeAgent
 )
 
 // String returns a textual representation of the charge kind.
@@ -26,6 +28,8 @@ func (k ChargeKind) String() string {
 		return "translate"
 	case ChargeSynthesize:
 		return "synthesize"
+	case ChargeAgent:
+		return "agent"
 	default:
 		return "unknown"
 	}
@@ -118,6 +122,10 @@ type RateCard struct {
 	TranslatePerPromptToken Price
 	// TranslatePerCandidateToken sets the price per candidate token for Gemini translation.
 	TranslatePerCandidateToken Price
+	// AgentPerPromptToken sets the price per prompt token for an editor agent turn.
+	AgentPerPromptToken Price
+	// AgentPerCandidateToken sets the price per candidate token for an editor agent turn.
+	AgentPerCandidateToken Price
 }
 
 // DefaultRateCard provides standard pricing based on current Google Cloud rates.
@@ -131,6 +139,8 @@ func DefaultRateCard() RateCard {
 		SegmentPerCandidateToken:   600,
 		TranslatePerPromptToken:    150,
 		TranslatePerCandidateToken: 600,
+		AgentPerPromptToken:        150,
+		AgentPerCandidateToken:     600,
 	}
 }
 

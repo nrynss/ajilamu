@@ -153,7 +153,7 @@ owns:       internal/agent/agent.go, internal/agent/tools.go,
             deploy/mcp-clickhouse/, tools/audit_docs.py,
             go.mod, go.sum, .env.example,
             dev-diary/infrastructure.md, dev-diary/PHASE-8-ship.md
-status:     not-started
+status:     done
 ```
 Build the editor agent on `google.golang.org/adk/v2`. The agent answers questions about the
 ledger and proposes mutations. It reads the ledger through a self-hosted mcp-clickhouse server.
@@ -328,3 +328,49 @@ Sorting the names keeps the order stable.
 
 `npm --prefix web run check` passes with zero errors and zero warnings. The changed
 files carry no `export let`, no `$:` and no store.
+
+### T6.6 editor agent on ADK
+
+`internal/agent` builds the editor agent on `google.golang.org/adk/v2` v2.3.0. It is the
+only package that imports ADK. `NewToolset` sets `mcptoolset.Config.Endpoint` and passes
+`auth.StaticToken` as `Auth`, so the toolset uses the streamable HTTP transport. It then
+narrows the server to `list_databases`, `list_tables` and `run_query` through
+`tool.FilterToolset`. A transport seam lets the offline suite build the same toolset
+against an in-memory fake server. No socket opens, so no network call happens.
+
+`Agent.Ask` runs one turn and returns the answer plus `[]cost.Charge`. An ADK
+`AfterModelCallback` records `cost.ChargeAgent` from the response `UsageMetadata`, so a
+turn emits the prompt and candidate token counts it reported. The agent reads and never
+writes. No route calls it yet, because no task owns an agent endpoint.
+
+`internal/config` reads the five MCP variables as optional settings. `MCPConfigured`
+requires the URL and the bearer token. A missing value makes `NewFromConfig` return a nil
+agent and never stops the server. `TestMissingMCPDisablesAgentNotServer` and
+`TestNewFromConfigDisablesWithoutMCP` pin that.
+
+`deploy/mcp-clickhouse/` builds an image from `mcp-clickhouse==0.6.0`, because no published
+image exists. The container runs as the `mcp_readonly` OS user, connects as the
+`mcp_readonly` database user, sets `CLICKHOUSE_ALLOW_WRITE_ACCESS=false`, and binds host
+loopback only. `infrastructure.md` now names the SELECT grant as the boundary and the flag
+as an accident guard. T8.2 now reads as building the image.
+
+**T1.2 amendment, second after T2.2dev.** `cost.ChargeAgent` joins `ChargeKind`, and
+`RateCard` gains `AgentPerPromptToken` and `AgentPerCandidateToken` at 150 and 600
+nanodollars. `internal/api/wire.go`, `web/src/lib/types.ts` and the `isChargeKind` guard
+landed together. `testdata/wire/charge.json` stays a translate example. T4.2 now reads one
+charge contract.
+
+Surprises. The ledger stores no title column, so the live probe names a dub by id and
+reports the fixture title beside it. `internal/ledger/takes.go` maps only the three
+existing kinds into charge rows, and it drops an unknown kind silently. That stays correct
+while the agent never writes a take. A future task that records agent turns in the ledger
+must extend that switch. `web/src/lib/tabs/DetailsTab.svelte` labels any kind
+other than segment or translate as a voice render, so an agent charge needs a label there.
+T5.5 owns `web/src/lib/tabs/` and is done, so a defect there is a new task or a finding,
+not an unowned blind spot. ADK moved `go list -m all` from 79 entries to 126, and `go.mod`
+grew from 34 require lines to 45.
+
+The live probe sits behind `//go:build live`. It reads `SHOW GRANTS FOR mcp_readonly`,
+requires a SELECT-only grant set, lists tables, reads commits for one dub, and refuses an
+INSERT. No container ran here, so it has no transcript. `go build ./...`
+and the scoped tests pass. `python3 tools/audit_docs.py` prints no pending line.

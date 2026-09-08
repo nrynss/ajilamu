@@ -190,3 +190,29 @@ func TestLedgerNoDoubleCounting(t *testing.T) {
 		t.Errorf("TotalForTake(10) = %d, want %d", got, c1.Total())
 	}
 }
+
+// TestChargeAgentRates pins the T6.6 addition to the T1.2 contract.
+// An agent turn bills the prompt and candidate tokens its response reported.
+func TestChargeAgentRates(t *testing.T) {
+	if got := ChargeAgent.String(); got != "agent" {
+		t.Fatalf("ChargeAgent.String() = %q, want agent", got)
+	}
+	rates := DefaultRateCard()
+	if rates.AgentPerPromptToken == 0 || rates.AgentPerCandidateToken == 0 {
+		t.Fatal("DefaultRateCard agent token rates are zero")
+	}
+	c := Charge{
+		Kind:               ChargeAgent,
+		PromptTokens:       1200,
+		CandidateTokens:    340,
+		PromptUnitPrice:    rates.AgentPerPromptToken,
+		CandidateUnitPrice: rates.AgentPerCandidateToken,
+	}
+	want := Price(1200)*rates.AgentPerPromptToken + Price(340)*rates.AgentPerCandidateToken
+	if got := c.Total(); got != want {
+		t.Fatalf("ChargeAgent.Total() = %d, want %d", got, want)
+	}
+	if c.Units != 0 {
+		t.Fatalf("agent charge Units = %d, want 0", c.Units)
+	}
+}

@@ -575,7 +575,8 @@ func TestDubSummariesWellFormed(t *testing.T) {
 // isChargeKind reports whether kind is a known charge kind.
 func isChargeKind(kind string) bool {
 	switch kind {
-	case ChargeSegment, ChargeTranslate, ChargeSynthesize:
+	case ChargeSegment, ChargeTranslate, ChargeSynthesize,
+		ChargeAgent:
 		return true
 	}
 	return false
@@ -588,4 +589,44 @@ func isRepairKind(repair string) bool {
 		return true
 	}
 	return false
+}
+
+// TestChargeKindGuardCoversWireConstants keeps the guard and the constants together.
+// A new charge kind must reach isChargeKind or the example walk fails.
+func TestChargeKindGuardCoversWireConstants(t *testing.T) {
+	for _, kind := range []string{ChargeSegment, ChargeTranslate, ChargeSynthesize, ChargeAgent} {
+		if !isChargeKind(kind) {
+			t.Errorf("isChargeKind(%q) = false, want true", kind)
+		}
+	}
+	if isChargeKind("unknown") {
+		t.Error("isChargeKind(unknown) = true, want false")
+	}
+}
+
+// TestChargeKindParity proves the wire constants match the TypeScript union.
+// The three declarations must move together, or the UI drops the new kind.
+func TestChargeKindParity(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", "types.ts"))
+	if err != nil {
+		t.Fatalf("read types.ts: %v", err)
+	}
+	decl := regexp.MustCompile(`export type ChargeKind = ([^\n]+)`)
+	match := decl.FindStringSubmatch(string(src))
+	if match == nil {
+		t.Fatal("types.ts declares no ChargeKind union")
+	}
+	ts := map[string]bool{}
+	for _, part := range strings.Split(match[1], "|") {
+		ts[strings.Trim(strings.TrimSpace(part), `"`)] = true
+	}
+	want := []string{ChargeSegment, ChargeTranslate, ChargeSynthesize, ChargeAgent}
+	for _, kind := range want {
+		if !ts[kind] {
+			t.Errorf("types.ts ChargeKind lacks %q", kind)
+		}
+	}
+	if len(ts) != len(want) {
+		t.Errorf("types.ts ChargeKind has %d members, want %d", len(ts), len(want))
+	}
 }
