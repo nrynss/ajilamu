@@ -385,13 +385,20 @@ Named dependents, corrected on 2026-09-08. My first pass named T5.5 and T8.3 and
 wrong. T5.5 is `done`, and its Details tab sums `take.charges` per line through a different
 path, so it is unaffected and stays closed. T8.3 only documents.
 
-The true answer is that no task inherits this, because no task reads the ledger for the UI.
+On this machine's tree, no task inherits this, because no task reads the ledger for the UI.
 Searching the whole graph for the commit DAG returns one hit outside this phase: the T5.5
-description. Nothing owns `TimelineAt`, `CompareBranches`, or a history handler. T7.0 mounts
-handlers and states that it owns nothing inside them. Only `internal/fit/stretch.go` imports
-`internal/ledger`, for priors. So the History tab shipped against mock JSON with no path to
-real data. That is the third instance of the cause T7.0 names: work nobody owns never gets
-built. It needs a task, not a note.
+description. Nothing here owns `TimelineAt`, `CompareBranches`, or a history handler. T7.0
+mounts handlers and states that it owns nothing inside them. Only `internal/fit/stretch.go`
+imports `internal/ledger`, for priors.
+
+VERIFY BEFORE ACTING ON THAT PARAGRAPH. P7 landed on another machine and this tree has not
+seen it. Here T7.0 through T7.4 all read `not-started` and `internal/api` holds only
+`wire.go`, so the reading above is drawn from a stale P7. The P7 tree may already carry a
+history handler, and it may have added tasks this graph does not list. Whoever holds both
+trees should re-run the check there before concluding the work is unowned.
+
+If it is unowned, it is the third instance of the cause T7.0 names, work nobody owns never
+gets built, and it needs a task rather than a note.
 
 Two open tasks do meet the underlying charge question, though neither calls `CompareBranches`.
 T7.3 puts cumulative project cost on every progress event, which is a project total and must
