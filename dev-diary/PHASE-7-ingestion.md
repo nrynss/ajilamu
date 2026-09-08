@@ -23,9 +23,9 @@ runs-parallel-with: P2, P3, P4, P5, P6
 requires:   T1.4, T0.2
 fixture-ok: yes
 size:       M · frontier
-owns:       cmd/ajilamu/main.go, internal/api/server.go, internal/api/server_test.go,
+owns:       .gitignore, cmd/ajilamu/main.go, internal/api/server.go, internal/api/server_test.go,
             internal/api/static.go, internal/config/config.go, internal/config/config_test.go
-status:     not-started
+status:     done
 ```
 Build the process that runs Ajilamu. It loads configuration, mounts every `internal/api`
 handler, serves the built frontend, and shuts down without losing ledger events.
@@ -83,13 +83,32 @@ signals, and finds zero events lost. The T0.2 block describes the loader that ex
 
 ---
 
+### T7.0a: Static workspace build contract
+```yaml
+requires:   T5.1, T7.0
+fixture-ok: yes
+size:       S · mid
+owns:       web/package.json, web/svelte.config.js, .gitignore
+status:     done
+```
+Make the Svelte workspace an explicit static build artifact that the Go server can serve.
+`adapter-auto` emits no browser-ready `index.html` in this repository. Use the supported static
+adapter and a fallback document for client-side routes, including `/d/{id}`. Put the emitted
+files in the directory T7.0 serves. Do not add a second Node production server.
+
+**Done when:** `npm run build` emits the frontend artifact expected by T7.0, and starting the
+Go binary serves `/`, `/new`, `/config`, and a deep workspace route without Vite or a Node SSR
+process.
+
+---
+
 ### T7.1: Upload ★
 ```yaml
 requires:   T1.4
 fixture-ok: yes
 size:       M · mid
-owns:       internal/api/upload.go, web/src/routes/new/+page.svelte
-status:     not-started
+owns:       internal/api/upload.go, internal/api/upload_test.go, web/src/routes/new/+page.svelte
+status:     done
 ```
 Stream multipart uploads to `/api/dubs/new` directly to persistent disk storage. Avoid buffering full files in system memory.
 
@@ -106,8 +125,11 @@ Provide drag-and-drop zones for video and audio. Display projected cost estimate
 requires:   T7.1
 fixture-ok: yes
 size:       XS · light
-owns:       internal/api/sample.go
-status:     not-started
+owns:       internal/api/sample.go, internal/api/sample_test.go, internal/api/server.go,
+            internal/api/server_test.go, cmd/ajilamu/main.go, web/src/routes/new/+page.svelte,
+            web/src/routes/d/[id]/+page.svelte, web/src/lib/fixture.ts,
+            web/src/routes/+layout.svelte
+status:     done
 ```
 Provide a one-click button to launch sample projects using the committed NASA 75-second video. Evaluators can test the system without uploading files.
 
@@ -140,14 +162,34 @@ Preserve discrete WAV takes on disk during execution. If an external failure int
 requires:   T1.4
 fixture-ok: yes
 size:       S · light
-owns:       internal/api/index.go, web/src/routes/config/+page.svelte
-status:     not-started
+owns:       internal/api/index.go, internal/api/index_test.go, web/src/routes/+page.svelte,
+            web/src/routes/config/+page.svelte
+status:     done
 ```
 Implement `/` to list projects ordered by creation time. Implement `/config` to manage API keys and application settings.
 
 Ensure credential inputs are write-only. Never log, echo, or expose API secrets back to client browsers.
 
 **Done when:** The index displays active projects, and saved API keys remain hidden from client-side inspection.
+
+---
+
+### T7.4a: Write-only credential persistence
+```yaml
+requires:   T7.0, T7.4
+fixture-ok: yes
+size:       S · frontier
+owns:       internal/api/server.go, internal/config/settings.go, internal/config/settings_test.go
+status:     not-started
+```
+Connect T7.4's injected write-only configuration callback to durable server-side storage. Store
+secret values outside the repository and image, with permissions that prevent other local users
+from reading them. The read API may report whether a value exists, but must never serialize,
+log, or return the secret itself. Reuse T7.0's application data-directory contract instead of
+inventing a second location.
+
+**Done when:** A submitted credential survives a process restart, cannot be read through any
+HTTP response, is absent from logs, and has restrictive on-disk permissions.
 
 ---
 
@@ -166,3 +208,78 @@ Ensure credential inputs are write-only. Never log, echo, or expose API secrets 
 ## Handoff Log
 
 _(Fill on completion: record upload throughput metrics and SSE client reconnection behaviors.)_
+
+### T7.0a: Static workspace build contract
+
+- `@sveltejs/adapter-static` emits `web/build/index.html` as the client route fallback.
+- The existing Go binary serves `/`, `/new`, `/config`, and `/d/fixture` as matching HTML with status 200.
+- The task records a contract change on .gitignore to add the web/build/ ignore rule.
+
+### T7.0: Server entrypoint
+
+`go run ./cmd/ajilamu` starts with no credentials and serves fixtures. Process settings
+load at boot. Credentials resolve when a feature needs them. `ENV=production` fails at
+boot if ClickHouse, Google Cloud, or the frontend build is missing.
+
+The mux mounts health, ledger readiness, `GET /api/dubs`, `POST /api/dubs/new`, and
+`POST /api/config`. Unmatched `/api/` paths return 404. Video ranges return 206.
+
+Shutdown drains HTTP for 10 seconds, then flushes the ledger for 5 seconds. A drain
+timeout still reaches flush and logs the pending count. Development leaves the ledger
+interface genuinely nil.
+
+`AJILAMU_DATA_DIR` defaults to `data`, which `.gitignore` covers. `AJILAMU_FRONTEND_DIR`
+names the static root. `/api/ledger/ready` pings ClickHouse. Config stays unwired
+(`ConfigHandler(nil)` returns 503) until T7.4a.
+
+The index provider returns the fixture summary plus `ListUploadSummaries` of the
+upload directory. A new upload appears on `GET /api/dubs` on the next request.
+
+Round 4 review returned APPROVE with zero residue.
+
+### T7.1: Upload
+
+`NewUploadHandler` streams multipart `video` and optional `music` to a persistent
+storage directory that T7.0 supplies. It never buffers a file in memory. Paths in
+the `201` JSON stay project-relative. Stored files measure mode 0600.
+
+The create screen projects a fee by scaling the completed P2 fixture ledger.
+The NASA clip reference is 23,414,000 nanodollars for 75.008267 seconds.
+Round 2 review returned APPROVE with zero residue.
+
+T7.0 mounts the handler at `POST /api/dubs/new`.
+
+### T7.2: Sample mode
+
+- `POST /api/dubs/sample` copies the NASA clip into persistent upload storage, records Malayalam, and returns a project-relative response.
+- Clip discovery checks `AJILAMU_SAMPLE_CLIP` first, then searches relative testdata locations. Missing clip logs name searched paths and override variables.
+- All fixture ids (`fixture`, manifest id, and wire id) show completed fixture work. Real pending sample ids render honest empty workspaces, and unknown ids render error states.
+- The chrome frame dynamically updates status and spend per route.
+- Fixture chrome uses the fixture readiness `review`, so it shows In review with the amber class.
+- A failed index fetch says the list could not load. It does not claim the project is missing.
+- Pending copy names a project, not a sample, so an upload is not called the NASA clip.
+- The create screen shows the sample fee before launch and names the copy step while busy.
+- Operator skipped a fourth review after those remediations.
+
+### T7.4: Index and config routes
+
+`IndexHandlerFrom(func() []DubSummary)` queries a provider on each GET request. It copies the
+result, sorts by descending RFC 3339 creation time, and serves `DubIndex` JSON without caching.
+`IndexHandler([]DubSummary)` snapshots its input at construction and wraps `IndexHandlerFrom`.
+T7.0 mounts `IndexHandlerFrom` at `GET /api/dubs`. The provider returns the fixture
+project and every persisted upload record.
+
+`ConfigHandler(func(ConfigUpdate) error)` accepts only URL-encoded POST form fields named
+`voice_key` and `translation_key`. It accepts at most 16 KiB, treats an omitted field as
+an empty field, and returns `204 No Content` after its callback succeeds. Chunked bodies
+over 16 KiB return `413`.
+
+`ConfigUpdate` keeps both values unexported and implements `LogValue` and `String` to prevent
+credential logging. `VoiceKey` and `TranslationKey` return each non-empty value with a presence
+flag. The handler sends no credential in any response and uses fixed error text. It returns
+`503` when no callback is installed.
+
+T7.4a owns durable local credential storage and supplies the callback after T7.0 lands.
+
+Round 3 returned one L. The orchestrator added `TestConfigHandlerRejectsBothEmptyFields`
+and landed the task.
