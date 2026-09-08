@@ -255,7 +255,7 @@ requires:   T2.1, T2.4, T2.5, T2.6, T1.2
 fixture-ok: yes
 size:       L · frontier
 owns:       internal/fit/loop.go
-status:     not-started
+status:     done
 ```
 Orchestrate the dubbing pipeline: segment video, translate dialogue, synthesize speech, measure fit, and apply repairs.
 
@@ -269,13 +269,13 @@ Emit progress events and charges at every stage. Call ledger logging through int
 
 ## Exit Criteria
 
-- [ ] Pipeline executes end to end in Go.
-- [ ] Correctly identifies and repairs or flags underruns in segment 8.
-- [ ] Implements three full attempts and handles flagged lines cleanly.
-- [ ] Assigns distinct voice profiles to distinct speakers.
-- [ ] Records itemized charges for every API request, billed on reported token counts.
-- [ ] Calls Gemini through `google.golang.org/genai` and authenticates with ADC alone.
-- [ ] All unit tests pass offline using fixtures.
+- [x] Pipeline executes end to end in Go.
+- [x] Correctly identifies and repairs or flags underruns in segment 8.
+- [x] Implements three full attempts and handles flagged lines cleanly.
+- [x] Assigns distinct voice profiles to distinct speakers.
+- [x] Records itemized charges for every API request, billed on reported token counts.
+- [x] Calls Gemini through `google.golang.org/genai` and authenticates with ADC alone.
+- [x] All unit tests pass offline using fixtures.
 
 ---
 
@@ -683,3 +683,21 @@ Each notification sentence stays under 30 words and uses active voice.
 Call `RepairLine` with `types.Segment` and `RewriteConfig`.
 Use `DefaultTakeName` or supply a custom `PathBuilder` for immutable WAV naming.
 Log itemized charges through ledger recorders after each API call.
+
+### T2.7: Loop orchestration (remediated 2026-09-08)
+
+The loop orchestrator lives in `internal/fit/loop.go`. It exports `Pipeline`, `PipelineConfig`, `PipelineResult`, `EventListener`, `ProgressFunc`, and `RunPipeline`. It exports `RecorderSetter` alongside proxy decorators `TranslatorProxy`, `SynthesizerProxy`, and `SegmenterProxy`. It exports `PipelineTakeName` for immutable take path resolution. It exports sentinels `ErrNoSegments`, `ErrSegmenterRequired`, `ErrSpeakerVoiceCollision`, and `ErrMissingSpeaker`.
+
+**Full pipeline orchestration.** The pipeline executes the complete dubbing workflow. It segments audio or video inputs when given media. It also accepts pre-segmented dialogue lines. It verifies that each speaker receives a distinct voice profile through `tts.Assign`. It translates dialogue lines and synthesizes speech into immutable WAV takes. It measures audio fit against allocated video slots. It routes repairs through `RepairLine` without calling unexported sibling functions.
+
+**Flagged lines and closest take.** Segment 8 fails three consecutive attempts against its 7110ms slot. The pipeline cleanly flags segment 8 for creator review. It keeps attempt 2 as the closest take with signed delta -2510ms. All other fixture lines fit cleanly or receive time stretch repairs.
+
+**Progress events across all stages.** The pipeline emits `api.ProgressEvent` at every stage. Stages include `StageSegmenting`, `StageTranslating`, `StageSynthesizing`, `StageMeasuring`, and `StageRepairing`. It delivers events through listener interfaces, functional callbacks, and channels. Each event reports the running project cost in nanodollars. Sentences use active voice and stay under 30 words.
+
+**Ledger accounting.** The pipeline records itemized charges for every API operation. It records charges for segmentation, translation, and voice synthesis. `RecorderSetter` binds clients to the internal charge tracker. The tracker accumulates itemized charges and computes running total costs. It forwards charges to callers supplying bare `ChargeRecorder` implementations without `TotalReporter`. Tests pin exact translation and synthesis charge counts and positive costs. `PipelineConfig` omits unused rate cards because clients handle pricing directly.
+
+**Immutable WAV takes.** Every take attempt receives a unique filename. The pipeline writes unstretched attempts to `seg_{id}_try{n}.wav`. It writes stretched takes to `seg_{id}_stretched.wav` or `seg_{id}_try{n}_stretched.wav`. No take overwrites an earlier attempt.
+
+**Verification.** All unit and integration tests pass offline. The command `go test -count=1 ./internal/fit/` passes. The command `go test -count=1 -race ./internal/fit/` passes. The repository test suite `go test -count=1 ./...` passes. `gofmt -l internal/fit/` prints nothing. `go vet ./internal/fit/` reports zero warnings.
+
+**Next agent.** Round 2 review returned APPROVE with zero residue. The orchestrator lands T2.7 and marks Phase 2 complete.
