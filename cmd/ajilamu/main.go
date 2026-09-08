@@ -76,6 +76,11 @@ func run() error {
 		}
 	}
 
+	settings, err := config.OpenSettings(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("open settings store: %w", err)
+	}
+
 	uploadDir := filepath.Join(cfg.DataDir, "uploads")
 	fixtureSummary := api.DubSummary{
 		ID:               dub.ID,
@@ -98,8 +103,10 @@ func run() error {
 		Index: api.IndexHandlerFrom(func() []api.DubSummary {
 			return append([]api.DubSummary{fixtureSummary}, api.ListUploadSummaries(uploadDir)...)
 		}),
-		// T7.4a lands persistence. Until then the handler answers 503.
-		Config: api.ConfigHandler(nil),
+		// T7.4a persists submitted credentials under AJILAMU_DATA_DIR. The
+		// store never returns a value, so the read route reports presence only.
+		Config:         api.ConfigHandler(newConfigSaver(settings)),
+		ConfigPresence: api.ConfigPresenceHandler(newConfigPresence(settings)),
 	})
 	if err != nil {
 		return err
@@ -140,6 +147,32 @@ func run() error {
 			return fmt.Errorf("drain HTTP requests: %w", drainErr)
 		}
 		return flushErr
+	}
+}
+
+// newConfigSaver adapts the write-only settings form onto the durable store.
+// internal/config cannot import internal/api, so the store cannot take a
+// ConfigUpdate. This adapter is the only seam.
+func newConfigSaver(store *config.SettingsStore) func(api.ConfigUpdate) error {
+	return func(update api.ConfigUpdate) error {
+		voiceKey, _ := update.VoiceKey()
+		translationKey, _ := update.TranslationKey()
+		return store.SaveCredentials(voiceKey, translationKey)
+	}
+}
+
+// newConfigPresence adapts the store presence onto the read route. It maps
+// booleans only, so a credential value never leaves internal/config.
+func newConfigPresence(store *config.SettingsStore) func() (api.ConfigPresence, error) {
+	return func() (api.ConfigPresence, error) {
+		presence, err := store.Presence()
+		if err != nil {
+			return api.ConfigPresence{}, err
+		}
+		return api.ConfigPresence{
+			VoiceKey:       presence.VoiceKey,
+			TranslationKey: presence.TranslationKey,
+		}, nil
 	}
 }
 

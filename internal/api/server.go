@@ -35,17 +35,18 @@ type HistoryReader interface {
 
 // ServerOptions supplies dependencies owned by other API tasks.
 type ServerOptions struct {
-	FrontendRoot string
-	Ledger       LedgerFlusher
-	Index        http.Handler
-	History      HistoryReader
-	Config       http.Handler
-	Upload       http.Handler
-	Sample       http.Handler
-	Runner       PipelineRunner
-	Recorder     RunRecorder
-	StorageDir   string
-	Logger       *slog.Logger
+	FrontendRoot   string
+	Ledger         LedgerFlusher
+	Index          http.Handler
+	History        HistoryReader
+	Config         http.Handler
+	ConfigPresence http.Handler
+	Upload         http.Handler
+	Sample         http.Handler
+	Runner         PipelineRunner
+	Recorder       RunRecorder
+	StorageDir     string
+	Logger         *slog.Logger
 }
 
 // Server owns the HTTP mux and coordinates HTTP draining with ledger flushing.
@@ -76,6 +77,38 @@ func writeLedgerReady(w http.ResponseWriter, status, detail string) {
 		Status string `json:"status"`
 		Detail string `json:"detail,omitempty"`
 	}{Status: status, Detail: detail})
+}
+
+// ConfigPresence reports which write-only credentials exist. It never carries
+// a credential value, so the read route cannot leak one.
+type ConfigPresence struct {
+	VoiceKey       bool `json:"voice_key_set"`
+	TranslationKey bool `json:"translation_key_set"`
+}
+
+// ConfigPresenceHandler serves the credential presence read route. report must
+// never return a credential value. A nil report answers 503, matching
+// ConfigHandler, so an unwired store cannot claim a setting exists.
+func ConfigPresenceHandler(report func() (ConfigPresence, error)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "Method not allowed.", http.StatusMethodNotAllowed)
+			return
+		}
+		if report == nil {
+			http.Error(w, "Settings are unavailable.", http.StatusServiceUnavailable)
+			return
+		}
+		presence, err := report()
+		if err != nil {
+			http.Error(w, "Settings could not be read.", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(presence)
+	})
 }
 
 // NewServer mounts the cross-cutting API routes and the static workspace.
@@ -117,6 +150,9 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	}
 	if options.Config != nil {
 		mux.Handle("POST /api/config", options.Config)
+	}
+	if options.ConfigPresence != nil {
+		mux.Handle("GET /api/config", options.ConfigPresence)
 	}
 	if options.Upload != nil {
 		mux.Handle("POST /api/dubs/new", options.Upload)

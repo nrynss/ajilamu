@@ -428,7 +428,7 @@ fixture-ok: yes
 size:       S · frontier
 owns:       internal/api/server.go, internal/config/settings.go, internal/config/settings_test.go,
             cmd/ajilamu/main.go
-status:     not-started
+status:     done
 ```
 Connect T7.4's injected write-only configuration callback to durable server-side storage. Store
 secret values outside the repository and image, with permissions that prevent other local users
@@ -592,7 +592,8 @@ credential logging. `VoiceKey` and `TranslationKey` return each non-empty value 
 flag. The handler sends no credential in any response and uses fixed error text. It returns
 `503` when no callback is installed.
 
-T7.4a owns durable local credential storage and supplies the callback after T7.0 lands.
+T7.4a supplies the callback from `cmd/ajilamu/main.go`, backed by `internal/config/settings.go`.
+It also adds `GET /api/config`, which reports presence only.
 
 Round 3 returned one L. The orchestrator added `TestConfigHandlerRejectsBothEmptyFields`
 and landed the task.
@@ -802,3 +803,37 @@ pins the quoting setting. The same six statements ran on ClickHouse 26.8.2.7 thr
 `clickhouse local` over `sql/schema.sql`. They returned the expected rows, and the quoting
 setting at 1 quoted every 64-bit field. `TestOnlyClientPinsServerSettings` still finds no
 setting name outside `client.go`.
+
+### T7.4a: Write-only credential persistence
+
+`internal/config/settings.go` adds `SettingsStore`. `OpenSettings(cfg.DataDir)` roots it at
+`AJILAMU_DATA_DIR/settings/credentials.json`. The directory measures 0700 and the file 0600, so
+another local user cannot read a key. A save writes a temp file at 0600, syncs it, renames it over
+the target, and syncs the directory. An empty form field preserves the stored value.
+
+`SettingsStore.Presence()` returns two booleans and never a value. `api.ConfigPresenceHandler`
+serves `GET /api/config` as `{"voice_key_set":bool,"translation_key_set":bool}`.
+`cmd/ajilamu/main.go` supplies both callbacks through `newConfigSaver` and `newConfigPresence`.
+`ConfigHandler` still answers `204` on success and one fixed sentence on every failure.
+
+Measured pins. A live POST of two markers returned `204`. The file landed at
+`$AJILAMU_DATA_DIR/settings/credentials.json` at mode 0600 inside a 0700 directory. A second
+process read both keys back after a restart. Nine responses held no marker. They covered the
+index, the presence route, the empty-save 400, the wrong-content-type 415, the oversized 413, and
+the failure-path 500. The server log held no marker. A forced save failure returned
+`500 Settings could not be saved.` and logged nothing. `go test -count=1 ./internal/config
+./internal/api ./cmd/...` passed.
+
+Surprise. `MkdirAll` leaves an existing directory's mode alone, so a store opened over a
+world-readable directory kept that mode. `OpenSettings` now chmods the directory on every open.
+`SaveCredentials` chmods the file after the rename for the same reason.
+
+Nothing consumes a stored key today. `internal/config` has no voice or translation field, and
+Gemini and TTS authenticate through ADC. The store exists so the settings form is durable, not
+because a feature reads it back.
+
+Review round 1 returned three L findings. The orchestrator applied all three under the L
+exemption, so no remediation round ran. The seam comment in `cmd/ajilamu/main.go` stated the
+import direction backwards. Two tests now pin behaviour that carried no committed check. One
+asserts the settings directory mode after a tighten. The other asserts a single stored key maps
+to the right presence flag.
