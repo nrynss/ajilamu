@@ -286,7 +286,7 @@ func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (Line
 		if attemptNum == 1 && cfg.InitialTake != nil {
 			audioPath = cfg.InitialTake.File
 			text = cfg.InitialText
-			measured, err := media.Duration(audioPath)
+			measured, err := media.Duration(ctx, audioPath)
 			if err != nil {
 				return result, fmt.Errorf("%w: %s: %w", ErrSourceUnreadable, audioPath, err)
 			}
@@ -329,14 +329,14 @@ func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (Line
 				return result, fmt.Errorf("synthesize line %d attempt %d: %w", seg.ID, attemptNum, err)
 			}
 			audioPath = rawPath
-			measured, err := media.Duration(audioPath)
+			measured, err := media.Duration(ctx, audioPath)
 			if err != nil {
 				return result, fmt.Errorf("%w: %s: %w", ErrSourceUnreadable, audioPath, err)
 			}
 			fit = types.NewFit(slot, measured)
 		}
 
-		plan := PlanStretchWithLimits(fit, cfg.Limits)
+		plan := PlanStretchWithLimits(ctx, fit, cfg.Limits)
 
 		switch plan.Repair {
 		case types.RepairNone:
@@ -378,7 +378,7 @@ func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (Line
 				return result, fmt.Errorf("create directory for %s: %w", stretchedPath, err)
 			}
 
-			res, stretchErr := StretchWithLimits(audioPath, stretchedPath, slot, cfg.Limits)
+			res, stretchErr := StretchWithLimits(ctx, audioPath, stretchedPath, slot, cfg.Limits)
 			if stretchErr == nil {
 				att := LineAttempt{
 					Attempt:      attemptNum,

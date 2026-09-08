@@ -1,12 +1,12 @@
 package assemble
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"log"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -78,7 +78,7 @@ type plannedClip struct {
 // Place writes each take at its segment start on a silent canvas.
 // A take may occupy the gap before the next take.
 // Voiced collision overlaps through a fade and always records the cut.
-func (b Bed) Place(clips []Clip, output string) (Placement, error) {
+func (b Bed) Place(ctx context.Context, clips []Clip, output string) (Placement, error) {
 	if err := validateBedFormat(b.Format); err != nil {
 		return Placement{}, err
 	}
@@ -88,7 +88,7 @@ func (b Bed) Place(clips []Clip, output string) (Placement, error) {
 	if err := distinctOutput(output, append(clipFiles(clips), b.File)...); err != nil {
 		return Placement{}, err
 	}
-	bedFrames, err := audioFrames(b.File, b.Format.Channels)
+	bedFrames, err := audioFrames(ctx, b.File, b.Format.Channels)
 	if err != nil {
 		return Placement{}, fmt.Errorf("probe bed length: %w", err)
 	}
@@ -108,10 +108,10 @@ func (b Bed) Place(clips []Clip, output string) (Placement, error) {
 	planned := make([]plannedClip, len(sorted))
 	for i, clip := range sorted {
 		prepared := filepath.Join(work, fmt.Sprintf("take-%d.wav", i))
-		if err := b.PrepareTake(clip.File, prepared); err != nil {
+		if err := b.PrepareTake(ctx, clip.File, prepared); err != nil {
 			return Placement{}, fmt.Errorf("prepare segment %d: %w", clip.Segment.ID, err)
 		}
-		samples, err := decodeFloat32(prepared)
+		samples, err := decodeFloat32(ctx, prepared)
 		if err != nil {
 			return Placement{}, fmt.Errorf("decode segment %d: %w", clip.Segment.ID, err)
 		}
@@ -172,7 +172,7 @@ func (b Bed) Place(clips []Clip, output string) (Placement, error) {
 	for i, item := range planned {
 		inputs[i] = item.prepared
 	}
-	if err := renderMix(inputs, output, b.Format, filter); err != nil {
+	if err := renderMix(ctx, inputs, output, b.Format, filter); err != nil {
 		return Placement{}, fmt.Errorf("place takes: %w", err)
 	}
 	events := make([]Event, len(planned))
@@ -191,7 +191,7 @@ func (b Bed) Place(clips []Clip, output string) (Placement, error) {
 }
 
 // Overlay mixes a speech layer over the bed without changing either level.
-func (b Bed) Overlay(speech, output string) error {
+func (b Bed) Overlay(ctx context.Context, speech, output string) error {
 	if err := validateBedFormat(b.Format); err != nil {
 		return err
 	}
@@ -202,7 +202,7 @@ func (b Bed) Overlay(speech, output string) error {
 		return err
 	}
 	filter := "[0:a][1:a]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[out]"
-	return renderMix([]string{b.File, speech}, output, b.Format, filter)
+	return renderMix(ctx, []string{b.File, speech}, output, b.Format, filter)
 }
 
 type policyChoice struct {
@@ -358,7 +358,7 @@ func buildPlaceFilter(format media.Format, bedFrames int, clips []plannedClip) s
 	return b.String()
 }
 
-func renderMix(inputs []string, output string, format media.Format, filter string) error {
+func renderMix(ctx context.Context, inputs []string, output string, format media.Format, filter string) error {
 	tmp, err := os.CreateTemp(filepath.Dir(output), ".assemble-*.wav")
 	if err != nil {
 		return err
@@ -376,7 +376,7 @@ func renderMix(inputs []string, output string, format media.Format, filter strin
 		"-filter_complex", filter, "-map", "[out]",
 		"-ar", strconv.Itoa(format.SampleRate), "-ac", strconv.Itoa(format.Channels),
 		"-channel_layout", format.ChannelLayout, "-c:a", "pcm_f32le", "-f", "wav", tmpPath)
-	if err := media.Run(args...); err != nil {
+	if err := media.Run(ctx, args...); err != nil {
 		return err
 	}
 	return os.Rename(tmpPath, output)
@@ -418,8 +418,8 @@ func framesDuration(frames, rate int) time.Duration {
 	return time.Duration(math.Round(float64(frames) / float64(rate) * 1e9))
 }
 
-func audioFrames(path string, channels int) (int, error) {
-	samples, err := decodeFloat32(path)
+func audioFrames(ctx context.Context, path string, channels int) (int, error) {
+	samples, err := decodeFloat32(ctx, path)
 	if err != nil {
 		return 0, err
 	}
@@ -444,11 +444,14 @@ func voicedFrames(samples []float32, channels int) int {
 	return 0
 }
 
-func decodeFloat32(path string) ([]float32, error) {
-	cmd := exec.Command("ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+func decodeFloat32(ctx context.Context, path string) ([]float32, error) {
+	cmd := media.Command(ctx, "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
 		"-i", path, "-map", "0:a:0", "-f", "f32le", "-c:a", "pcm_f32le", "-")
 	data, err := cmd.Output()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("ffmpeg decode %s cancelled: %w", path, ctxErr)
+		}
 		return nil, fmt.Errorf("decode %s: %w", path, err)
 	}
 	values := make([]float32, len(data)/4)

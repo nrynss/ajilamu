@@ -990,7 +990,7 @@ func TestCapTotalStretchLimit(t *testing.T) {
 	slot := 2000 * time.Millisecond
 	overrunDur := time.Duration(float64(slot) * (1.0 + MaxStretchLimit + 0.05))
 	fit := types.NewFit(slot, overrunDur)
-	plan := PlanStretchWithLimits(fit, DefaultStretchLimits())
+	plan := PlanStretchWithLimits(t.Context(), fit, DefaultStretchLimits())
 	if plan.Repair != types.RepairRewrite {
 		t.Errorf("plan.Repair = %v, want RepairRewrite for overrun exceeding MaxStretchLimit", plan.Repair)
 	}

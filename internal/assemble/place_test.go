@@ -39,13 +39,13 @@ func TestFixtureTakesPlaceOverBed(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join("..", "..", "testdata", "clip.mp4")
 	bedFile := filepath.Join(dir, "bed.wav")
-	bed, err := BuildBed(source, "", bedFile)
+	bed, err := BuildBed(t.Context(), source, "", bedFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	clips := fixtureClips(t)
 	speechFile := filepath.Join(dir, "speech.wav")
-	placed, err := bed.Place(clips, speechFile)
+	placed, err := bed.Place(t.Context(), clips, speechFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestFixtureTakesPlaceOverBed(t *testing.T) {
 		t.Fatalf("speech has %d samples, bed has %d", len(speech), len(bedSamples))
 	}
 	mixFile := filepath.Join(dir, "mix.wav")
-	if err := bed.Overlay(speechFile, mixFile); err != nil {
+	if err := bed.Overlay(t.Context(), speechFile, mixFile); err != nil {
 		t.Fatal(err)
 	}
 	mix := decodedAudio(t, mixFile)
@@ -82,7 +82,7 @@ func TestFixtureTakesPlaceOverBed(t *testing.T) {
 			t.Fatalf("segment %d used collision policy %s", event.SegmentID, event.Policy)
 		}
 		prepared := filepath.Join(dir, filepath.Base(clip.File))
-		if err := bed.PrepareTake(clip.File, prepared); err != nil {
+		if err := bed.PrepareTake(t.Context(), clip.File, prepared); err != nil {
 			t.Fatal(err)
 		}
 		want := decodedAudio(t, prepared)
@@ -138,7 +138,7 @@ func TestOverrunUsesTrailingGap(t *testing.T) {
 	bed := synthBed(t, dir, 3)
 	first := synthTone(t, filepath.Join(dir, "first.wav"), 440, 1.2)
 	second := synthTone(t, filepath.Join(dir, "second.wav"), 880, 0.4)
-	placed, err := bed.Place([]Clip{
+	placed, err := bed.Place(t.Context(), []Clip{
 		{Segment: types.Segment{ID: 1, StartMs: 0, EndMs: 1000}, File: first},
 		{Segment: types.Segment{ID: 2, StartMs: 1500, EndMs: 1900}, File: second},
 	}, filepath.Join(dir, "speech.wav"))
@@ -164,7 +164,7 @@ func TestOverrunTruncatesAtSilence(t *testing.T) {
 	bed := synthBed(t, dir, 3)
 	first := synthToneSilence(t, filepath.Join(dir, "first.wav"), 440, 0.8, 0.4)
 	second := synthTone(t, filepath.Join(dir, "second.wav"), 880, 0.5)
-	placed, err := bed.Place([]Clip{
+	placed, err := bed.Place(t.Context(), []Clip{
 		{Segment: types.Segment{ID: 1, StartMs: 0, EndMs: 800}, File: first},
 		{Segment: types.Segment{ID: 2, StartMs: 1000, EndMs: 1500}, File: second},
 	}, filepath.Join(dir, "speech.wav"))
@@ -190,7 +190,7 @@ func TestCollisionCrossfadesAndLogs(t *testing.T) {
 	bed := synthBed(t, dir, 3)
 	first := synthTone(t, filepath.Join(dir, "first.wav"), 440, 1.5)
 	second := synthTone(t, filepath.Join(dir, "second.wav"), 880, 1.0)
-	placed, err := bed.Place([]Clip{
+	placed, err := bed.Place(t.Context(), []Clip{
 		{Segment: types.Segment{ID: 1, StartMs: 0, EndMs: 1000}, File: first},
 		{Segment: types.Segment{ID: 2, StartMs: 1000, EndMs: 2000}, File: second},
 	}, filepath.Join(dir, "speech.wav"))
@@ -208,7 +208,7 @@ func TestCollisionCrossfadesAndLogs(t *testing.T) {
 		t.Fatalf("second take policy=%s", placed.Events[1].Policy)
 	}
 	prepared := filepath.Join(dir, "first-prepared.wav")
-	if err := bed.PrepareTake(first, prepared); err != nil {
+	if err := bed.PrepareTake(t.Context(), first, prepared); err != nil {
 		t.Fatal(err)
 	}
 	want := decodedAudio(t, prepared)
@@ -247,7 +247,7 @@ func TestPlaceRejectsInvalidInputsAndPreservesOutputs(t *testing.T) {
 	if err := os.WriteFile(output, []byte("previous render"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bed.Place([]Clip{{
+	if _, err := bed.Place(t.Context(), []Clip{{
 		Segment: types.Segment{ID: 1, StartMs: 0, EndMs: 200},
 		File:    filepath.Join(dir, "missing.wav"),
 	}}, output); err == nil {
@@ -257,16 +257,16 @@ func TestPlaceRejectsInvalidInputsAndPreservesOutputs(t *testing.T) {
 	if err != nil || string(data) != "previous render" {
 		t.Fatal("failed placement changed existing output")
 	}
-	if _, err := (Bed{}).Place(nil, output); err == nil {
+	if _, err := (Bed{}).Place(t.Context(), nil, output); err == nil {
 		t.Fatal("accepted an uninitialized bed")
 	}
-	if _, err := bed.Place([]Clip{{
+	if _, err := bed.Place(t.Context(), []Clip{{
 		Segment: types.Segment{ID: 1, StartMs: 0, EndMs: 200},
 		File:    take,
 	}}, bed.File); err == nil {
 		t.Fatal("allowed overwriting the bed")
 	}
-	if _, err := bed.Place([]Clip{{
+	if _, err := bed.Place(t.Context(), []Clip{{
 		Segment: types.Segment{ID: 1, StartMs: 10, EndMs: 10},
 		File:    take,
 	}}, output); err == nil {
@@ -322,7 +322,7 @@ func synthBed(t *testing.T, dir string, seconds int) Bed {
 	output := filepath.Join(dir, "bed.wav")
 	runAudioTool(t, "ffmpeg", "-v", "error", "-f", "lavfi", "-i",
 		"aevalsrc=0.04|0.03:s=44100:d="+strconv.Itoa(seconds)+":c=stereo", "-c:a", "pcm_f32le", source)
-	bed, err := BuildBed(source, "", output)
+	bed, err := BuildBed(t.Context(), source, "", output)
 	if err != nil {
 		t.Fatal(err)
 	}

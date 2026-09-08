@@ -2,10 +2,10 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -38,9 +38,8 @@ type ffprobeJSON struct {
 
 // Duration queries container or stream duration using ffprobe.
 // The result rounds to the nearest millisecond.
-func Duration(path string) (time.Duration, error) {
-	cmd := exec.Command(
-		"ffprobe",
+func Duration(ctx context.Context, path string) (time.Duration, error) {
+	cmd := Command(ctx, "ffprobe",
 		"-v", "error",
 		"-show_entries", "format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1",
@@ -51,6 +50,9 @@ func Duration(path string) (time.Duration, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, fmt.Errorf("ffprobe duration %s cancelled: %w", path, ctxErr)
+		}
 		msg := strings.TrimSpace(stderr.String())
 		if msg != "" {
 			return 0, fmt.Errorf("ffprobe duration %s: %s (%w)", path, msg, err)
@@ -61,8 +63,7 @@ func Duration(path string) (time.Duration, error) {
 	raw := strings.TrimSpace(stdout.String())
 	if raw == "" || raw == "N/A" {
 		// Fall back to the first audio stream when container duration is missing.
-		streamCmd := exec.Command(
-			"ffprobe",
+		streamCmd := Command(ctx, "ffprobe",
 			"-v", "error",
 			"-select_streams", "a:0",
 			"-show_entries", "stream=duration",
@@ -73,6 +74,9 @@ func Duration(path string) (time.Duration, error) {
 		streamCmd.Stdout = &streamStdout
 		streamCmd.Stderr = &streamStderr
 		if err := streamCmd.Run(); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return 0, fmt.Errorf("ffprobe stream duration %s cancelled: %w", path, ctxErr)
+			}
 			msg := strings.TrimSpace(streamStderr.String())
 			if msg != "" {
 				return 0, fmt.Errorf("ffprobe stream duration %s: %s (%w)", path, msg, err)
@@ -96,9 +100,8 @@ func Duration(path string) (time.Duration, error) {
 }
 
 // AudioFormat queries audio stream properties using ffprobe.
-func AudioFormat(path string) (Format, error) {
-	cmd := exec.Command(
-		"ffprobe",
+func AudioFormat(ctx context.Context, path string) (Format, error) {
+	cmd := Command(ctx, "ffprobe",
 		"-v", "error",
 		"-select_streams", "a:0",
 		"-show_streams",
@@ -111,6 +114,9 @@ func AudioFormat(path string) (Format, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Format{}, fmt.Errorf("ffprobe audio format %s cancelled: %w", path, ctxErr)
+		}
 		msg := strings.TrimSpace(stderr.String())
 		if msg != "" {
 			return Format{}, fmt.Errorf("ffprobe audio format %s: %s (%w)", path, msg, err)

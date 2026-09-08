@@ -137,7 +137,7 @@ func TestTakeDurations(t *testing.T) {
 		}
 
 		filePath := filepath.Join(takesDir, name)
-		dur, err := media.Duration(filePath)
+		dur, err := media.Duration(t.Context(), filePath)
 		if err != nil {
 			t.Errorf("Duration(%s) error: %v", filePath, err)
 			continue
@@ -161,7 +161,7 @@ func TestTakeDurations(t *testing.T) {
 // TestClipDuration verifies clip.mp4 duration within ten milliseconds.
 func TestClipDuration(t *testing.T) {
 	clipPath := resolvePath(t, "clip.mp4")
-	dur, err := media.Duration(clipPath)
+	dur, err := media.Duration(t.Context(), clipPath)
 	if err != nil {
 		t.Fatalf("Duration(%s) error: %v", clipPath, err)
 	}

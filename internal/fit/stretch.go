@@ -1,6 +1,7 @@
 package fit
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -276,8 +277,8 @@ func delta(f types.Fit) time.Duration {
 
 // PlanStretch chooses the repair for one measured fit under the default budget.
 // Call PlanStretchWithLimits to pass a budget the fit loop resolved itself.
-func PlanStretch(f types.Fit) StretchPlan {
-	return PlanStretchWithLimits(f, DefaultStretchLimits())
+func PlanStretch(ctx context.Context, f types.Fit) StretchPlan {
+	return PlanStretchWithLimits(ctx, f, DefaultStretchLimits())
 }
 
 // PlanStretchWithLimits chooses the repair for one measured fit under lim.
@@ -297,7 +298,7 @@ func PlanStretch(f types.Fit) StretchPlan {
 // It derives the miss from f.Measured minus f.Slot and ignores f.Delta
 // entirely. A caller may hand this function a literal whose Delta is absent or
 // stale, and the routing still follows the two durations. See delta for why.
-func PlanStretchWithLimits(f types.Fit, lim StretchLimits) StretchPlan {
+func PlanStretchWithLimits(ctx context.Context, f types.Fit, lim StretchLimits) StretchPlan {
 	if f.Slot <= 0 || f.Measured < 0 || !lim.Valid() {
 		return StretchPlan{Repair: types.RepairManual}
 	}
@@ -326,8 +327,8 @@ func PlanStretchWithLimits(f types.Fit, lim StretchLimits) StretchPlan {
 // Stretch repairs one take by time stretching it into its slot, under the
 // default budget. Call StretchWithLimits to pass a budget the fit loop
 // resolved itself.
-func Stretch(in, out string, slot time.Duration) (StretchResult, error) {
-	return StretchWithLimits(in, out, slot, DefaultStretchLimits())
+func Stretch(ctx context.Context, in, out string, slot time.Duration) (StretchResult, error) {
+	return StretchWithLimits(ctx, in, out, slot, DefaultStretchLimits())
 }
 
 // StretchWithLimits repairs one take by time stretching it into its slot.
@@ -396,7 +397,7 @@ func Stretch(in, out string, slot time.Duration) (StretchResult, error) {
 // every policy derived ratio to roughly 0.90 through 1.10, so this exported
 // path cannot reach ErrRatioRange today. The guard stays as defence in depth,
 // not as a branch this function's callers should expect to take.
-func StretchWithLimits(in, out string, slot time.Duration, lim StretchLimits) (StretchResult, error) {
+func StretchWithLimits(ctx context.Context, in, out string, slot time.Duration, lim StretchLimits) (StretchResult, error) {
 	if err := checkPaths(in, out); err != nil {
 		return StretchResult{}, err
 	}
@@ -407,12 +408,12 @@ func StretchWithLimits(in, out string, slot time.Duration, lim StretchLimits) (S
 		return StretchResult{}, fmt.Errorf("%w: got short %g and long %g", ErrLimits, lim.Short, lim.Long)
 	}
 
-	before, err := Measure(in, slot)
+	before, err := Measure(ctx, in, slot)
 	if err != nil {
 		return StretchResult{}, fmt.Errorf("%w: %s: %w", ErrSourceUnreadable, in, err)
 	}
 
-	plan := PlanStretchWithLimits(before, lim)
+	plan := PlanStretchWithLimits(ctx, before, lim)
 	res := StretchResult{In: in, Out: out, Before: before, Band: plan.Band, Limits: lim}
 	miss := delta(before)
 
@@ -432,7 +433,7 @@ func StretchWithLimits(in, out string, slot time.Duration, lim StretchLimits) (S
 		return res, fmt.Errorf("no atempo repair for %s on slot %v", plan.Repair, slot)
 	}
 
-	return applyStretch(res)
+	return applyStretch(ctx, res)
 }
 
 // renderStretch runs atempo and measures the output with ffprobe.
@@ -442,15 +443,15 @@ func StretchWithLimits(in, out string, slot time.Duration, lim StretchLimits) (S
 // Like applyStretch, this function is unexported. Go package scope still allows
 // sibling files in package fit to call it. Sibling files like rewrite.go or
 // loop.go must never call this function directly.
-func renderStretch(res StretchResult) (StretchResult, error) {
+func renderStretch(ctx context.Context, res StretchResult) (StretchResult, error) {
 	if err := checkRatio(res.Ratio); err != nil {
 		return res, err
 	}
-	if err := media.Atempo(res.In, res.Out, res.Ratio); err != nil {
+	if err := media.Atempo(ctx, res.In, res.Out, res.Ratio); err != nil {
 		return res, fmt.Errorf("%w: %w", ErrRenderFailed, err)
 	}
 
-	after, err := Measure(res.Out, res.Before.Slot)
+	after, err := Measure(ctx, res.Out, res.Before.Slot)
 	if err != nil {
 		return res, fmt.Errorf("%w: %s: %w", ErrRenderFailed, res.Out, err)
 	}
@@ -472,12 +473,12 @@ func renderStretch(res StretchResult) (StretchResult, error) {
 // that path at the same time. So the cleanup can only delete its own work. A
 // stat cannot promise that, because another call can create the file between
 // the stat and the write.
-func applyStretch(res StretchResult) (StretchResult, error) {
+func applyStretch(ctx context.Context, res StretchResult) (StretchResult, error) {
 	if err := claimOutput(res.Out); err != nil {
 		return res, err
 	}
 
-	res, err := renderStretch(res)
+	res, err := renderStretch(ctx, res)
 	if err != nil {
 		return res, discardOutput(res.Out, err)
 	}

@@ -1,6 +1,7 @@
 package fit
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -89,7 +90,7 @@ func copyFixtureInto(t *testing.T, dir, name string) string {
 // the function under test produced about its own work.
 func probeMs(t *testing.T, path string) int64 {
 	t.Helper()
-	d, err := media.Duration(path)
+	d, err := media.Duration(t.Context(), path)
 	if err != nil {
 		t.Fatalf("media.Duration(%s): %v", path, err)
 	}
@@ -115,7 +116,7 @@ func TestPlanStretchCoversEveryFixtureSegment(t *testing.T) {
 				t.Fatalf("ffprobe %s = %d ms, golden take_ms is %d", tc.file, measured, tc.takeMs)
 			}
 
-			f, err := Measure(path, slot)
+			f, err := Measure(t.Context(), path, slot)
 			if err != nil {
 				t.Fatalf("Measure(%s): %v", path, err)
 			}
@@ -123,7 +124,7 @@ func TestPlanStretchCoversEveryFixtureSegment(t *testing.T) {
 				t.Fatalf("Delta = %v, want %d ms", f.Delta, tc.deltaMs)
 			}
 
-			plan := PlanStretch(f)
+			plan := PlanStretch(t.Context(), f)
 			if plan.Repair != tc.repair {
 				t.Errorf("Repair = %s, want %s", plan.Repair, tc.repair)
 			}
@@ -167,7 +168,7 @@ func TestStretchLandsEveryRepairableFixtureInsideItsSlot(t *testing.T) {
 			out := filepath.Join(dir, "stretched.wav")
 			slot := time.Duration(tc.slotMs) * time.Millisecond
 
-			res, err := Stretch(in, out, slot)
+			res, err := Stretch(t.Context(), in, out, slot)
 			if err != nil {
 				t.Fatalf("Stretch(seg %d): %v", tc.seg, err)
 			}
@@ -196,14 +197,14 @@ func TestStretchLandsEveryRepairableFixtureInsideItsSlot(t *testing.T) {
 			}
 
 			// A stretched take must now report a fit and need no further repair.
-			after, err := Measure(out, slot)
+			after, err := Measure(t.Context(), out, slot)
 			if err != nil {
 				t.Fatalf("Measure(%s): %v", out, err)
 			}
 			if !after.Fits() {
 				t.Errorf("stretched take does not fit, delta %v", after.Delta)
 			}
-			if next := PlanStretch(after); next.Repair != types.RepairNone {
+			if next := PlanStretch(t.Context(), after); next.Repair != types.RepairNone {
 				t.Errorf("re-planning the stretched take gives %s, want none", next.Repair)
 			}
 
@@ -229,7 +230,7 @@ func TestStretchReproducesGoldenStretchedDurations(t *testing.T) {
 			in := copyFixtureInto(t, dir, tc.file)
 			out := filepath.Join(dir, "stretched.wav")
 
-			res, err := Stretch(in, out, time.Duration(tc.slotMs)*time.Millisecond)
+			res, err := Stretch(t.Context(), in, out, time.Duration(tc.slotMs)*time.Millisecond)
 			if err != nil {
 				t.Fatalf("Stretch(seg %d): %v", tc.seg, err)
 			}
@@ -271,7 +272,7 @@ func TestStretchRefusesSegment8(t *testing.T) {
 	out := filepath.Join(dir, "stretched.wav")
 	slot := 7110 * time.Millisecond
 
-	res, err := Stretch(in, out, slot)
+	res, err := Stretch(t.Context(), in, out, slot)
 	if !errors.Is(err, ErrUnderrunTooLarge) {
 		t.Fatalf("Stretch(seg 8) error = %v, want ErrUnderrunTooLarge", err)
 	}
@@ -296,7 +297,7 @@ func TestStretchRefusesSegment8(t *testing.T) {
 	// The widest budget this package accepts still refuses segment 8.
 	// No caller can talk the loop into stretching a 40 percent underrun.
 	wide := StretchLimits{Short: MaxStretchLimit, Long: MaxStretchLimit}
-	if _, err := StretchWithLimits(in, out, slot, wide); !errors.Is(err, ErrUnderrunTooLarge) {
+	if _, err := StretchWithLimits(t.Context(), in, out, slot, wide); !errors.Is(err, ErrUnderrunTooLarge) {
 		t.Errorf("StretchWithLimits(seg 8, widest budget) error = %v, want ErrUnderrunTooLarge", err)
 	}
 	mustNotExist(t, out, "segment 8 under the widest budget")
@@ -322,7 +323,7 @@ func TestSegment1MovesToRewriteUnderTheDefaultShortBudget(t *testing.T) {
 		t.Fatalf("seg 1 runs %.3f percent short, which no longer sits between the two budgets", shortPct)
 	}
 
-	res, err := Stretch(in, out, slot)
+	res, err := Stretch(t.Context(), in, out, slot)
 	if !errors.Is(err, ErrUnderrunTooLarge) {
 		t.Fatalf("Stretch(seg 1) error = %v, want ErrUnderrunTooLarge", err)
 	}
@@ -334,11 +335,11 @@ func TestSegment1MovesToRewriteUnderTheDefaultShortBudget(t *testing.T) {
 	// Only the budget moved this take. A caller that resolves the old 8 percent
 	// short budget still gets an atempo repair from the same code.
 	loose := StretchLimits{Short: 0.08, Long: DefaultMaxStretchLong}
-	if plan := PlanStretchWithLimits(res.Before, loose); plan.Repair != types.RepairAtempo {
+	if plan := PlanStretchWithLimits(t.Context(), res.Before, loose); plan.Repair != types.RepairAtempo {
 		t.Errorf("under an 8 percent short budget seg 1 plans %s, want atempo", plan.Repair)
 	}
 	looseOut := filepath.Join(dir, "loose.wav")
-	looseRes, err := StretchWithLimits(in, looseOut, slot, loose)
+	looseRes, err := StretchWithLimits(t.Context(), in, looseOut, slot, loose)
 	if err != nil {
 		t.Fatalf("StretchWithLimits(seg 1, 8 percent short): %v", err)
 	}
@@ -371,7 +372,7 @@ func TestStretchRatioRejectsRatiosOutsideTheAtempoRange(t *testing.T) {
 			in := copyFixtureInto(t, dir, "seg_1_try1.wav")
 			out := filepath.Join(dir, "stretched.wav")
 
-			_, err := stretchRatio(in, out, tc.ratio, 1820*time.Millisecond, DefaultStretchLimits())
+			_, err := stretchRatio(t.Context(), in, out, tc.ratio, 1820*time.Millisecond, DefaultStretchLimits())
 			if !errors.Is(err, ErrRatioRange) {
 				t.Fatalf("stretchRatio(ratio %v) error = %v, want ErrRatioRange", tc.ratio, err)
 			}
@@ -397,7 +398,7 @@ func TestStretchRemovesATakeThatLandedOutsideItsSlot(t *testing.T) {
 	out := filepath.Join(dir, "missed.wav")
 	slot := 1820 * time.Millisecond
 
-	res, err := stretchRatio(in, out, 1.5, slot, DefaultStretchLimits())
+	res, err := stretchRatio(t.Context(), in, out, 1.5, slot, DefaultStretchLimits())
 	if !errors.Is(err, ErrLandedOutside) {
 		t.Fatalf("stretchRatio(1.5) error = %v, want ErrLandedOutside", err)
 	}
@@ -420,7 +421,7 @@ func TestStretchRemovesATakeThatLandedOutsideItsSlot(t *testing.T) {
 	// A near miss just outside the band fails the same way, which pins the
 	// boundary rather than only the obvious case.
 	near := filepath.Join(dir, "near.wav")
-	nearRes, nearErr := stretchRatio(in, near, 0.85, slot, DefaultStretchLimits())
+	nearRes, nearErr := stretchRatio(t.Context(), in, near, 0.85, slot, DefaultStretchLimits())
 	if !errors.Is(nearErr, ErrLandedOutside) {
 		t.Fatalf("stretchRatio(0.85) error = %v, want ErrLandedOutside", nearErr)
 	}
@@ -437,7 +438,7 @@ func TestStretchSkipsATakeInsideTheDeadBand(t *testing.T) {
 	out := filepath.Join(dir, "stretched.wav")
 	slot := 4700 * time.Millisecond
 
-	res, err := Stretch(in, out, slot)
+	res, err := Stretch(t.Context(), in, out, slot)
 	if !errors.Is(err, ErrDeadBand) {
 		t.Fatalf("Stretch inside the dead band error = %v, want ErrDeadBand", err)
 	}
@@ -452,7 +453,7 @@ func TestStretchSkipsATakeInsideTheDeadBand(t *testing.T) {
 	// One millisecond outside the band the same take gets stretched.
 	edgeOut := filepath.Join(dir, "edge.wav")
 	edgeSlot := 4679 * time.Millisecond
-	edge, edgeErr := Stretch(in, edgeOut, edgeSlot)
+	edge, edgeErr := Stretch(t.Context(), in, edgeOut, edgeSlot)
 	if edgeErr != nil {
 		t.Fatalf("Stretch just outside the band: %v", edgeErr)
 	}
@@ -463,7 +464,7 @@ func TestStretchSkipsATakeInsideTheDeadBand(t *testing.T) {
 	// The short side of the same band. The take runs 30 ms short of a 4750 ms
 	// slot, which the dead band also absorbs.
 	shortOut := filepath.Join(dir, "short.wav")
-	shortRes, shortErr := Stretch(in, shortOut, 4750*time.Millisecond)
+	shortRes, shortErr := Stretch(t.Context(), in, shortOut, 4750*time.Millisecond)
 	if !errors.Is(shortErr, ErrDeadBand) {
 		t.Fatalf("Stretch inside the short dead band error = %v, want ErrDeadBand", shortErr)
 	}
@@ -497,7 +498,7 @@ func TestPlanStretchHonoursDirectionalThresholds(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := PlanStretch(types.NewFit(slot, tc.measured))
+			plan := PlanStretch(t.Context(), types.NewFit(slot, tc.measured))
 			if plan.Repair != tc.want {
 				t.Errorf("Repair = %s, want %s", plan.Repair, tc.want)
 			}
@@ -505,10 +506,10 @@ func TestPlanStretchHonoursDirectionalThresholds(t *testing.T) {
 	}
 
 	// A slot with no duration is an operator problem, not an atempo problem.
-	if plan := PlanStretch(types.NewFit(0, time.Second)); plan.Repair != types.RepairManual {
+	if plan := PlanStretch(t.Context(), types.NewFit(0, time.Second)); plan.Repair != types.RepairManual {
 		t.Errorf("zero slot Repair = %s, want manual", plan.Repair)
 	}
-	if plan := PlanStretch(types.NewFit(-time.Second, time.Second)); plan.Repair != types.RepairManual {
+	if plan := PlanStretch(t.Context(), types.NewFit(-time.Second, time.Second)); plan.Repair != types.RepairManual {
 		t.Errorf("negative slot Repair = %s, want manual", plan.Repair)
 	}
 }
@@ -592,20 +593,20 @@ func TestDeadBandDependsOnlyOnItsOwnSide(t *testing.T) {
 	// leaves it there.
 	longTake := types.NewFit(slot, slot+30*time.Millisecond)
 	tightShort := StretchLimits{Short: 0.04, Long: base.Long}
-	if plan := PlanStretchWithLimits(longTake, base); plan.Repair != types.RepairNone {
+	if plan := PlanStretchWithLimits(t.Context(), longTake, base); plan.Repair != types.RepairNone {
 		t.Fatalf("under defaults the long take plans %s, want none", plan.Repair)
 	}
-	if plan := PlanStretchWithLimits(longTake, tightShort); plan.Repair != types.RepairNone {
+	if plan := PlanStretchWithLimits(t.Context(), longTake, tightShort); plan.Repair != types.RepairNone {
 		t.Errorf("tightening the short budget alone moved a long take to %s, want none", plan.Repair)
 	}
 
 	// The mirror case. Tightening the long side alone leaves a short take alone.
 	shortTake := types.NewFit(slot, slot-30*time.Millisecond)
 	tightLong := StretchLimits{Short: base.Short, Long: 0.04}
-	if plan := PlanStretchWithLimits(shortTake, base); plan.Repair != types.RepairNone {
+	if plan := PlanStretchWithLimits(t.Context(), shortTake, base); plan.Repair != types.RepairNone {
 		t.Fatalf("under defaults the short take plans %s, want none", plan.Repair)
 	}
-	if plan := PlanStretchWithLimits(shortTake, tightLong); plan.Repair != types.RepairNone {
+	if plan := PlanStretchWithLimits(t.Context(), shortTake, tightLong); plan.Repair != types.RepairNone {
 		t.Errorf("tightening the long budget alone moved a short take to %s, want none", plan.Repair)
 	}
 }
@@ -632,10 +633,10 @@ func TestCallerSuppliedLimitsDriveTheRouting(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := PlanStretchWithLimits(shortTake, tc.lim).Repair; got != tc.wantShort {
+			if got := PlanStretchWithLimits(t.Context(), shortTake, tc.lim).Repair; got != tc.wantShort {
 				t.Errorf("short take plans %s, want %s", got, tc.wantShort)
 			}
-			if got := PlanStretchWithLimits(longTake, tc.lim).Repair; got != tc.wantLong {
+			if got := PlanStretchWithLimits(t.Context(), longTake, tc.lim).Repair; got != tc.wantLong {
 				t.Errorf("long take plans %s, want %s", got, tc.wantLong)
 			}
 		})
@@ -665,7 +666,7 @@ func TestCallerSuppliedLimitsDriveTheRouting(t *testing.T) {
 	if !borderline.Fits() {
 		t.Fatalf("a 6 percent short take must still report Fits true under threshold %g", types.FitThreshold)
 	}
-	if plan := PlanStretch(borderline); plan.Repair != types.RepairRewrite {
+	if plan := PlanStretch(t.Context(), borderline); plan.Repair != types.RepairRewrite {
 		t.Errorf("a 6 percent short take plans %s, want rewrite", plan.Repair)
 	}
 }
@@ -694,11 +695,11 @@ func TestStretchRejectsUnusableLimits(t *testing.T) {
 				t.Errorf("StretchLimits%+v reports Valid", tc.lim)
 			}
 			out := filepath.Join(dir, "bad.wav")
-			if _, err := StretchWithLimits(in, out, slot, tc.lim); !errors.Is(err, ErrLimits) {
+			if _, err := StretchWithLimits(t.Context(), in, out, slot, tc.lim); !errors.Is(err, ErrLimits) {
 				t.Errorf("StretchWithLimits error = %v, want ErrLimits", err)
 			}
 			mustNotExist(t, out, "the unusable budget")
-			plan := PlanStretchWithLimits(types.NewFit(slot, 5720*time.Millisecond), tc.lim)
+			plan := PlanStretchWithLimits(t.Context(), types.NewFit(slot, 5720*time.Millisecond), tc.lim)
 			if plan.Repair != types.RepairManual {
 				t.Errorf("PlanStretchWithLimits gives %s, want manual", plan.Repair)
 			}
@@ -763,7 +764,7 @@ func TestMaxStretchLimitMatchesTheListeningLadder(t *testing.T) {
 		t.Fatalf("seg 6 against a 5223 ms slot runs %.3f percent short, want about -14.99", pct)
 	}
 
-	res, err := StretchWithLimits(in, out, slot, widest)
+	res, err := StretchWithLimits(t.Context(), in, out, slot, widest)
 	if !errors.Is(err, ErrUnderrunTooLarge) {
 		t.Fatalf("StretchWithLimits(seg 6, 14.99 percent short, ceiling budget) error = %v, want ErrUnderrunTooLarge", err)
 	}
@@ -791,12 +792,12 @@ func TestStretchFailurePathsCarrySentinelsAndLeaveNoFile(t *testing.T) {
 		call func() error
 		want error
 	}{
-		{"empty source", func() error { _, err := Stretch("", out, slot); return err }, ErrPathRequired},
-		{"empty output", func() error { _, err := Stretch(in, "", slot); return err }, ErrPathRequired},
-		{"output equals source", func() error { _, err := Stretch(in, in, slot); return err }, ErrSameFile},
-		{"missing source", func() error { _, err := Stretch(missing, out, slot); return err }, ErrSourceMissing},
-		{"zero slot", func() error { _, err := Stretch(in, out, 0); return err }, ErrNoSlot},
-		{"negative slot", func() error { _, err := Stretch(in, out, -time.Second); return err }, ErrNoSlot},
+		{"empty source", func() error { _, err := Stretch(t.Context(), "", out, slot); return err }, ErrPathRequired},
+		{"empty output", func() error { _, err := Stretch(t.Context(), in, "", slot); return err }, ErrPathRequired},
+		{"output equals source", func() error { _, err := Stretch(t.Context(), in, in, slot); return err }, ErrSameFile},
+		{"missing source", func() error { _, err := Stretch(t.Context(), missing, out, slot); return err }, ErrSourceMissing},
+		{"zero slot", func() error { _, err := Stretch(t.Context(), in, out, 0); return err }, ErrNoSlot},
+		{"negative slot", func() error { _, err := Stretch(t.Context(), in, out, -time.Second); return err }, ErrNoSlot},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -810,7 +811,7 @@ func TestStretchFailurePathsCarrySentinelsAndLeaveNoFile(t *testing.T) {
 	}
 
 	// A missing take must not send the reader to ffprobe.
-	_, missErr := Stretch(missing, out, slot)
+	_, missErr := Stretch(t.Context(), missing, out, slot)
 	if strings.Contains(missErr.Error(), "ffprobe") {
 		t.Errorf("a missing take reports %q, which names the wrong tool", missErr)
 	}
@@ -821,7 +822,7 @@ func TestStretchFailurePathsCarrySentinelsAndLeaveNoFile(t *testing.T) {
 	// A symlink back to the source is the same file under another name.
 	link := filepath.Join(dir, "alias.wav")
 	if err := os.Symlink(in, link); err == nil {
-		if _, err := Stretch(in, link, slot); !errors.Is(err, ErrSameFile) {
+		if _, err := Stretch(t.Context(), in, link, slot); !errors.Is(err, ErrSameFile) {
 			t.Errorf("symlinked output error = %v, want ErrSameFile", err)
 		}
 		if err := os.Remove(link); err != nil {
@@ -833,7 +834,7 @@ func TestStretchFailurePathsCarrySentinelsAndLeaveNoFile(t *testing.T) {
 	if err := os.WriteFile(out, []byte("existing take"), 0o644); err != nil {
 		t.Fatalf("seed output: %v", err)
 	}
-	if _, err := Stretch(in, out, slot); !errors.Is(err, ErrOutputExists) {
+	if _, err := Stretch(t.Context(), in, out, slot); !errors.Is(err, ErrOutputExists) {
 		t.Errorf("existing output error = %v, want ErrOutputExists", err)
 	}
 	data, err := os.ReadFile(out)
@@ -843,18 +844,18 @@ func TestStretchFailurePathsCarrySentinelsAndLeaveNoFile(t *testing.T) {
 
 	// The two repair band refusals and the dead band refusal write nothing.
 	fresh := filepath.Join(dir, "fresh.wav")
-	if _, err := Stretch(in, fresh, slot); !errors.Is(err, ErrUnderrunTooLarge) {
+	if _, err := Stretch(t.Context(), in, fresh, slot); !errors.Is(err, ErrUnderrunTooLarge) {
 		t.Errorf("seg 1 error = %v, want ErrUnderrunTooLarge", err)
 	}
 	mustNotExist(t, fresh, "the underrun refusal")
 
 	longIn := copyFixtureInto(t, dir, "seg_3_try1.wav")
-	if _, err := Stretch(longIn, fresh, 5000*time.Millisecond); !errors.Is(err, ErrOverrunTooLarge) {
+	if _, err := Stretch(t.Context(), longIn, fresh, 5000*time.Millisecond); !errors.Is(err, ErrOverrunTooLarge) {
 		t.Errorf("an overrun beyond the budget error = %v, want ErrOverrunTooLarge", err)
 	}
 	mustNotExist(t, fresh, "the overrun refusal")
 
-	if _, err := Stretch(in, fresh, 1700*time.Millisecond); !errors.Is(err, ErrDeadBand) {
+	if _, err := Stretch(t.Context(), in, fresh, 1700*time.Millisecond); !errors.Is(err, ErrDeadBand) {
 		t.Errorf("a take inside the band error = %v, want ErrDeadBand", err)
 	}
 	mustNotExist(t, fresh, "the dead band refusal")
@@ -862,7 +863,7 @@ func TestStretchFailurePathsCarrySentinelsAndLeaveNoFile(t *testing.T) {
 	// A source that is a directory cannot be probed. Round 2 found this path
 	// returned no sentinel and surfaced raw ffprobe text naming the directory.
 	dirOut := filepath.Join(dir, "dir_source.wav")
-	if _, err := Stretch(dir, dirOut, slot); !errors.Is(err, ErrSourceUnreadable) {
+	if _, err := Stretch(t.Context(), dir, dirOut, slot); !errors.Is(err, ErrSourceUnreadable) {
 		t.Errorf("directory source error = %v, want ErrSourceUnreadable", err)
 	}
 	mustNotExist(t, dirOut, "a directory source")
@@ -873,7 +874,7 @@ func TestStretchFailurePathsCarrySentinelsAndLeaveNoFile(t *testing.T) {
 		t.Fatalf("write corrupt fixture: %v", err)
 	}
 	corruptOut := filepath.Join(dir, "corrupt_source.wav")
-	if _, err := Stretch(corrupt, corruptOut, slot); !errors.Is(err, ErrSourceUnreadable) {
+	if _, err := Stretch(t.Context(), corrupt, corruptOut, slot); !errors.Is(err, ErrSourceUnreadable) {
 		t.Errorf("undecodable source error = %v, want ErrSourceUnreadable", err)
 	}
 	mustNotExist(t, corruptOut, "an undecodable source")
@@ -882,13 +883,13 @@ func TestStretchFailurePathsCarrySentinelsAndLeaveNoFile(t *testing.T) {
 	// rendering starts, on a take this package actually stretches. Segment 3
 	// against a 5320 ms slot runs 7.5 percent long, which the long budget repairs.
 	missingDirOut := filepath.Join(dir, "nope", "stretched.wav")
-	if _, err := Stretch(longIn, missingDirOut, 5320*time.Millisecond); !errors.Is(err, ErrRenderFailed) {
+	if _, err := Stretch(t.Context(), longIn, missingDirOut, 5320*time.Millisecond); !errors.Is(err, ErrRenderFailed) {
 		t.Errorf("missing output directory error = %v, want ErrRenderFailed", err)
 	}
 	mustNotExist(t, missingDirOut, "a missing output directory")
 
 	noExtOut := filepath.Join(dir, "noext")
-	if _, err := Stretch(longIn, noExtOut, 5320*time.Millisecond); !errors.Is(err, ErrRenderFailed) {
+	if _, err := Stretch(t.Context(), longIn, noExtOut, 5320*time.Millisecond); !errors.Is(err, ErrRenderFailed) {
 		t.Errorf("extensionless output error = %v, want ErrRenderFailed", err)
 	}
 	mustNotExist(t, noExtOut, "an extensionless output")
@@ -912,21 +913,21 @@ func TestOnlyAnUnexportedPathCanBypassTheRepairBand(t *testing.T) {
 	out := filepath.Join(dir, "bypass.wav")
 	slot := 7110 * time.Millisecond
 
-	before, err := Measure(in, slot)
+	before, err := Measure(t.Context(), in, slot)
 	if err != nil {
 		t.Fatalf("Measure: %v", err)
 	}
 	ratio := before.Ratio()
 
 	// The only exported way in refuses it and writes nothing.
-	if _, err := Stretch(in, out, slot); !errors.Is(err, ErrUnderrunTooLarge) {
+	if _, err := Stretch(t.Context(), in, out, slot); !errors.Is(err, ErrUnderrunTooLarge) {
 		t.Fatalf("Stretch(seg 8) error = %v, want ErrUnderrunTooLarge", err)
 	}
 	mustNotExist(t, out, "the exported repair path")
 
 	// The unexported bypass still exists for this package's own tests. It
 	// succeeds on that ratio, which is precisely why no caller may reach it.
-	res, err := stretchRatio(in, out, ratio, slot, DefaultStretchLimits())
+	res, err := stretchRatio(t.Context(), in, out, ratio, slot, DefaultStretchLimits())
 	if err != nil {
 		t.Fatalf("stretchRatio(seg 8, %.4f) = %v, want nil", ratio, err)
 	}
@@ -935,11 +936,11 @@ func TestOnlyAnUnexportedPathCanBypassTheRepairBand(t *testing.T) {
 		t.Errorf("res.After.Measured = %d ms, ffprobe says %d ms",
 			res.After.Measured.Milliseconds(), landed)
 	}
-	if plan := PlanStretch(res.After); plan.Repair != types.RepairNone {
+	if plan := PlanStretch(t.Context(), res.After); plan.Repair != types.RepairNone {
 		t.Errorf("the bypass output plans %s, want none", plan.Repair)
 	}
 	t.Logf("seg 8 bypass ratio=%.4f landed_ms=%d slot_ms=%d replans=%s exported=false",
-		ratio, landed, slot.Milliseconds(), PlanStretch(res.After).Repair)
+		ratio, landed, slot.Milliseconds(), PlanStretch(t.Context(), res.After).Repair)
 }
 
 // TestPlanRoutesOnTheDerivedDeltaAndNeverOnTheField pins where the planner
@@ -1013,7 +1014,7 @@ func TestPlanRoutesOnTheDerivedDeltaAndNeverOnTheField(t *testing.T) {
 				t.Fatalf("this row cannot tell the two sources apart, both give %s", tc.wantRepair)
 			}
 
-			plan := PlanStretch(tc.fit)
+			plan := PlanStretch(t.Context(), tc.fit)
 			if plan.Repair != tc.wantRepair {
 				t.Errorf("Repair = %s, want %s, the field would give %s",
 					plan.Repair, tc.wantRepair, tc.fieldGives)
@@ -1027,7 +1028,7 @@ func TestPlanRoutesOnTheDerivedDeltaAndNeverOnTheField(t *testing.T) {
 
 			// The same durations through types.NewFit must agree, because the
 			// derivation and the constructor compute the same quantity.
-			viaConstructor := PlanStretch(types.NewFit(tc.fit.Slot, tc.fit.Measured))
+			viaConstructor := PlanStretch(t.Context(), types.NewFit(tc.fit.Slot, tc.fit.Measured))
 			if viaConstructor.Repair != plan.Repair || viaConstructor.Limit != plan.Limit {
 				t.Errorf("through NewFit: repair %s limit %g, through the literal: repair %s limit %g",
 					viaConstructor.Repair, viaConstructor.Limit, plan.Repair, plan.Limit)
@@ -1047,7 +1048,7 @@ func TestPlanRoutesOnTheDerivedDeltaAndNeverOnTheField(t *testing.T) {
 	if !seg8.Fits() || seg8.TooShort() {
 		t.Fatalf("types.Fit no longer reads its own field, Fits=%v TooShort=%v", seg8.Fits(), seg8.TooShort())
 	}
-	if plan := PlanStretch(seg8); plan.Repair != types.RepairRewrite {
+	if plan := PlanStretch(t.Context(), seg8); plan.Repair != types.RepairRewrite {
 		t.Errorf("the 2026-09-07 literal plans %s, want rewrite", plan.Repair)
 	}
 }
@@ -1093,7 +1094,7 @@ func TestConcurrentStretchesGiveOneWinnerAndOneFile(t *testing.T) {
 				for k := 0; k < 2; k++ {
 					go func(k int) {
 						defer wg.Done()
-						results[k], errs[k] = StretchWithLimits(in, out, slots[k], DefaultStretchLimits())
+						results[k], errs[k] = StretchWithLimits(t.Context(), in, out, slots[k], DefaultStretchLimits())
 					}(k)
 				}
 				wg.Wait()
@@ -1208,7 +1209,7 @@ func TestRenderListeningCandidates(t *testing.T) {
 			}
 			// renderCandidate keeps the file on purpose. A candidate is not a
 			// repaired take, and no exported symbol reaches this path.
-			res, err := renderCandidate(src, out, ratio, slot)
+			res, err := renderCandidate(t.Context(), src, out, ratio, slot)
 			if err != nil {
 				t.Fatalf("renderCandidate(seg %d, %.4f): %v", sub.seg, ratio, err)
 			}
@@ -1222,7 +1223,7 @@ func TestRenderListeningCandidates(t *testing.T) {
 				sub.seg, ratio, landed, sub.slotMs, landed-sub.slotMs, shortPct, filepath.Base(out))
 		}
 		t.Logf("seg %d full_correction_ratio=%.4f original_ms=%d slot_ms=%d plan=%s",
-			sub.seg, measured.Ratio(), probeMs(t, original), sub.slotMs, PlanStretch(measured).Repair)
+			sub.seg, measured.Ratio(), probeMs(t, original), sub.slotMs, PlanStretch(t.Context(), measured).Repair)
 	}
 }
 
@@ -1268,12 +1269,12 @@ func TestPlanStretchRefusesNegativeMeasuredDuration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fit := types.Fit{Slot: tc.slot, Measured: tc.measured}
-			plan := PlanStretch(fit)
+			plan := PlanStretch(t.Context(), fit)
 			if plan.Repair != types.RepairManual {
 				t.Errorf("PlanStretch(Measured=%v) = %v, want %v",
 					tc.measured, plan.Repair, types.RepairManual)
 			}
-			planWithLimits := PlanStretchWithLimits(fit, DefaultStretchLimits())
+			planWithLimits := PlanStretchWithLimits(t.Context(), fit, DefaultStretchLimits())
 			if planWithLimits.Repair != types.RepairManual {
 				t.Errorf("PlanStretchWithLimits(Measured=%v) = %v, want %v",
 					tc.measured, planWithLimits.Repair, types.RepairManual)
@@ -1290,12 +1291,12 @@ func TestPlanStretchRefusesNegativeMeasuredDuration(t *testing.T) {
 //
 // Only this package's own tests call it. They use it to pin the landing check,
 // which no correctly planned repair can reach.
-func stretchRatio(in, out string, ratio float64, slot time.Duration, lim StretchLimits) (StretchResult, error) {
-	res, err := prepareRatio(in, out, ratio, slot, lim)
+func stretchRatio(ctx context.Context, in, out string, ratio float64, slot time.Duration, lim StretchLimits) (StretchResult, error) {
+	res, err := prepareRatio(ctx, in, out, ratio, slot, lim)
 	if err != nil {
 		return StretchResult{}, err
 	}
-	return applyStretch(res)
+	return applyStretch(ctx, res)
 }
 
 // renderCandidate renders one take at an explicit ratio and re-measures it with
@@ -1305,17 +1306,17 @@ func stretchRatio(in, out string, ratio float64, slot time.Duration, lim Stretch
 // The listening harness uses it to build a ladder of slow down candidates for a
 // human ear. A candidate is not a repaired take, so it must never reach the fit
 // loop. It lives in this test file so sibling files in package fit cannot call it.
-func renderCandidate(in, out string, ratio float64, slot time.Duration) (StretchResult, error) {
-	res, err := prepareRatio(in, out, ratio, slot, DefaultStretchLimits())
+func renderCandidate(ctx context.Context, in, out string, ratio float64, slot time.Duration) (StretchResult, error) {
+	res, err := prepareRatio(ctx, in, out, ratio, slot, DefaultStretchLimits())
 	if err != nil {
 		return StretchResult{}, err
 	}
-	return renderStretch(res)
+	return renderStretch(ctx, res)
 }
 
 // prepareRatio validates one explicit ratio call and measures its source take.
 // It serves stretchRatio and renderCandidate for test and listening harness runs.
-func prepareRatio(in, out string, ratio float64, slot time.Duration, lim StretchLimits) (StretchResult, error) {
+func prepareRatio(ctx context.Context, in, out string, ratio float64, slot time.Duration, lim StretchLimits) (StretchResult, error) {
 	if err := checkPaths(in, out); err != nil {
 		return StretchResult{}, err
 	}
@@ -1329,7 +1330,7 @@ func prepareRatio(in, out string, ratio float64, slot time.Duration, lim Stretch
 		return StretchResult{}, err
 	}
 
-	before, err := Measure(in, slot)
+	before, err := Measure(ctx, in, slot)
 	if err != nil {
 		return StretchResult{}, fmt.Errorf("%w: %s: %w", ErrSourceUnreadable, in, err)
 	}

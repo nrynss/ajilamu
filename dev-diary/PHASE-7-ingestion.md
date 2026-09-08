@@ -378,12 +378,21 @@ owns:       internal/media/ffmpeg.go, internal/media/probe.go, internal/media/me
             internal/assemble/export.go, internal/assemble/peaks.go,
             internal/assemble/bed_test.go, internal/assemble/place_test.go,
             internal/assemble/duck_test.go, internal/assemble/export_test.go,
-            internal/assemble/peaks_test.go
-status:     not-started
+            internal/assemble/peaks_test.go,
+            internal/fit/measure.go, internal/fit/measure_test.go,
+            internal/fit/stretch.go, internal/fit/stretch_test.go,
+            internal/fit/rewrite.go, internal/fit/rewrite_test.go,
+            internal/fit/loop.go, internal/fit/loop_test.go,
+            internal/gemini/segment_live_test.go, testdata/fixtures_test.go
+status:     done
 ```
 Every ffmpeg and ffprobe call uses `exec.Command` with no context, so a run cannot be stopped and shutdown leaves children behind.
 
 Thread `context.Context` through every exported call in `internal/media` and `internal/assemble`, use `exec.CommandContext`, and return an error that names cancellation. Change nothing on the success path.
+
+The change reaches `internal/fit`, because `Measure` and `renderStretch` call media. Thread the
+context through them and through `Pipeline.Run`. A `context.Background()` substitute leaves the
+stretch and measure steps uncancellable, which is the defect this task exists to remove.
 
 **Done when:** Cancelling the context kills the child process, a test proves it, and every caller still compiles.
 
@@ -665,3 +674,20 @@ The review reproduced the defect and the fix against the built frontend served b
 binary. The reverted build threw `effect_update_depth_exceeded` and both tab switches stayed on
 `rail-lines`. The fixed build switches Details and History, mounts 7 DAG nodes and 6 edges, and
 logs no error. Round 1 returned APPROVE with zero findings.
+
+### T7.3c: Cancellable media and assembler
+
+`media.Command(ctx, name, args...)` builds `exec.CommandContext` and sets `WaitDelay` to 5
+seconds. `Run`, `Demux`, `Atempo`, `Duration`, and `AudioFormat` take a context and route through
+it. A cancelled or expired context yields an error that satisfies `errors.Is` for its sentinel.
+
+`BuildBed`, `PrepareTake`, `Place`, `Overlay`, `Duck`, `Export`, and `Peaks` take a context too.
+The change reaches `internal/fit`, so `Measure`, `PlanStretch`, `PlanStretchWithLimits`,
+`Stretch`, `StretchWithLimits`, and `Pipeline.Run` carry it down to media. No non-test file
+passes `context.Background()`.
+
+Two implementers collided in this working tree. One repaired a corrupted call at
+`internal/fit/stretch_test.go:424` to compile. The review confirmed the repair matches the
+function contract and that no assertion changed.
+
+Round 1 returned APPROVE with zero findings.
