@@ -9,6 +9,11 @@
     pictureDurationMs,
     referenceSlotMs
   } from "$lib/fixture"
+  import Boundary, { type BoundaryChange } from "$lib/edit/Boundary.svelte"
+  import CommandBar, {
+    type CommandIntent,
+    type CommandParseFailure
+  } from "$lib/edit/CommandBar.svelte"
   import { watchRunProgress, type ProgressSubscription } from "$lib/progress"
   import LanguageStrip from "$lib/LanguageStrip.svelte"
   import LengthBar from "$lib/LengthBar.svelte"
@@ -21,6 +26,20 @@
   import type { Dub, DubIndex, ProgressEvent, Take } from "$lib/types"
 
   type SelectionSource = "user" | "playhead"
+
+  interface CommandPreview {
+    command: string
+    summary: string
+    segment: CommandPreviewSegment
+  }
+
+  interface CommandPreviewSegment {
+    id: number
+    start_ms: number
+    end_ms: number
+    duration_ms: number
+    speaker: string
+  }
 
   const loadingSentence = "We are loading this workspace from the offline project fixture."
   const pendingProjectSentence = "This project is waiting for dubbing. Its video is saved, but no lines, takes, or costs exist yet."
@@ -69,8 +88,8 @@
   let theme = $state("light")
   let playback = $state<PlaybackSnapshot>({ currentTime: 0, duration: 0, paused: true })
   let helpDialog = $state<HTMLDialogElement | undefined>()
-  let commandBar = $state<HTMLInputElement | undefined>()
-  let commandStatus = $state("")
+  let commandBar = $state<CommandBar | undefined>()
+  let commandPreview = $state<CommandPreview | undefined>()
   let preview = $state<Preview | undefined>()
   let lengthList = $state<HTMLOListElement | undefined>()
   let takeAudio: HTMLAudioElement | undefined
@@ -192,6 +211,17 @@
     if (hit) selectSegment(hit.id, "playhead")
   }
 
+  function handleBoundaryChange(change: BoundaryChange): void {
+    if (!dub) return
+    commandPreview = undefined
+    dub = {
+      ...dub,
+      segments: dub.segments.map((segment) => (
+        segment.id === change.segment.id ? change.segment : segment
+      ))
+    }
+  }
+
   function showHelp(): void {
     if (helpDialog && !helpDialog.open) helpDialog.showModal()
   }
@@ -204,9 +234,65 @@
     commandBar?.focus()
   }
 
-  function handleCommand(event: SubmitEvent): void {
-    event.preventDefault()
-    commandStatus = "This workspace cannot run editor commands yet."
+  async function previewCommand(command: string): Promise<CommandIntent | CommandParseFailure> {
+    const currentDub = dub
+    if (!currentDub) return { error: "This timeline is not ready for editing." }
+
+    try {
+      const response = await fetch("/api/editor/commands/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          command,
+          timeline: {
+            duration_ms: pictureDurationMs(currentDub),
+            segments: currentDub.segments.map(({ id, start_ms, end_ms, speaker }) => ({ id, start_ms, end_ms, speaker }))
+          }
+        })
+      })
+      if (!response.ok) return { error: await commandPreviewError(response) }
+      const result = await response.json() as CommandPreview
+      if (!isCommandPreview(result, command)) return { error: "The command preview was incomplete. No timeline change was made." }
+      commandPreview = result
+      return { command, summary: result.summary }
+    } catch {
+      return { error: "We could not validate that command. No timeline change was made." }
+    }
+  }
+
+  function confirmCommand(intent: CommandIntent): void {
+    const currentDub = dub
+    const previewResult = commandPreview
+    if (!currentDub || !previewResult || previewResult.command !== intent.command) {
+      throw new Error("Please preview this command again before confirming it.")
+    }
+    dub = {
+      ...currentDub,
+      segments: currentDub.segments.map((segment) => (
+        segment.id === previewResult.segment.id ? { ...segment, ...previewResult.segment } : segment
+      ))
+    }
+    commandPreview = undefined
+    void selectSegment(previewResult.segment.id)
+  }
+
+  async function commandPreviewError(response: Response): Promise<string> {
+    const message = (await response.text()).trim()
+    return message || "We could not validate that command. No timeline change was made."
+  }
+
+  function isCommandPreview(value: unknown, command: string): value is CommandPreview {
+    if (typeof value !== "object" || value === null) return false
+    const preview = value as Partial<CommandPreview>
+    return preview.command === command
+      && typeof preview.summary === "string"
+      && typeof preview.segment === "object"
+      && preview.segment !== null
+      && typeof preview.segment.id === "number"
+      && typeof preview.segment.start_ms === "number"
+      && typeof preview.segment.end_ms === "number"
+      && typeof preview.segment.duration_ms === "number"
+      && typeof preview.segment.speaker === "string"
   }
 
   function formatCost(nanodollars: number): string {
@@ -489,18 +575,15 @@
         {/if}
 
         <section class="editor" aria-label="Timeline editor">
-          <form class="command-bar" onsubmit={handleCommand}>
-            <label for="editor-command">Editor AI command</label>
-            <input
-              bind:this={commandBar}
-              id="editor-command"
-              autocomplete="off"
-              placeholder="Type a command to edit this timeline"
+          <CommandBar bind:this={commandBar} parse={previewCommand} onconfirm={confirmCommand} />
+          {#if selectedRow}
+            <Boundary
+              segment={selectedRow.segment}
+              segments={dub.segments}
+              takes={selectedRow.line?.takes ?? []}
+              timelineDurationMs={sharedPictureDurationMs}
+              onchange={handleBoundaryChange}
             />
-            <span class="hint numeric">Press / to focus</span>
-          </form>
-          {#if commandStatus}
-            <p class="command-status" role="status">{commandStatus}</p>
           {/if}
           <Timeline
             segments={dub.segments}
@@ -704,45 +787,6 @@
     min-height: 156px;
   }
 
-  .command-bar {
-    align-items: center;
-    border-bottom: 1px solid var(--line-soft);
-    display: grid;
-    gap: 10px;
-    grid-template-columns: 116px minmax(0, 1fr) auto;
-    padding: 8px 16px;
-  }
-
-  .command-bar label {
-    color: var(--dim);
-    font-size: 10px;
-    font-weight: 650;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .command-bar input {
-    background: var(--raised);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-control);
-    color: var(--text);
-    font: inherit;
-    min-width: 0;
-    padding: 6px 8px;
-  }
-
-  .hint {
-    color: var(--faint);
-    font-size: 10px;
-  }
-
-  .command-status {
-    color: var(--dim);
-    font-size: 11.5px;
-    margin: 0;
-    padding: 6px 16px;
-  }
-
   dialog {
     background: var(--surface);
     border: 1px solid var(--line);
@@ -810,13 +854,4 @@
     }
   }
 
-  @media (max-width: 560px) {
-    .command-bar {
-      grid-template-columns: 1fr;
-    }
-
-    .hint {
-      display: none;
-    }
-  }
 </style>

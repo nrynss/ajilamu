@@ -131,6 +131,7 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	mux.Handle("POST /api/dubs/{id}/run", RunStartHandler(runs, options.StorageDir))
 	mux.Handle("POST /api/dubs/{id}/run/cancel", RunCancelHandler(runs))
 	mux.Handle("GET /api/dubs/{id}/events", EventsHandler(runs))
+	mux.Handle("POST /api/editor/commands/preview", NewCommandPreviewHandler())
 	mux.Handle("/api/", http.NotFoundHandler())
 	mux.Handle("/", frontend)
 
