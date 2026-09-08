@@ -96,7 +96,7 @@ requires:   T5.1
 fixture-ok: yes
 size:       M · mid
 owns:       web/src/lib/Rail.svelte, web/src/lib/tabs/
-status:     not-started
+status:     done
 ```
 Implement the 352px right rail with three tabs: **Lines**, **Details**, and **History**.
 
@@ -114,7 +114,7 @@ requires:   T5.1
 fixture-ok: yes
 size:       M · mid
 owns:       web/src/lib/states/, web/src/lib/shortcuts.ts
-status:     not-started
+status:     done
 ```
 Build four UI states for each view: loading, empty, error, and populated. Show an active step banner during processing instead of an indefinite spinner.
 
