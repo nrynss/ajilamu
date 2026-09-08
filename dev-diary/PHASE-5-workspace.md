@@ -76,7 +76,7 @@ requires:   T5.1, T1.1
 fixture-ok: yes
 size:       L · frontier
 owns:       web/src/lib/LengthBar.svelte
-status:     claimed:gpt-5-codex-t5.4
+status:     done
 ```
 Render the length bar instrument on HTML canvas. Repaint automatically upon window resize or theme toggle.
 
