@@ -137,8 +137,22 @@ what exists now, what surprised you, and what the next agent should not work out
 Go 1.27.1, standard library first. Svelte 5 with runes on Vite, Node 26. ffmpeg n9.0.1, which
 supplies `atempo`, `amix`, `aresample`, and `sidechaincompress`.
 
-One exception applies. google.golang.org/genai supplies the Gemini clients.
-The SDK authenticates with Application Default Credentials and covers the GCE metadata server.
+Two exceptions apply.
+
+`google.golang.org/genai` supplies the Gemini clients. The SDK authenticates with
+Application Default Credentials and covers the GCE metadata server.
+
+`google.golang.org/adk/v2` supplies the editor agent. Its `tool/mcptoolset` package reads the
+ledger through a self-hosted mcp-clickhouse server. Import it only under the task that owns
+`internal/agent`. No other package imports ADK.
+
+The agent reads. Ledger writes stay on the durable client in `internal/ledger`, the single
+writer. The agent never composes SQL that inserts. If mcp-clickhouse fails, the agent loses its
+read tools and nothing else stops.
+
+ADK widens the module graph from 79 modules to 125, and it pulls `github.com/openai/openai-go/v3`
+in transitively. That dependency belongs to ADK rather than to this repository. It does not
+affect the accepted-package rule, which `genai` already satisfies.
 
 ffmpeg does all audio work. We add no third-party AI audio dependency.
 

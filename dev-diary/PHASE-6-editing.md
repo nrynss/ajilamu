@@ -2,7 +2,7 @@
 
 ```yaml
 id:       P6
-size:     M
+size:     L
 branch:   phase/p6-editing
 requires: [T5.3, T5.5]
 blocks:   P8
@@ -111,6 +111,102 @@ Display cost estimates before running and record new commits in ClickHouse.
 
 ---
 
+### T6.6: Editor agent on ADK
+```yaml
+requires:   T6.4, T4.3, T1.2, T1.3
+fixture-ok: yes
+size:       L · frontier
+owns:       internal/agent/agent.go, internal/agent/tools.go,
+            internal/agent/agent_test.go, internal/agent/agent_live_test.go,
+            internal/cost/cost.go, internal/cost/cost_test.go,
+            internal/config/config.go, internal/config/config_test.go,
+            deploy/mcp-clickhouse/,
+            go.mod, go.sum, .env.example,
+            dev-diary/infrastructure.md, dev-diary/PHASE-8-ship.md
+status:     not-started
+```
+Build the editor agent on `google.golang.org/adk/v2`. The agent answers questions about the
+ledger and proposes mutations. It reads the ledger through a self-hosted mcp-clickhouse server.
+
+**Why this task exists.** `project.md` named `google/adk-go` and `mcp-clickhouse` in the stack
+table from the first commit `654db86`. No phase task ever owned either one, so the repository
+described a stack the code did not have. `mcp-analysis.md` records the read path decision and
+the rejected ClickHouse Cloud alternative. This task lands it.
+
+#### The read and write split
+
+Ledger writes stay on the durable client in `internal/ledger`, the single writer. Queue,
+batching and reconcile semantics from T4.1 do not change. The agent reads, and it never
+composes SQL that inserts.
+
+Read-only holds twice, and the two halves carry unequal weight. The `mcp_readonly` database
+user holds SELECT grants and nothing else, and that grant is the security boundary. The server
+flag `CLICKHOUSE_ALLOW_WRITE_ACCESS=false` guards against accidents, and the upstream README
+declines to call it a boundary. Correct `infrastructure.md`, which presents the two as equal.
+
+#### Wiring the toolset
+
+`mcptoolset.Config` takes an `Endpoint` string and builds a streamable HTTP transport from it.
+Set `Auth` to a credential provider carrying the static bearer token. Auth requires that HTTP
+transport, so passing a command transport instead is a configuration error.
+
+Narrow the toolset with `tool.FilterToolset` to the read tools this agent needs. Prefer a named
+list over exposing `run_query` unfiltered.
+
+The agent proposes and T6.4 validates. Deterministic Go code performs every timeline
+calculation, exactly as T6.4 already requires. An agent turn never applies a mutation itself.
+
+#### Configuration
+
+`.env.example` already carries the five MCP variables, including
+`CLICKHOUSE_MCP_SERVER_TRANSPORT=http` and `CLICKHOUSE_MCP_ALLOWED_HOSTS`. The server defaults
+to stdio without the first and rejects every request without the second. Verify both reach the
+container rather than adding them again.
+
+`CLICKHOUSE_READONLY_PASSWORD` and `CLICKHOUSE_MCP_AUTH_TOKEN` are secrets. Read the
+"Configuration and Secrets" section of `infrastructure.md` before wiring the container. The
+container receives the `mcp_readonly` password and never the writer password.
+
+#### Deployment
+
+No published image exists. Docker Hub carries no `clickhouse/mcp-clickhouse` repository. The
+upstream project ships a Dockerfile, so `deploy/` builds the image or pins a PyPI install.
+Correct the T8.2 text in `PHASE-8-ship.md`, which reads today as though an image gets pulled.
+
+The server listens on localhost and never reaches Caddy.
+
+#### Agent turns cost money
+
+`internal/cost` names `ChargeSegment`, `ChargeTranslate` and `ChargeSynthesize`. An agent turn
+calls Gemini and bills tokens, and no kind covers it. Add `ChargeAgent` and its two token rates
+to `RateCard`. This amends T1.2 a second time, after T2.2dev. Amend it openly and record the
+change, so T4.2 reads one contract rather than three.
+
+The exit criteria below require itemized prices before execution. An agent turn is a billable
+operation and shows its price like every other one.
+
+#### Failure stays off the critical path
+
+If mcp-clickhouse stops, the agent loses its read tools. Dubbing, editing, export and the
+ledger keep running, because nothing load-bearing routes through MCP. Build no fallback path,
+and never let an agent retry block a user action.
+
+#### What the dependency costs
+
+ADK moves the module graph from 79 modules to 125. It pulls `github.com/openai/openai-go/v3`
+in transitively, which belongs to ADK rather than to this repository. `AGENTS.md` already
+carries the stack exception and the import fence, so this task leaves that file alone.
+
+**Done when:** `go.mod` requires `google.golang.org/adk/v2`, and only `internal/agent` imports
+it. The offline suite builds the toolset against a fake MCP server and passes with no network
+call. A live probe behind `//go:build live` reaches a running mcp-clickhouse container, lists
+the ledger tables and reads commits for one title. That probe also confirms an INSERT through
+the agent path fails on the `mcp_readonly` grant. Agent turns emit `ChargeAgent` carrying the
+token counts the response reported. `.env.example` starts a listening server as written.
+`infrastructure.md` names the grant as the boundary, and T8.2 builds the image.
+
+---
+
 ## Exit Criteria
 
 - [ ] Boundaries, speakers, and text support manual user editing.
@@ -118,6 +214,7 @@ Display cost estimates before running and record new commits in ClickHouse.
 - [ ] Command bar parses instructions into validated deterministic mutations.
 - [ ] Timeline edits preserve prior takes without destructive overwrites.
 - [ ] All mutations write author-attributed commits to ClickHouse.
+- [ ] The editor agent reads the ledger through mcp-clickhouse and writes nothing.
 
 ---
 
