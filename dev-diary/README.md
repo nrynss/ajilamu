@@ -191,7 +191,7 @@ Protect this core flow above auxiliary features.
 | P1 | 5 / 5 | Complete. Contracts frozen. See [PHASE-1-contracts.md](PHASE-1-contracts.md). |
 | P2 | 8 / 8 | Complete. Loop orchestration approved with zero residue. See [t2.7-round2.md](adversarial-review/t2.7-round2.md). |
 | P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
-| P4 | 6 / 8 | In progress. Six tasks complete. T4.4 and T4.5 remain. See [PHASE-4-ledger.md](PHASE-4-ledger.md). |
+| P4 | 8 / 8 | Tasks complete. Close review pending. See [PHASE-4-ledger.md](PHASE-4-ledger.md). |
 | P5 | 7 / 7 | Complete. Workspace renders from offline fixtures. See [PHASE-5-workspace.md](PHASE-5-workspace.md). |
 | P6 | 0 / 6 | Not started. |
 | P7 | 0 / 5 | Not started. |
