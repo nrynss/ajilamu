@@ -145,7 +145,7 @@ size:       S · light
 owns:       internal/ledger/client.go, internal/ledger/commits.go, internal/ledger/priors.go,
             internal/ledger/history.go, internal/ledger/commits_test.go,
             internal/ledger/priors_test.go, internal/ledger/history_test.go
-status:     not-started
+status:     done
 ```
 Give every ClickHouse read the settings it needs, from one place.
 
@@ -391,3 +391,18 @@ T7.4a owns durable local credential storage and supplies the callback after T7.0
 
 Round 3 returned one L. The orchestrator added `TestConfigHandlerRejectsBothEmptyFields`
 and landed the task.
+
+### T7.2a: Ledger read settings
+
+`queryClickHouse` in `client.go` builds and sends every ClickHouse read request. It pins
+`output_format_json_quote_64bit_integers` to 0 and `max_recursive_cte_evaluation_depth` to
+`maxRecursiveCTEDepth`. `postClickHouse` is deleted. `TimelineAt`, `branchCost`, `commitByID`,
+and `durationPriorStats` route through the helper.
+
+`TestClickHouseReadersSurviveQuotedIntegers` drives all three readers against a stand-in that
+quotes 64-bit integers unless the request pins the quoting setting. `TestOnlyClientPinsServerSettings`
+fails when any non-test file other than `client.go` names either setting.
+
+Round 1 returned two L findings, one doc claim and one test comment. The orchestrator applied
+both under the L exemption and synced the `postClickHouse` claim in `PHASE-4-ledger.md`. Round 2
+returned APPROVE with zero residue.

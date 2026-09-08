@@ -1,14 +1,12 @@
 package ledger
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"slices"
 	"strings"
 )
@@ -36,7 +34,7 @@ const selectBranchCost = "WITH RECURSIVE ancestry AS (SELECT commit_id, parent_c
 
 // maxRecursiveCTEDepth caps the ancestry walk in selectTimelineAt and selectBranchCost.
 //
-// ClickHouse defaults max_recursive_cte_evaluation_depth to 1000. A head past 1000 ancestors
+// ClickHouse defaults the recursive CTE evaluation depth setting to 1000. A head past 1000 ancestors
 // then fails with Code 306 and the caller sees a wrapped HTTP 500. The default also belongs
 // to the server, so a settings profile can lower it under a shipped feature with no warning.
 // Pinning it per request takes that decision back from the profile.
@@ -115,7 +113,7 @@ func (c *Client) TimelineAt(ctx context.Context, dubID, language, commitID strin
 	if err := validateHistoryQuery(dubID, language, commitID); err != nil {
 		return nil, err
 	}
-	resp, err := c.postClickHouse(ctx, selectTimelineAt, dubID, language, commitID)
+	resp, err := c.queryClickHouse(ctx, selectTimelineAt, map[string]string{"dub_id": dubID, "language": language, "commit_id": commitID})
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +212,7 @@ func (c *Client) CompareBranches(ctx context.Context, dubID, language, commitA, 
 }
 
 func (c *Client) branchCost(ctx context.Context, dubID, language, commitID string) (branchCostRow, error) {
-	resp, err := c.postClickHouse(ctx, selectBranchCost, dubID, language, commitID)
+	resp, err := c.queryClickHouse(ctx, selectBranchCost, map[string]string{"dub_id": dubID, "language": language, "commit_id": commitID})
 	if err != nil {
 		return branchCostRow{}, err
 	}
@@ -227,42 +225,6 @@ func (c *Client) branchCost(ctx context.Context, dubID, language, commitID strin
 		return branchCostRow{}, fmt.Errorf("ClickHouse returned %d branch cost rows, want 1", len(rows))
 	}
 	return rows[0], nil
-}
-
-func (c *Client) postClickHouse(ctx context.Context, statement, dubID, language, commitID string) (*http.Response, error) {
-	if c == nil || c.endpoint == nil || c.http == nil {
-		return nil, errors.New("ledger client is nil")
-	}
-	requestURL := *c.endpoint
-	query := requestURL.Query()
-	query.Set("database", c.database)
-	query.Set("query", statement)
-	query.Set("param_dub_id", dubID)
-	query.Set("param_language", language)
-	query.Set("param_commit_id", commitID)
-	// See maxRecursiveCTEDepth. Both read statements walk a recursive CTE.
-	query.Set("max_recursive_cte_evaluation_depth", maxRecursiveCTEDepth)
-	// timelineAtRow decodes start_ms, end_ms and state_version_seq as int64 and uint64. At 1
-	// this setting returns those three as quoted strings and the decode fails. The runtime
-	// default is 0, but the setting's own description says integers are quoted by default, so
-	// a server profile may turn it on. Pin it rather than inherit it.
-	query.Set("output_format_json_quote_64bit_integers", "0")
-	requestURL.RawQuery = query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(nil))
-	if err != nil {
-		return nil, fmt.Errorf("create ClickHouse query: %w", err)
-	}
-	req.SetBasicAuth(c.user, c.password)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("send ClickHouse query: %w", err)
-	}
-	if resp.StatusCode/100 != 2 {
-		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		resp.Body.Close()
-		return nil, fmt.Errorf("ClickHouse returned %s: %s", resp.Status, strings.TrimSpace(string(detail)))
-	}
-	return resp, nil
 }
 
 func decodeJSONEachRow[T any](r io.Reader) ([]T, error) {

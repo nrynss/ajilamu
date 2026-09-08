@@ -308,8 +308,8 @@ real server flipped an unchanged three-row fixture from the newest commit to the
 
 #### Settings the client pins
 
-`postClickHouse` sets two settings on every read request, beside `database` and the three
-bound parameters.
+`queryClickHouse` in `client.go` sets two settings on every read request, beside `database`
+and the parameters each reader binds.
 
 `max_recursive_cte_evaluation_depth` is pinned to 5000. ClickHouse defaults it to 1000, and a
 head past 1000 ancestors then fails with Code 306 that the caller sees as a wrapped HTTP 500.

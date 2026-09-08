@@ -216,6 +216,44 @@ func (c *Client) send(ctx context.Context, batch []Entry) error {
 	return fmt.Errorf("ClickHouse returned %s: %s", resp.Status, strings.TrimSpace(string(detail)))
 }
 
+// queryClickHouse runs one read statement over the ClickHouse HTTP interface.
+// Every reader routes through it, so both pinned settings reach every read.
+func (c *Client) queryClickHouse(ctx context.Context, statement string, params map[string]string) (*http.Response, error) {
+	if c == nil || c.endpoint == nil || c.http == nil {
+		return nil, errors.New("ledger client is nil")
+	}
+	requestURL := *c.endpoint
+	query := requestURL.Query()
+	query.Set("database", c.database)
+	query.Set("query", statement)
+	for name, value := range params {
+		query.Set("param_"+name, value)
+	}
+	// Every reader decodes UInt64 or int64 from JSONEachRow. A server profile that sets
+	// output_format_json_quote_64bit_integers to 1 returns those values as quoted strings,
+	// so the decode fails. Pin the setting rather than inherit the profile.
+	query.Set("output_format_json_quote_64bit_integers", "0")
+	// The history statements walk a recursive CTE. A settings profile owns that ceiling,
+	// so pin the measured depth from maxRecursiveCTEDepth on every read request.
+	query.Set("max_recursive_cte_evaluation_depth", maxRecursiveCTEDepth)
+	requestURL.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("create ClickHouse query: %w", err)
+	}
+	req.SetBasicAuth(c.user, c.password)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send ClickHouse query: %w", err)
+	}
+	if resp.StatusCode/100 != 2 {
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		return nil, fmt.Errorf("ClickHouse returned %s: %s", resp.Status, strings.TrimSpace(string(detail)))
+	}
+	return resp, nil
+}
+
 func validateInsert(query string) error {
 	trimmed := strings.TrimSpace(query)
 	if !strings.HasPrefix(strings.ToUpper(trimmed), "INSERT ") {

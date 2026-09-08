@@ -1025,3 +1025,166 @@ func withSnapshotVersion(segment TimelineSegment, version uint64) TimelineSegmen
 	segment.VersionSeq = version
 	return segment
 }
+
+// TestClickHouseReadersSurviveQuotedIntegers drives every reader through one stand-in
+// server. The server quotes 64-bit integers unless the request pins the quoting setting,
+// so a reader that builds its own unpinned request fails here. A bypass that copies both
+// pins passes this test and fails TestOnlyClientPinsServerSettings.
+func TestClickHouseReadersSurviveQuotedIntegers(t *testing.T) {
+	t.Parallel()
+
+	const (
+		quotedTimeline    = `{"segment_index":"1","start_ms":"1100","end_ms":"2000","speaker":"Ada","emotion":"calm","source_text":"hello","text":"hello","take_id":"t1","state_version_seq":"2"}` + "\n"
+		plainTimeline     = `{"segment_index":1,"start_ms":1100,"end_ms":2000,"speaker":"Ada","emotion":"calm","source_text":"hello","text":"hello","take_id":"t1","state_version_seq":2}` + "\n"
+		quotedCommit      = `{"commit_id":"c1","parent_commit_id":"","version_seq":"7"}` + "\n"
+		plainCommit       = `{"commit_id":"c1","parent_commit_id":"","version_seq":7}` + "\n"
+		quotedPrior       = `{"population_samples":"30","population_chars_per_sec":2,"creator_samples":"0","creator_chars_per_sec":0}` + "\n"
+		plainPrior        = `{"population_samples":30,"population_chars_per_sec":2,"creator_samples":0,"creator_chars_per_sec":0}` + "\n"
+		branchCostPayload = `{"branch":"main","cost_usd":"0.03"}` + "\n"
+	)
+
+	var (
+		mu       sync.Mutex
+		requests []capturedHistoryRequest
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		params := r.URL.Query()
+		mu.Lock()
+		requests = append(requests, capturedHistoryRequest{query: params.Get("query"), params: params})
+		mu.Unlock()
+		pinned := params.Get("output_format_json_quote_64bit_integers") == "0"
+		payload := ""
+		switch params.Get("query") {
+		case selectTimelineAt:
+			payload = quotedTimeline
+			if pinned {
+				payload = plainTimeline
+			}
+		case selectCommit:
+			payload = quotedCommit
+			if pinned {
+				payload = plainCommit
+			}
+		case selectDurationPrior:
+			payload = quotedPrior
+			if pinned {
+				payload = plainPrior
+			}
+		case selectBranchCost:
+			// branchCostRow holds a json.Number, which accepts a quoted cost either way.
+			payload = branchCostPayload
+		default:
+			t.Errorf("unexpected query %q", params.Get("query"))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if _, err := w.Write([]byte(payload)); err != nil {
+			t.Errorf("write payload: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := newHistoryTestClient(t, server.URL)
+	defer client.Close()
+	ctx := context.Background()
+
+	segments, err := client.TimelineAt(ctx, fixtureDub, fixtureLanguage, fixtureChild)
+	if err != nil {
+		t.Fatalf("TimelineAt: %v", err)
+	}
+	if len(segments) != 1 {
+		t.Fatalf("TimelineAt returned %d segments, want 1", len(segments))
+	}
+	if segments[0].StartMs != 1100 || segments[0].EndMs != 2000 || segments[0].VersionSeq != 2 {
+		t.Errorf("timeline segment = %+v, want start 1100 end 2000 at version 2", segments[0])
+	}
+
+	compare, err := client.CompareBranches(ctx, fixtureDub, fixtureLanguage, fixtureChild, fixtureChild)
+	if err != nil {
+		t.Fatalf("CompareBranches: %v", err)
+	}
+	if compare.A.Branch != "main" || compare.A.CostUSD != "0.03" {
+		t.Errorf("branch cost = branch %q cost %q, want main and 0.03", compare.A.Branch, compare.A.CostUSD)
+	}
+	if len(compare.A.Segments) != 1 || compare.A.Segments[0].StartMs != 1100 {
+		t.Errorf("branch segments = %+v, want one segment starting at 1100", compare.A.Segments)
+	}
+
+	commit, found, err := client.commitByID(ctx, fixtureDub, "c1")
+	if err != nil {
+		t.Fatalf("commitByID: %v", err)
+	}
+	if !found || commit.VersionSeq != 7 {
+		t.Errorf("commitByID = %+v found %v, want version 7", commit, found)
+	}
+
+	prior, err := client.DurationPrior(ctx, "owner", fixtureLanguage, "Ada")
+	if err != nil {
+		t.Fatalf("DurationPrior: %v", err)
+	}
+	if prior.PopulationSamples != 30 || prior.CreatorSamples != 0 || prior.CharsPerSecond != 2 {
+		t.Errorf("duration prior = %+v, want 30 population samples and rate 2", prior)
+	}
+
+	mu.Lock()
+	captured := append([]capturedHistoryRequest(nil), requests...)
+	mu.Unlock()
+	if len(captured) != 7 {
+		t.Fatalf("request count = %d, want 2 timeline, 2 cost, 1 commit, 1 prior, 1 direct timeline", len(captured))
+	}
+	seen := make(map[string]bool)
+	for _, request := range captured {
+		seen[request.query] = true
+		assertPinnedQuerySettings(t, request)
+	}
+	for _, statement := range []string{selectTimelineAt, selectCommit, selectDurationPrior, selectBranchCost} {
+		if !seen[statement] {
+			t.Errorf("no request carried statement %s", statement)
+		}
+	}
+
+	// The quoted payloads are the failure the pin avoids, so pin the failures too.
+	if _, err := decodeJSONEachRow[timelineAtRow](strings.NewReader(quotedTimeline)); err == nil {
+		t.Errorf("timelineAtRow decoded quoted integers %q, so the pinned setting guards nothing", quotedTimeline)
+	}
+	if _, err := decodeJSONEachRow[storedCommit](strings.NewReader(quotedCommit)); err == nil {
+		t.Errorf("storedCommit decoded quoted integers %q, so the pinned setting guards nothing", quotedCommit)
+	}
+	if _, err := decodeJSONEachRow[durationPriorStats](strings.NewReader(quotedPrior)); err == nil {
+		t.Errorf("durationPriorStats decoded quoted integers %q, so the pinned setting guards nothing", quotedPrior)
+	}
+	if _, err := decodeJSONEachRow[branchCostRow](strings.NewReader(branchCostPayload)); err != nil {
+		t.Errorf("branchCostRow rejected its quoted cost, which it must accept: %v", err)
+	}
+}
+
+// TestOnlyClientPinsServerSettings guards the single-owner rule for the two read settings.
+// A future reader that copies a pin into its own file fails here.
+func TestOnlyClientPinsServerSettings(t *testing.T) {
+	t.Parallel()
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read ledger package directory: %v", err)
+	}
+	checked := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || name == "client.go" {
+			continue
+		}
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		checked++
+		for _, setting := range []string{"output_format_json_quote_64bit_integers", "max_recursive_cte_evaluation_depth"} {
+			if strings.Contains(string(source), setting) {
+				t.Errorf("%s names %s, so a reader pins a server setting outside client.go", name, setting)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Error("guard checked no files, so it cannot fail")
+	}
+}

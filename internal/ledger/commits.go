@@ -1,13 +1,11 @@
 package ledger
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 	"sync"
 )
@@ -168,30 +166,11 @@ type storedCommit struct {
 const selectCommit = "SELECT commit_id, parent_commit_id, version_seq FROM commits_raw FINAL WHERE dub_id = {dub_id:String} AND commit_id = {commit_id:String} FORMAT JSONEachRow"
 
 func (c *Client) commitByID(ctx context.Context, dubID, commitID string) (storedCommit, bool, error) {
-	if c == nil || c.endpoint == nil || c.http == nil {
-		return storedCommit{}, false, errors.New("ledger client is nil")
-	}
-	requestURL := *c.endpoint
-	query := requestURL.Query()
-	query.Set("database", c.database)
-	query.Set("query", selectCommit)
-	query.Set("param_dub_id", dubID)
-	query.Set("param_commit_id", commitID)
-	requestURL.RawQuery = query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(nil))
+	resp, err := c.queryClickHouse(ctx, selectCommit, map[string]string{"dub_id": dubID, "commit_id": commitID})
 	if err != nil {
-		return storedCommit{}, false, fmt.Errorf("create ClickHouse parent lookup: %w", err)
-	}
-	req.SetBasicAuth(c.user, c.password)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return storedCommit{}, false, fmt.Errorf("send ClickHouse parent lookup: %w", err)
+		return storedCommit{}, false, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return storedCommit{}, false, fmt.Errorf("ClickHouse returned %s: %s", resp.Status, strings.TrimSpace(string(detail)))
-	}
 	decoder := json.NewDecoder(resp.Body)
 	var parent storedCommit
 	if err := decoder.Decode(&parent); errors.Is(err, io.EOF) {

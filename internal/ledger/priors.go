@@ -1,13 +1,11 @@
 package ledger
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 )
 
@@ -77,31 +75,11 @@ func (c *Client) DurationPrior(ctx context.Context, ownerID, language, speaker s
 }
 
 func (c *Client) durationPriorStats(ctx context.Context, ownerID, language, speaker string) (durationPriorStats, error) {
-	if c == nil || c.endpoint == nil || c.http == nil {
-		return durationPriorStats{}, errors.New("ledger client is nil")
-	}
-	requestURL := *c.endpoint
-	query := requestURL.Query()
-	query.Set("database", c.database)
-	query.Set("query", selectDurationPrior)
-	query.Set("param_owner_id", ownerID)
-	query.Set("param_language", language)
-	query.Set("param_speaker", speaker)
-	requestURL.RawQuery = query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(nil))
+	resp, err := c.queryClickHouse(ctx, selectDurationPrior, map[string]string{"owner_id": ownerID, "language": language, "speaker": speaker})
 	if err != nil {
-		return durationPriorStats{}, fmt.Errorf("create ClickHouse duration prior query: %w", err)
-	}
-	req.SetBasicAuth(c.user, c.password)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return durationPriorStats{}, fmt.Errorf("send ClickHouse duration prior query: %w", err)
+		return durationPriorStats{}, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return durationPriorStats{}, fmt.Errorf("ClickHouse returned %s: %s", resp.Status, strings.TrimSpace(string(detail)))
-	}
 	var stats durationPriorStats
 	if err := json.NewDecoder(resp.Body).Decode(&stats); errors.Is(err, io.EOF) {
 		return durationPriorStats{}, errors.New("ClickHouse returned no duration prior row")
