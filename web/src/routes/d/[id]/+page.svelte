@@ -24,7 +24,7 @@
   import { PanelState, ProcessingBanner, type PanelViewState, type ProcessingStep } from "$lib/states"
   import { createShortcutManager } from "$lib/shortcuts"
   import Timeline from "$lib/Timeline.svelte"
-  import type { Dub, DubIndex, ProgressEvent, Take } from "$lib/types"
+  import type { Dub, ProgressEvent, Take } from "$lib/types"
 
   type SelectionSource = "user" | "playhead"
 
@@ -46,6 +46,8 @@
   const pendingProjectSentence = "This project is waiting for dubbing. Its video is saved, but no lines, takes, or costs exist yet."
   const missingProjectSentence = "We could not find this project. Check the URL or return to the project index."
   const lookupFailedSentence = "We could not load the project list. Refresh this page or return to the index."
+
+  const ledgerUnavailableSentence = "We could not reach the project ledger, so this workspace cannot load."
 
   const runUnavailableSentence = "Runs are unavailable, so this project cannot start."
   const runNoSourceSentence = "This project has no source video, so the run cannot start."
@@ -392,6 +394,19 @@
     }
   }
 
+  function isWorkspaceDub(value: unknown): value is Dub {
+    if (typeof value !== "object" || value === null) return false
+    const candidate = value as Partial<Dub>
+    return typeof candidate.id === "string"
+      && typeof candidate.title === "string"
+      && Array.isArray(candidate.segments)
+      && Array.isArray(candidate.languages)
+      && Array.isArray(candidate.charges)
+      && Array.isArray(candidate.commits)
+      && typeof candidate.total === "object"
+      && candidate.total !== null
+  }
+
   $effect(() => {
     const id = page.params.id
     if (!id || isFixtureID(id)) {
@@ -416,30 +431,47 @@
       return
     }
 
+    dub = undefined
+    workspaceState = { kind: "loading", sentence: "We are checking this project workspace." }
+
     let active = true
-    fetch("/api/dubs")
-      .then((res) => {
-        if (!res.ok) return Promise.resolve({ ok: false as const })
-        return res.json().then((data: DubIndex) => ({ ok: true as const, data })).catch(() => ({ ok: false as const }))
+    fetch(`/api/dubs/${encodeURIComponent(id)}`)
+      .then(async (response) => {
+        if (!response.ok) return { ok: false as const, status: response.status }
+        const payload: unknown = await response.json().catch(() => undefined)
+        return { ok: true as const, payload }
       })
       .then((result) => {
         if (!active) return
-        if (!result.ok || !Array.isArray(result.data.dubs)) {
+        if (!result.ok) {
+          dub = undefined
+          workspaceState = {
+            kind: "error",
+            sentence: result.status === 404
+              ? missingProjectSentence
+              : result.status === 503
+                ? ledgerUnavailableSentence
+                : lookupFailedSentence
+          }
+          return
+        }
+        if (!isWorkspaceDub(result.payload)) {
           dub = undefined
           workspaceState = { kind: "error", sentence: lookupFailedSentence }
           return
         }
-        const match = result.data.dubs.find((project) => project.id === id)
-        dub = undefined
-        workspaceState = match
-          ? { kind: "empty", sentence: pendingProjectSentence }
-          : { kind: "error", sentence: missingProjectSentence }
+        const loaded = result.payload
+        dub = loaded
+        selectedSegmentId = loaded.segments[0]?.id ?? 0
+        activeLanguage = loaded.languages[0]?.language ?? ""
+        workspaceState = loaded.segments.length > 0 && loaded.languages.length > 0
+          ? { kind: "populated" }
+          : { kind: "empty", sentence: pendingProjectSentence }
       })
       .catch(() => {
-        if (active) {
-          dub = undefined
-          workspaceState = { kind: "error", sentence: lookupFailedSentence }
-        }
+        if (!active) return
+        dub = undefined
+        workspaceState = { kind: "error", sentence: lookupFailedSentence }
       })
 
     return () => {

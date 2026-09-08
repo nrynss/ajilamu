@@ -55,6 +55,7 @@ func run() error {
 	var eventLedger *ledger.Client
 	var ledgerFlusher api.LedgerFlusher
 	var history api.HistoryReader
+	var workspace api.WorkspaceReader
 	var runRecorder api.RunRecorder
 	var pipelineRunner api.PipelineRunner
 	if cfg.RequireClickHouse() == nil {
@@ -65,6 +66,7 @@ func run() error {
 		defer eventLedger.Close()
 		ledgerFlusher = eventLedger
 		history = newHistoryReader(eventLedger)
+		workspace = newWorkspaceReader(eventLedger)
 		runRecorder = newRunRecorder(eventLedger, cfg.GeminiModel, slog.Default())
 	}
 	if cfg.RequireGoogleCloud() == nil {
@@ -95,6 +97,8 @@ func run() error {
 		FrontendRoot: frontendRoot(cfg),
 		Ledger:       ledgerFlusher,
 		History:      history,
+		Workspace:    workspace,
+		Project:      api.UploadProjectLookup(uploadDir),
 		Runner:       pipelineRunner,
 		Recorder:     runRecorder,
 		StorageDir:   uploadDir,
@@ -272,6 +276,49 @@ func branchSummary(view ledger.BranchView) api.BranchSummary {
 		TakeCount:         view.TakeCount,
 		AttributedCostUSD: view.AttributedCostUSD,
 	}
+}
+
+// workspaceReader adapts the ledger client to the api workspace interface.
+// The ledger reads already return wire types, so each method forwards.
+type workspaceReader struct {
+	client *ledger.Client
+}
+
+// The adapter satisfies the workspace route without internal/api importing internal/ledger.
+var _ api.WorkspaceReader = (*workspaceReader)(nil)
+
+// newWorkspaceReader returns a reader for client.
+// A nil client returns a nil interface, so a typed nil never reaches the route.
+func newWorkspaceReader(client *ledger.Client) api.WorkspaceReader {
+	if client == nil {
+		return nil
+	}
+	return &workspaceReader{client: client}
+}
+
+// WorkspaceTakes returns one track per target language.
+func (w *workspaceReader) WorkspaceTakes(ctx context.Context, dubID string) ([]api.LanguageTrack, error) {
+	return w.client.WorkspaceTakes(ctx, dubID)
+}
+
+// WholePassCharges returns the charges no single take owns.
+func (w *workspaceReader) WholePassCharges(ctx context.Context, dubID string) ([]api.Charge, error) {
+	return w.client.WholePassCharges(ctx, dubID)
+}
+
+// RunningTotal returns the exact running sum and what it covers.
+func (w *workspaceReader) RunningTotal(ctx context.Context, dubID string) (api.Total, error) {
+	return w.client.RunningTotal(ctx, dubID)
+}
+
+// Languages returns the target language codes.
+func (w *workspaceReader) Languages(ctx context.Context, dubID string) ([]string, error) {
+	return w.client.Languages(ctx, dubID)
+}
+
+// ProjectMetadata returns the identity and the timestamps.
+func (w *workspaceReader) ProjectMetadata(ctx context.Context, dubID string) (api.DubSummary, error) {
+	return w.client.ProjectMetadata(ctx, dubID)
 }
 
 // frontendRoot resolves the static build directory. AJILAMU_FRONTEND_DIR wins

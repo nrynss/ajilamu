@@ -495,3 +495,53 @@ func TestProjectMetadataWithNoCommits(t *testing.T) {
 		t.Errorf("project languages = %v, want none", meta.Languages)
 	}
 }
+
+// TestWorkspaceTakesRecoversAtempoStretch pins L3. The ledger stores the ratio
+// in repair_detail, so the reader must parse it into thousandths. A take with
+// no repair omits the wire field.
+func TestWorkspaceTakesRecoversAtempoStretch(t *testing.T) {
+	t.Parallel()
+
+	takes := strings.Join([]string{
+		`{"language":"ml","commit_id":"c1","segment_index":1,"attempt":1,"voice":"voice-a","text":"hello","audio_path":"a.wav","repair":"atempo","repair_detail":"atempo stretch applied at ratio 1.0500","peaks":[],"slot_ms":1820,"measured_ms":1830,"delta_ms":10,"created_ms":1000}`,
+		`{"language":"ml","commit_id":"c1","segment_index":2,"attempt":1,"voice":"voice-a","text":"bye","audio_path":"b.wav","repair":"none","repair_detail":"","peaks":[],"slot_ms":1000,"measured_ms":1000,"delta_ms":0,"created_ms":2000}`,
+	}, "\n") + "\n"
+	client, _ := workspaceStandIn(t, map[string]string{
+		selectWorkspaceTakes:       takes,
+		selectWorkspaceTakeCharges: "",
+	})
+	got, err := client.WorkspaceTakes(context.Background(), fixtureDub)
+	if err != nil {
+		t.Fatalf("WorkspaceTakes: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Lines) != 2 {
+		t.Fatalf("tracks = %+v, want one track with two lines", got)
+	}
+	atempo := got[0].Lines[0].Takes[0]
+	if atempo.StretchFactorMilli != 1050 {
+		t.Errorf("atempo stretch factor = %d, want 1050", atempo.StretchFactorMilli)
+	}
+	plain := got[0].Lines[1].Takes[0]
+	if plain.StretchFactorMilli != 0 {
+		t.Errorf("none stretch factor = %d, want 0", plain.StretchFactorMilli)
+	}
+	atempoJSON, err := json.Marshal(atempo)
+	if err != nil {
+		t.Fatalf("marshal atempo take: %v", err)
+	}
+	plainJSON, err := json.Marshal(plain)
+	if err != nil {
+		t.Fatalf("marshal none take: %v", err)
+	}
+	t.Logf("atempo take: %s", atempoJSON)
+	t.Logf("none take: %s", plainJSON)
+	if !strings.Contains(string(atempoJSON), `"stretch_factor_milli":1050`) {
+		t.Errorf("atempo take = %s, want stretch_factor_milli 1050", atempoJSON)
+	}
+	if strings.Contains(string(plainJSON), "stretch_factor_milli") {
+		t.Errorf("none take = %s, want the field omitted", plainJSON)
+	}
+	if !strings.Contains(selectWorkspaceTakes, "repair_detail") {
+		t.Error("takes statement does not select repair_detail")
+	}
+}

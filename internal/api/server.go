@@ -39,6 +39,8 @@ type ServerOptions struct {
 	Ledger         LedgerFlusher
 	Index          http.Handler
 	History        HistoryReader
+	Workspace      WorkspaceReader
+	Project        ProjectLookup
 	Config         http.Handler
 	ConfigPresence http.Handler
 	Upload         http.Handler
@@ -77,6 +79,14 @@ func writeLedgerReady(w http.ResponseWriter, status, detail string) {
 		Status string `json:"status"`
 		Detail string `json:"detail,omitempty"`
 	}{Status: status, Detail: detail})
+}
+
+// methodNotAllowed answers a route that exists for another method.
+func methodNotAllowed(allow string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Allow", allow)
+		http.Error(w, "Method not allowed.", http.StatusMethodNotAllowed)
+	})
 }
 
 // ConfigPresence reports which write-only credentials exist. It never carries
@@ -163,7 +173,12 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	mux.Handle("GET /api/dubs/{id}/history", HistoryHandlerFrom(options.History, logger))
 	mux.Handle("GET /api/dubs/{id}/timeline", TimelineHandlerFrom(options.History, logger))
 	mux.Handle("GET /api/dubs/{id}/branches", BranchCompareHandlerFrom(options.History, logger))
+	// The creation endpoints are POST only. Their names are reserved, so the
+	// workspace wildcard must not serve them as project ids.
+	mux.Handle("GET /api/dubs/new", methodNotAllowed(http.MethodPost))
+	mux.Handle("GET /api/dubs/sample", methodNotAllowed(http.MethodPost))
 	runs := newRunRegistry(options.Runner, options.Recorder, logger)
+	mux.Handle("GET /api/dubs/{id}", WorkspaceHandlerFrom(options.Workspace, options.History, options.Project, runs.active, logger))
 	mux.Handle("POST /api/dubs/{id}/run", RunStartHandler(runs, options.StorageDir))
 	mux.Handle("POST /api/dubs/{id}/run/cancel", RunCancelHandler(runs))
 	mux.Handle("GET /api/dubs/{id}/events", EventsHandler(runs))

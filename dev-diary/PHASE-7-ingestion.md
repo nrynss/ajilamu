@@ -471,8 +471,9 @@ fixture-ok: yes
 size:       L · frontier
 owns:       internal/api/workspace.go, internal/api/workspace_test.go,
             internal/api/server.go, cmd/ajilamu/main.go,
+            internal/ledger/workspace.go, internal/ledger/workspace_test.go,
             web/src/routes/d/[id]/+page.svelte
-status:     not-started
+status:     done
 ```
 Serve the `Dub` payload the workspace renders, so a real project stops showing the pending
 sentence.
@@ -486,6 +487,64 @@ while scoping T7.2c. It is the same cause T7.0 names. Work nobody owns never get
 **Done when:** `GET /api/dubs/{id}` returns a `Dub` assembled from the ledger for a real project,
 the workspace page renders it for a non-fixture id, and a clone with no credentials still renders
 the fixture project.
+
+### T7.5b: User-defined languages at upload
+```yaml
+requires:   T7.5, T7.7
+fixture-ok: yes
+size:       S · mid
+owns:       internal/api/upload.go, internal/api/upload_test.go,
+            internal/api/sample.go, internal/api/sample_test.go,
+            internal/api/run.go, internal/api/run_test.go,
+            internal/api/workspace.go, internal/api/workspace_test.go,
+            cmd/ajilamu/main.go, web/src/routes/new/+page.svelte
+status:     not-started
+```
+The wire `Dub.SourceLanguage` has no producer. The upload record stores only the target
+language, so every real workspace reports an empty source language. T7.5's round one
+review filed that as an L finding, and no store holds the value.
+
+Record both languages when a project is created. The create screen mounts T7.7's
+`LanguagePicker` for the source and for the target, both user defined. Send them as
+`source_language` and `language`. The sample records `en` to `ml`, because the NASA clip is
+English. A record written before this task still loads with an empty source language.
+
+Wire the languages into the run. T2.8 records the exact seam in
+`adversarial-review/t2.8-contract-change.md`. The runner builds one synthesizer per run, so
+one project can carry more than one language.
+
+**Done when:** A new upload stores both languages, the sample stores `en` to `ml`, an older
+record still loads, the workspace payload carries the stored source language, and the run
+request carries it into the pipeline.
+
+### T7.7: Supported-language catalog ★
+```yaml
+requires:   T0.3, T1.4, T7.2a
+fixture-ok: yes
+size:       M · frontier
+owns:       internal/tts/catalog.go, internal/tts/catalog_test.go,
+            internal/api/languages.go, internal/api/languages_test.go,
+            internal/api/wire.go, internal/api/wire_test.go,
+            web/src/lib/types.ts, web/src/lib/LanguagePicker.svelte,
+            internal/api/server.go, cmd/ajilamu/main.go
+status:     not-started
+```
+The create screen offers one hardcoded language today. Fetch the languages Cloud TTS Chirp 3
+HD supports through `voices.list` with ADC, and cache the answer.
+
+`GET /api/languages` serves the current catalog. It serves the committed list when no fetch
+has run, so a clone with no credentials still renders. `POST /api/languages/refresh` fetches
+from the provider on demand and answers the refreshed list. It names the missing credential
+when ADC cannot authenticate, and it leaves the cached catalog untouched on failure.
+
+`LanguagePicker.svelte` renders the catalog and a control that triggers the fetch, so the
+creator chooses whether to pull the live list. T7.5b mounts it on the create screen.
+
+**Done when:** A clone with no credentials serves the committed list, the refresh control
+fetches the provider list with credentials, a failed fetch leaves the cached list and names
+the reason, and the parity guard covers the new wire type.
+
+---
 
 ### T7.6: Frontend and entrypoint hygiene
 ```yaml
@@ -794,8 +853,9 @@ the first rendered take, so the schema's `-1` segment sentinel and empty `take_i
 survive the write path. Do not split the two charge sets by those fields.
 
 The ledger stores no project title and no readiness. `ProjectMetadata` leaves both empty for
-the route to fill from the upload record. The ledger stores no atempo ratio column either, so
-`Take.StretchFactorMilli` stays zero.
+the route to fill from the upload record. The ledger stores no atempo ratio column either. The
+takes read selects `repair_detail`, and the reader parses the `atempo stretch applied at ratio`
+prefix into thousandths, so `Take.StretchFactorMilli` carries 1050 for a ratio of 1.0500.
 
 Measured pins. `go test -count=1 ./internal/ledger` passes. `TestWorkspaceReadsSurviveQuotedIntegers`
 drives all six statements against a stand-in that quotes 64-bit integers unless the request
@@ -837,3 +897,40 @@ exemption, so no remediation round ran. The seam comment in `cmd/ajilamu/main.go
 import direction backwards. Two tests now pin behaviour that carried no committed check. One
 asserts the settings directory mode after a tighten. The other asserts a single stored key maps
 to the right presence flag.
+
+### T7.5: Workspace payload route
+
+`internal/api/workspace.go` assembles one `Dub` from the ledger. `WorkspaceReader` names the five
+landed reads. `ProjectLookup` returns the stored title. `WorkspaceHandlerFrom` mounts at
+`GET /api/dubs/{id}` and answers 503 without a reader. `cmd/ajilamu/main.go` adapts the ledger
+client through `workspaceReader`, so `internal/api` still never imports `internal/ledger`. The
+wire `Dub` is unchanged.
+
+Segments come from the head commit's timeline for the first target language. The timeline carries
+the copied source text and the slot timing, which the takes view does not. Commits come from the
+history reader. Whole-pass charges keep `kind = 'segment'` and carry a null segment id.
+
+The upload record stores no readiness, so the route derives it. `NewServer` passes
+`runRegistry.active` into `WorkspaceHandlerFrom`, so a run in flight reads running. No take at
+all reads pending. A flagged line reads review. Every take fitting with every segment covered
+reads ready, and a segment with no rendered line reads review. The title comes from the upload
+record. `source_language` stays empty, because no table or record stores the film language.
+
+Stretch factor. The ledger has no atempo ratio column, so the takes read selects `repair_detail`.
+The reader parses the `atempo stretch applied at ratio` prefix into thousandths, so an atempo take
+at ratio 1.0500 carries `stretch_factor_milli` 1050. A take with no parsed ratio leaves the field
+zero and `omitempty` drops it. `LengthBar.svelte` and `DetailsTab.svelte` already guard on the
+missing field and degrade.
+
+Surprises. `GET /api/dubs/{id}` would serve the reserved creation names as project ids, so the mux
+now answers 405 for `GET /api/dubs/new` and `GET /api/dubs/sample`. That keeps the unmatched-route
+pin honest without touching `server_test.go`, which this task does not own. The broker environment
+carries `CLICKHOUSE_*` from the session, so a no-credential run must clear them with `env -i`.
+
+Measured pins. `go test -count=1 ./internal/api ./cmd/...` passed and `npm --prefix web run check`
+reported 0 errors. A stand-in ClickHouse answered the eight statements. The live route returned 200
+with keys `charges commits created_at id languages readiness segments source_language title total
+updated_at`. A take with no charge marshalled `"charges":[]`. Headless Chromium rendered the real
+title, two lines, both fits, and the itemized charge on `/d/<real id>`. No fixture marker appeared.
+With no credentials `/d/fixture` rendered eight lines and In review. A real id with no ledger
+answered the 503 sentence and no fixture data.

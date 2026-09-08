@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +25,7 @@ import (
 // before it reaches the reader. slot_ms, measured_ms and delta_ms leave as Int64
 // so one row shape covers the wire Fit type. created_ms orders attempts that
 // share an attempt number across runs.
-const selectWorkspaceTakes = "SELECT language, commit_id, segment_index, attempt, voice, text, audio_path, toString(repair) AS repair, peaks, toInt64(slot_ms) AS slot_ms, toInt64(measured_ms) AS measured_ms, toInt64(delta_ms) AS delta_ms, toInt64(toUnixTimestamp64Milli(created_at)) AS created_ms FROM takes WHERE dub_id = {dub_id:String} ORDER BY language ASC, segment_index ASC, attempt ASC, created_ms ASC, commit_id ASC FORMAT JSONEachRow"
+const selectWorkspaceTakes = "SELECT language, commit_id, segment_index, attempt, voice, text, audio_path, toString(repair) AS repair, repair_detail, peaks, toInt64(slot_ms) AS slot_ms, toInt64(measured_ms) AS measured_ms, toInt64(delta_ms) AS delta_ms, toInt64(toUnixTimestamp64Milli(created_at)) AS created_ms FROM takes WHERE dub_id = {dub_id:String} ORDER BY language ASC, segment_index ASC, attempt ASC, created_ms ASC, commit_id ASC FORMAT JSONEachRow"
 
 // selectWorkspaceTakeCharges lists the charges a single take owns.
 //
@@ -74,6 +76,7 @@ type workspaceTakeRow struct {
 	Text         string  `json:"text"`
 	AudioPath    string  `json:"audio_path"`
 	Repair       string  `json:"repair"`
+	RepairDetail string  `json:"repair_detail"`
 	Peaks        []uint8 `json:"peaks"`
 	SlotMs       int64   `json:"slot_ms"`
 	MeasuredMs   int64   `json:"measured_ms"`
@@ -373,6 +376,9 @@ func buildLanguageTracks(takes []workspaceTakeRow, charges []workspaceChargeRow)
 				State:      api.FitState(row.SlotMs, row.MeasuredMs),
 			},
 		}
+		if factor := atempoStretchMilli(row.Repair, row.RepairDetail); factor > 0 {
+			take.StretchFactorMilli = factor
+		}
 		if err := ApplyTakePeaks(&take, row.Peaks); err != nil {
 			return nil, fmt.Errorf("take %q peaks: %w", row.AudioPath, err)
 		}
@@ -403,6 +409,27 @@ func buildLanguageTracks(takes []workspaceTakeRow, charges []workspaceChargeRow)
 		}
 	}
 	return tracks, nil
+}
+
+// atempoStretchMilli recovers the atempo ratio from a take's repair detail.
+//
+// The fit rewrite writes "atempo stretch applied at ratio 1.0500". The route
+// parses the ratio into thousandths, so the wire carries the speed the creator
+// lost. Any other repair returns zero, which omits the wire field.
+func atempoStretchMilli(repair, detail string) int64 {
+	if repair != api.RepairAtempo {
+		return 0
+	}
+	const prefix = "atempo stretch applied at ratio "
+	raw, ok := strings.CutPrefix(detail, prefix)
+	if !ok {
+		return 0
+	}
+	ratio, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || ratio <= 0 {
+		return 0
+	}
+	return int64(math.Round(ratio * 1000))
 }
 
 func cmpWorkspaceTakeRow(a, b workspaceTakeRow) int {
