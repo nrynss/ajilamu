@@ -229,9 +229,10 @@ func (c *Client) queryClickHouse(ctx context.Context, statement string, params m
 	for name, value := range params {
 		query.Set("param_"+name, value)
 	}
-	// Every reader decodes UInt64 or int64 from JSONEachRow. A server profile that sets
+	// Readers decode 64-bit integers out of JSONEachRow. A server profile that sets
 	// output_format_json_quote_64bit_integers to 1 returns those values as quoted strings,
-	// so the decode fails. Pin the setting rather than inherit the profile.
+	// so the decode fails. branchCost decodes a json.Number and tolerates either shape, but
+	// the pin must hold for every request that shares this helper.
 	query.Set("output_format_json_quote_64bit_integers", "0")
 	// The history statements walk a recursive CTE. A settings profile owns that ceiling,
 	// so pin the measured depth from maxRecursiveCTEDepth on every read request.
