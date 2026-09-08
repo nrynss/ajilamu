@@ -88,8 +88,8 @@ signals, and finds zero events lost. The T0.2 block describes the loader that ex
 requires:   T5.1, T7.0
 fixture-ok: yes
 size:       S · mid
-owns:       web/package.json, web/svelte.config.js
-status:     not-started
+owns:       web/package.json, web/svelte.config.js, .gitignore
+status:     done
 ```
 Make the Svelte workspace an explicit static build artifact that the Go server can serve.
 `adapter-auto` emits no browser-ready `index.html` in this repository. Use the supported static
@@ -205,6 +205,12 @@ HTTP response, is absent from logs, and has restrictive on-disk permissions.
 ## Handoff Log
 
 _(Fill on completion: record upload throughput metrics and SSE client reconnection behaviors.)_
+
+### T7.0a: Static workspace build contract
+
+- `@sveltejs/adapter-static` emits `web/build/index.html` as the client route fallback.
+- The existing Go binary serves `/`, `/new`, `/config`, and `/d/fixture` as matching HTML with status 200.
+- The task records a contract change on .gitignore to add the web/build/ ignore rule.
 
 ### T7.0: Server entrypoint
 
