@@ -192,8 +192,9 @@
     if (!id || isFixtureID(id)) {
       if (page.url.searchParams.get("panel") !== "loading") {
         try {
-          dub = loadFixtureDub(id ?? "fixture")
-          workspaceState = dub && dub.segments.length > 0 && dub.languages.length > 0
+          const loaded = loadFixtureDub(id ?? "fixture")
+          dub = loaded
+          workspaceState = loaded && loaded.segments.length > 0 && loaded.languages.length > 0
             ? { kind: "populated" }
             : {
                 kind: "empty",

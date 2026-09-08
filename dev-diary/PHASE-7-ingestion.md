@@ -300,7 +300,7 @@ requires:   []
 fixture-ok: yes
 size:       XS · mid
 owns:       web/src/routes/d/[id]/+page.svelte
-status:     not-started
+status:     done
 ```
 The workspace page throws `effect_update_depth_exceeded` on load. The effect reads `dub` after it
 writes `dub`, so Svelte aborts it and rail tab switching stops. The History tab therefore never
@@ -551,8 +551,20 @@ The History tab fetches by project id and renders the fetched commits when the r
 at least one. It keeps the fixture commits when the fetch fails or returns none, so a clone with
 no credentials still renders the tab.
 
-The review proved the routes end to end against a stand-in ClickHouse and drove the tab in a
-headless browser: 3 commits from the stand-in, and 7 fixture commits on a 503. It also found a
-pre-existing defect in `web/src/routes/d/[id]/+page.svelte` at HEAD, recorded as T7.2d.
+The review proved the routes end to end against a stand-in ClickHouse. It also found a
+pre-existing defect in `web/src/routes/d/[id]/+page.svelte` at HEAD, recorded as T7.2d. After
+that fix the tab renders stand-in commits in the running app, and it keeps 7 fixture commits when
+the route answers 503.
 
 Round 1 returned APPROVE with zero findings.
+
+### T7.2d: Workspace page effect loop
+
+The fixture branch of the page `$effect` read `dub` after writing it, so `dub` became an effect
+dependency and Svelte aborted with `effect_update_depth_exceeded`. The fix loads into a local and
+decides the panel state from that local. No behaviour changed.
+
+The review reproduced the defect and the fix against the built frontend served by the real
+binary. The reverted build threw `effect_update_depth_exceeded` and both tab switches stayed on
+`rail-lines`. The fixed build switches Details and History, mounts 7 DAG nodes and 6 edges, and
+logs no error. Round 1 returned APPROVE with zero findings.
