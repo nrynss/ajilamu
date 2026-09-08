@@ -75,8 +75,10 @@ Tag translated elements with proper HTML `lang` attributes to ensure correct Mal
 requires:   T1.1
 fixture-ok: yes
 size:       M · mid
-owns:       internal/command/parse.go, web/src/lib/edit/CommandBar.svelte
-status:     not-started
+owns:       internal/command/parse.go, internal/command/parse_test.go,
+            internal/api/command.go, internal/api/command_test.go, internal/api/server.go,
+            web/src/lib/edit/CommandBar.svelte, web/src/routes/d/[id]/+page.svelte
+status:     done
 ```
 Build a command input above the timeline. Press `/` to focus. Parse natural language instructions into structured mutations:
 
@@ -220,4 +222,25 @@ token counts the response reported. `.env.example` starts a listening server as 
 
 ## Handoff Log
 
-_(Fill on completion: document command parser grammar and boundary dragging sensitivity.)_
+### T6.4 command parser
+
+`Parse` accepts four grammars and returns a `Mutation`. It does not read a timeline.
+
+- `move wav|line <id> to <minutes:seconds> to left|right`
+- `shift line <id> left|right by <duration>`
+- `change speaker for line <id> to <name>`
+- `shorten line <id> by <duration>`
+
+A trailing period is optional. `0:0005` is five padded seconds, so 5000ms.
+Durations end in `ms` or `s`. `0.5s` is 500ms.
+
+`Validate` then `Apply` do the arithmetic. They reject unknown lines, unknown or
+ambiguous speakers, non-positive durations, out-of-timeline bounds, and overlaps.
+`Describe` is the confirmation sentence. The browser must show it before it writes
+the Go-derived segment.
+
+`POST /api/editor/commands/preview` is the only command route. T6.6 may propose
+richer language later. It still has to land on this mutation and this validator.
+
+T6.1 documented boundary snap and the 100ms minimum in
+[t6.1-round3.md](adversarial-review/t6.1-round3.md). This task does not change that.

@@ -90,6 +90,7 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	if options.Sample != nil {
 		mux.Handle("POST /api/dubs/sample", options.Sample)
 	}
+	mux.Handle("POST /api/editor/commands/preview", NewCommandPreviewHandler())
 	mux.Handle("/api/", http.NotFoundHandler())
 	mux.Handle("/", frontend)
 
