@@ -54,13 +54,31 @@ Record charges on their respective attempts. Do not carry accumulated running to
 
 ---
 
+### T4.2a: Waveform peak take mapping
+```yaml
+requires:   T4.2
+fixture-ok: no
+size:       S · mid
+owns:       internal/ledger/takes.go, internal/ledger/takes_test.go
+status:     done
+```
+Extend the take recorder so each take persists its `[]uint8` waveform peaks to `takes_raw`.
+
+The recorder and its capture regression test own this boundary. T4.6 owns peak validation and
+delivery mapping, so it waits for T4.2a instead of editing the take writer across its seam.
+
+**Done when:** A captured take insert carries the exact unsigned peak vector, and an invalid peak
+value fails before transport.
+
+---
+
 ### T4.3: Commit DAG ★
 ```yaml
 requires:   T4.1, T1.1
 fixture-ok: no
 size:       M · mid
-owns:       internal/ledger/commits.go
-status:     not-started
+owns:       internal/ledger/commits.go, internal/ledger/commits_test.go
+status:     done
 ```
 Store immutable commits containing `commit_id`, `parent_commit_id`, `dub_id`, `version_seq`, and database timestamps.
 
@@ -104,11 +122,11 @@ Support branching a language track to evaluate alternative translation phrasing.
 
 ### T4.6: Waveform peak storage
 ```yaml
-requires:   T4.2, T3.5
+requires:   T4.2a, T3.5
 fixture-ok: no
 size:       XS · light
-owns:       internal/ledger/peaks.go
-status:     not-started
+owns:       internal/ledger/peaks.go, internal/ledger/peaks_test.go
+status:     claimed:gpt-5.6-luna
 ```
 Store `Array(UInt8)` waveform peaks on take rows. Deliver peaks in API payloads so the timeline renders waveforms without reading audio files from disk.
 
@@ -121,8 +139,8 @@ Store `Array(UInt8)` waveform peaks on take rows. Deliver peaks in API payloads 
 requires:   T4.2
 fixture-ok: no
 size:       M · mid
-owns:       internal/ledger/priors.go
-status:     not-started
+owns:       internal/ledger/priors.go, internal/ledger/priors_test.go
+status:     claimed:gpt-5.6-luna
 ```
 Query historical take metrics to predict speaker duration tendencies across languages.
 
@@ -157,3 +175,64 @@ returns `ErrPending`, so callers cannot mistake locally retained events for deli
 
 T4.1 owns no test path. The client exposes its transport and endpoint as options so its assigned
 reviewer can run network-drop checks with a local HTTP server without changing production code.
+
+### T4.2 implementation handoff
+
+`internal/ledger/takes.go` exposes `Client.RecordTake`. It accepts one `TakeAttempt`, derives
+the take row from the frozen `types.Segment` and `types.Take` contracts, and writes only to
+`takes_raw` and `charges_raw` through the durable queue.
+
+The recorder rejects mismatched segments, unsigned deltas, non-millisecond durations, unknown
+repairs, and invalid charge shapes before it queues a row. Gemini prompt and candidate usage
+becomes distinct token rows. Synthesis remains one character row. Every row repeats the attempt
+identity, and the recorder never accepts or writes a running cost total.
+
+`internal/ledger/takes_test.go` preserves the HTTP capture regression pin for ten take rows,
+per-attempt charge rows, and segment 8's negative delta. It also proves invalid deltas do not
+reach the transport.
+
+### T4.2a implementation handoff
+
+`TakeAttempt.Peaks` accepts optional unsigned waveform samples. Empty vectors and vectors with
+64 through 128 values pass validation. Other lengths fail before the ledger queue receives a row.
+
+`takes_raw` JSONEachRow inserts now name `peaks` and serialize it as numeric values. Go's default
+`[]uint8` encoding uses base64, so `takePeaks` deliberately emits a JSON number array instead.
+
+The capture test pins one exact 64-value vector, an empty vector, the 128-value upper bound, and
+the rejected 63-value vector. It confirms invalid vectors make no transport request.
+
+### T4.6 implementation handoff
+
+`internal/ledger/peaks.go` exposes `ApplyTakePeaks`. It validates the stored empty or 64 through
+128 `UInt8` samples, copies populated vectors into `api.Take.Peaks`, and leaves an empty vector
+absent from the JSON payload. It never reads an audio file.
+
+T4.6 owns no test path. `go test ./internal/ledger` and `go vet ./internal/ledger` compile the
+mapping. A future owned regression path should pin copied values, the 64 and 128 boundaries, the
+rejected 63 and 129 lengths, and clearing a stale payload for an empty vector.
+
+### T4.3 implementation handoff
+
+`internal/ledger/commits.go` exposes `Client.AppendCommit`. It writes one immutable row to
+`commits_raw` through the durable queue. It never issues an update or delete query.
+
+The writer lets ClickHouse stamp `created_at` and `ingested_at`. It validates root and child
+shape, rejects self-parenting nodes, and supports a branch whose parent is an earlier commit.
+
+`internal/ledger/commits_test.go` commits HTTP artifact coverage for roots, linear chains, forks,
+server-owned timestamps, replay, parent validity, and immutable commit identities. The identity
+tests cover visible duplicates, pending journal entries, and conflicting concurrent appends.
+
+### T4.7 implementation handoff
+
+`internal/ledger/priors.go` exposes `Client.DurationPrior`. It reads the deduplicated
+`take_rates` view and returns the population and creator sample counts beside the learned
+characters-per-second estimate.
+
+New creators receive the population rate. Creator evidence gains the weight `n/(n+10)` after
+`n` personal rows, so a small library cannot overturn the shared history.
+
+T4.7 owns no test path. `go test ./internal/ledger` and `go vet ./internal/ledger` compile the
+new API. A reviewer needs an HTTP capture regression that pins bound query parameters, counts,
+and the cold-start and blended-rate responses.
