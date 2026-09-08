@@ -381,10 +381,22 @@ dub's charges.
 Nothing calls `CompareBranches` today. That is why this is a finding and not a defect. It also
 means the first caller inherits the gap rather than discovering it.
 
-Named dependents. T5.5 owns the rail, and its History tab is where branch compare surfaces. Its
-Details tab is NOT affected: it sums `take.charges` per line through a different path, so T5.5
-as built is correct and stays closed. T8.3 documents what a dub costs, which is the other place
-a wrong total would show.
+Named dependents, corrected on 2026-09-08. My first pass named T5.5 and T8.3 and both were
+wrong. T5.5 is `done`, and its Details tab sums `take.charges` per line through a different
+path, so it is unaffected and stays closed. T8.3 only documents.
+
+The true answer is that no task inherits this, because no task reads the ledger for the UI.
+Searching the whole graph for the commit DAG returns one hit outside this phase: the T5.5
+description. Nothing owns `TimelineAt`, `CompareBranches`, or a history handler. T7.0 mounts
+handlers and states that it owns nothing inside them. Only `internal/fit/stretch.go` imports
+`internal/ledger`, for priors. So the History tab shipped against mock JSON with no path to
+real data. That is the third instance of the cause T7.0 names: work nobody owns never gets
+built. It needs a task, not a note.
+
+Two open tasks do meet the underlying charge question, though neither calls `CompareBranches`.
+T7.3 puts cumulative project cost on every progress event, which is a project total and must
+therefore count a whole pass charge. T8.1 must show that logged charges cover every Gemini call
+and count each once. Whichever runs first settles whether an unattributed charge exists.
 
 The decision, for whoever wires the first caller. Either attribute a whole pass charge to a
 commit at write time, which makes the ancestry sum complete, or rename the field to say it
