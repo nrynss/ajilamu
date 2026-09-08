@@ -1296,6 +1296,221 @@ func TestPipelineResumesAfterCompletedTake(t *testing.T) {
 	}
 }
 
+// TestPipelineDiscardsOrphanTakeWithoutRecord proves a take left without its
+// record does not block the next run. The loop clears the orphaned take, so
+// the fresh render claims the path and completes.
+func TestPipelineDiscardsOrphanTakeWithoutRecord(t *testing.T) {
+	workDir := t.TempDir()
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "Orphaned take line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	takePath := filepath.Join(workDir, "seg_1_try1.wav")
+	if err := writeTestWAV(takePath, 1000*time.Millisecond); err != nil {
+		t.Fatalf("write orphan take: %v", err)
+	}
+
+	synth := &refusingSynthesizer{inner: newMockPipelineSynthesizer("", nil)}
+	synth.inner.durations[1] = []time.Duration{slot}
+
+	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
+		Segments:    []types.Segment{seg},
+		Translator:  newMockPipelineTranslator(nil),
+		Synthesizer: synth,
+		WorkDir:     workDir,
+	}
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run after the orphaned take failed: %v", err)
+	}
+	if len(synth.inner.requests) != 1 {
+		t.Fatalf("synth requests = %d, want 1 to render the line fresh", len(synth.inner.requests))
+	}
+
+	line, ok := res.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in results")
+	}
+	if line.ChosenTake.File != takePath {
+		t.Errorf("line 1 take = %s, want %s", line.ChosenTake.File, takePath)
+	}
+	measured, err := media.Duration(context.Background(), takePath)
+	if err != nil {
+		t.Fatalf("measure the re-rendered take: %v", err)
+	}
+	if measured != slot {
+		t.Errorf("re-rendered take duration = %v, want %v", measured, slot)
+	}
+	t.Logf("synth requests = %d, take duration = %v", len(synth.inner.requests), measured)
+}
+
+// TestPipelineDiscardsOrphanStretchedTakeWithoutRecord proves a stretched take
+// left without its record does not block the next run. The line claims a raw
+// take and then a stretched take, and the loop clears both before it renders.
+func TestPipelineDiscardsOrphanStretchedTakeWithoutRecord(t *testing.T) {
+	workDir := t.TempDir()
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "Orphaned stretched take line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	rawPath := filepath.Join(workDir, "seg_1_try1.wav")
+	if err := writeTestWAV(rawPath, 1000*time.Millisecond); err != nil {
+		t.Fatalf("write orphan raw take: %v", err)
+	}
+	stretchedPath := filepath.Join(workDir, "seg_1_stretched.wav")
+	if err := writeTestWAV(stretchedPath, slot); err != nil {
+		t.Fatalf("write orphan stretched take: %v", err)
+	}
+
+	synth := &refusingSynthesizer{inner: newMockPipelineSynthesizer("", nil)}
+	// A 100 ms overrun sits inside the long budget, so the loop plans atempo.
+	synth.inner.durations[1] = []time.Duration{2100 * time.Millisecond}
+
+	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
+		Segments:    []types.Segment{seg},
+		Translator:  newMockPipelineTranslator(nil),
+		Synthesizer: synth,
+		WorkDir:     workDir,
+	}
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run after the orphaned takes failed: %v", err)
+	}
+	if len(synth.inner.requests) != 1 {
+		t.Fatalf("synth requests = %d, want 1 to render the line fresh", len(synth.inner.requests))
+	}
+
+	line, ok := res.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in results")
+	}
+	if line.ChosenTake.File != stretchedPath {
+		t.Fatalf("line 1 take = %s, want the stretched take %s", line.ChosenTake.File, stretchedPath)
+	}
+	if len(line.Attempts) != 1 {
+		t.Fatalf("line 1 attempts = %d, want 1", len(line.Attempts))
+	}
+	att := line.Attempts[0]
+	if att.Repair != types.RepairAtempo {
+		t.Errorf("line 1 repair = %s, want atempo", att.Repair)
+	}
+
+	measured, err := media.Duration(context.Background(), stretchedPath)
+	if err != nil {
+		t.Fatalf("measure the stretched take: %v", err)
+	}
+	if miss := measured - slot; miss < -StretchDeadBand || miss > StretchDeadBand {
+		t.Errorf("stretched take measured %v against slot %v, miss %v outside the %v dead band",
+			measured, slot, miss, StretchDeadBand)
+	}
+	t.Logf("synth requests = %d, chosen take = %s, ratio = %.4f, stretched duration = %v",
+		len(synth.inner.requests), filepath.Base(line.ChosenTake.File), att.Ratio, measured)
+}
+
+// TestReadSegmentRecordKeepsRecordOwnedTake proves the orphan cleanup never
+// removes a take that a readable record at the line names. Another language
+// or another segment can own the record, and its take must survive. The
+// cleanup still clears every other fresh take, which no record names.
+func TestReadSegmentRecordKeepsRecordOwnedTake(t *testing.T) {
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "Owned take line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+	other := seg
+	other.Text = "Another line under the same record name"
+
+	freshNames := []string{
+		"seg_1_try1.wav",
+		"seg_1_stretched.wav",
+		"seg_1_try2.wav",
+		"seg_1_try2_stretched.wav",
+		"seg_1_try3.wav",
+		"seg_1_try3_stretched.wav",
+	}
+
+	cases := []struct {
+		name       string
+		language   string
+		recordFor  types.Segment
+		recordLang string
+		takeName   string
+	}{
+		{name: "another language raw take", language: tts.Malayalam, recordFor: seg, recordLang: "ta-IN", takeName: "seg_1_try1.wav"},
+		{name: "another segment raw take", language: tts.Malayalam, recordFor: other, recordLang: tts.Malayalam, takeName: "seg_1_try1.wav"},
+		{name: "another language stretched take", language: tts.Malayalam, recordFor: seg, recordLang: "ta-IN", takeName: "seg_1_stretched.wav"},
+		{name: "another language later raw take", language: tts.Malayalam, recordFor: seg, recordLang: "ta-IN", takeName: "seg_1_try2.wav"},
+		{name: "another language later stretched take", language: tts.Malayalam, recordFor: seg, recordLang: "ta-IN", takeName: "seg_1_try3_stretched.wav"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			freshTakes := make([]string, 0, len(freshNames))
+			for _, name := range freshNames {
+				path := filepath.Join(workDir, name)
+				if err := writeTestWAV(path, slot); err != nil {
+					t.Fatalf("write fresh take %s: %v", path, err)
+				}
+				freshTakes = append(freshTakes, path)
+			}
+			takePath := filepath.Join(workDir, tc.takeName)
+
+			recorded := LineResult{
+				Segment:    tc.recordFor,
+				ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: takePath, Duration: slot, Fit: types.NewFit(slot, slot)},
+				Attempts: []LineAttempt{{
+					Attempt:      1,
+					Mode:         gemini.ModeNormal,
+					Text:         tc.recordFor.Text,
+					AudioPath:    takePath,
+					Fit:          types.NewFit(slot, slot),
+					Repair:       types.RepairNone,
+					RepairDetail: "fits slot within dead band",
+				}},
+				NotificationCopy: "Line 1 fits slot on attempt 1.",
+			}
+			if err := writeSegmentRecord(workDir, tc.recordLang, recorded); err != nil {
+				t.Fatalf("writeSegmentRecord failed: %v", err)
+			}
+
+			if _, ok := readSegmentRecord(context.Background(), workDir, tc.language, seg, freshTakes...); ok {
+				t.Fatal("readSegmentRecord accepted a record written for another owner")
+			}
+			if _, err := os.Stat(takePath); err != nil {
+				t.Fatalf("orphan cleanup removed a take the record owns: %v", err)
+			}
+			for _, path := range freshTakes {
+				if path == takePath {
+					continue
+				}
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("orphan cleanup kept %s, which no record at this line names: stat err = %v", path, err)
+				}
+			}
+		})
+	}
+}
+
 // TestPipelineReplaysRecordedStretchedTake proves the loop never hands a
 // stretched take to RepairLine. It replays the recorded result instead.
 func TestPipelineReplaysRecordedStretchedTake(t *testing.T) {
@@ -1981,5 +2196,111 @@ func TestPipelineDeadlineDuringProbeKeepsCompletedTake(t *testing.T) {
 	}
 	if _, err := os.Stat(takePath); err != nil {
 		t.Fatalf("expired probe removed the completed take: %v", err)
+	}
+}
+
+// TestPipelineDiscardsOrphanLaterAttemptTakesWithoutRecord proves a take left
+// without its record at any attempt does not block the next run. The loop
+// clears every path the fresh render can claim, raw and stretched, so a seed
+// at attempt two or attempt three no longer fails the run. The second run
+// resumes from the record and writes nothing.
+func TestPipelineDiscardsOrphanLaterAttemptTakesWithoutRecord(t *testing.T) {
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "Orphaned later attempt line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	cases := []struct {
+		name      string
+		orphan    string
+		durations []time.Duration
+	}{
+		{
+			name:      "attempt two raw",
+			orphan:    "seg_1_try2.wav",
+			durations: []time.Duration{1000 * time.Millisecond, slot},
+		},
+		{
+			name:      "attempt two stretched",
+			orphan:    "seg_1_try2_stretched.wav",
+			durations: []time.Duration{1000 * time.Millisecond, 2100 * time.Millisecond},
+		},
+		{
+			name:      "attempt three raw",
+			orphan:    "seg_1_try3.wav",
+			durations: []time.Duration{1000 * time.Millisecond, 1000 * time.Millisecond, slot},
+		},
+		{
+			name:      "attempt three stretched",
+			orphan:    "seg_1_try3_stretched.wav",
+			durations: []time.Duration{1000 * time.Millisecond, 1000 * time.Millisecond, 2100 * time.Millisecond},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			orphanPath := filepath.Join(workDir, tc.orphan)
+			if err := writeTestWAV(orphanPath, slot); err != nil {
+				t.Fatalf("write orphan take: %v", err)
+			}
+
+			first := &refusingSynthesizer{inner: newMockPipelineSynthesizer("", nil)}
+			first.inner.durations[1] = tc.durations
+
+			cfg := PipelineConfig{
+				Language:           tts.Malayalam,
+				TargetLanguageName: "Malayalam",
+
+				Segments:    []types.Segment{seg},
+				Translator:  newMockPipelineTranslator(nil),
+				Synthesizer: first,
+				WorkDir:     workDir,
+			}
+			res, err := RunPipeline(context.Background(), cfg)
+			if err != nil {
+				t.Fatalf("first run after the orphaned %s failed: %v", tc.orphan, err)
+			}
+			if len(first.inner.requests) != len(tc.durations) {
+				t.Fatalf("first run synth requests = %d, want %d", len(first.inner.requests), len(tc.durations))
+			}
+			line, ok := res.Line(1)
+			if !ok {
+				t.Fatal("missing line 1 in results")
+			}
+			if line.ChosenTake.File != orphanPath {
+				t.Errorf("line 1 take = %s, want %s", line.ChosenTake.File, orphanPath)
+			}
+			if _, err := os.Stat(orphanPath); err != nil {
+				t.Fatalf("first run left no take at the orphan path: %v", err)
+			}
+
+			second := newMockPipelineSynthesizer("", nil)
+			cfg.Synthesizer = second
+			cfg.Translator = newMockPipelineTranslator(nil)
+			res, err = RunPipeline(context.Background(), cfg)
+			if err != nil {
+				t.Fatalf("second run failed: %v", err)
+			}
+			if len(second.requests) != 0 {
+				t.Fatalf("second run synth requests = %d, want 0 to resume from the record", len(second.requests))
+			}
+			line, ok = res.Line(1)
+			if !ok {
+				t.Fatal("second run missing line 1 in results")
+			}
+			if line.ChosenTake.File != orphanPath {
+				t.Errorf("resumed line 1 take = %s, want %s", line.ChosenTake.File, orphanPath)
+			}
+			if _, err := os.Stat(orphanPath); err != nil {
+				t.Fatalf("resumed run removed the take the record owns: %v", err)
+			}
+			t.Logf("first run synth writes = %d, second run synth writes = %d, chosen take = %s",
+				len(first.inner.requests), len(second.requests), filepath.Base(line.ChosenTake.File))
+		})
 	}
 }

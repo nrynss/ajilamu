@@ -189,12 +189,12 @@ Protect this core flow above auxiliary features.
 |---|---|---|
 | P0 | 4 / 4 | Complete. Close review approved with zero residue. See [p0-close-round2.md](adversarial-review/p0-close-round2.md). |
 | P1 | 6 / 6 | Complete. Contracts frozen with one example payload per shared struct. See [t1.4a-round2.md](adversarial-review/t1.4a-round2.md). |
-| P2 | 10 / 10 | Complete. T2.1 to T2.7 approved with zero residue. T2.8a and T2.8b approved, with round four's L applied under the exemption. See [t2.8b-round4.md](adversarial-review/t2.8b-round4.md). |
+| P2 | 10 / 10 | Complete. Close review approved with zero residue. See [p2-close-round1.md](adversarial-review/p2-close-round1.md). |
 | P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
 | P4 | 8 / 8 | Complete. Close review approved with zero residue. See [p4-close-round2.md](adversarial-review/p4-close-round2.md). |
 | P5 | 7 / 7 | Complete. Workspace renders from offline fixtures. See [PHASE-5-workspace.md](PHASE-5-workspace.md). |
 | P6 | 6 / 8 | In progress. T6.1, T6.2, T6.3, T6.4, T6.5a and T6.6 approved with zero residue. T6.5 and T6.5b remain. See [t6.3-round2.md](adversarial-review/t6.3-round2.md). |
-| P7 | 20 / 20 | Complete. T7.5b approved with zero residue. See [t7.5b-round3.md](adversarial-review/t7.5b-round3.md). |
+| P7 | 20 / 20 | Complete. Close review approved with zero residue. See [p7-close-round4.md](adversarial-review/p7-close-round4.md). |
 | P8 | 0 / 4 | Not started. |
 
 **Concept validation:** Complete. Recorded in [observations.md](observations.md) and reviewed in [adversarial-review](adversarial-review/2026-09-07-pipeline-and-claims.md).

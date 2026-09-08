@@ -177,6 +177,16 @@ func PipelineTakeName(segmentID, attempt int, stretched bool) string {
 	return fmt.Sprintf("seg_%d_try%d.wav", segmentID, attempt)
 }
 
+// resolveTakePath resolves one take destination from a builder and a work
+// directory. An absolute builder result is used as it stands.
+func resolveTakePath(builder PathBuilder, workDir string, segmentID, attempt int, stretched bool) string {
+	filename := builder(segmentID, attempt, stretched)
+	if workDir != "" && !filepath.IsAbs(filename) {
+		return filepath.Join(workDir, filename)
+	}
+	return filename
+}
+
 // segmentRecordName names the resume record the loop writes per segment.
 // The name never collides with a take or an assembled mix.
 func segmentRecordName(segmentID int) string {
@@ -245,7 +255,25 @@ func discardTakeFile(path string) {
 	_ = os.Remove(path)
 }
 
+// discardOrphanTakes removes every take the fresh render will claim.
+// It keeps any take that a readable record at the line names.
+// It removes nothing when the run context ended.
+func discardOrphanTakes(ctx context.Context, ownedTake string, freshTakes ...string) {
+	if ctx.Err() != nil {
+		return
+	}
+	for _, freshTake := range freshTakes {
+		if freshTake == "" || freshTake == ownedTake {
+			continue
+		}
+		discardTakeFile(freshTake)
+	}
+}
+
 // readSegmentRecord loads the resume state of one line.
+// freshTakes names every take path the fresh render can claim. Each attempt
+// claims a raw take, and an atempo repair claims a stretched take. The caller
+// resolves every attempt with the builder RepairLine reads.
 //
 // It reports false when no record exists, when the record describes another
 // line or language, and when the record is unreadable. It also reports false
@@ -253,27 +281,34 @@ func discardTakeFile(path string) {
 // A take that is missing, empty, or undecodable means the earlier pass left
 // nothing to resume. The function removes such a take, because the fresh
 // render claims the same path and the synthesizer refuses to overwrite it.
+// It also removes every fresh take path when no readable record at this line
+// names it. An interrupted run can leave a take before it writes the record.
+// A leftover take would block every later run of the project.
 // It removes nothing when the run context ended. The probe may have failed
 // on the context alone, and the take can still hold completed work.
-func readSegmentRecord(ctx context.Context, workDir, language string, seg types.Segment) (LineResult, bool) {
+func readSegmentRecord(ctx context.Context, workDir, language string, seg types.Segment, freshTakes ...string) (LineResult, bool) {
 	if workDir == "" {
 		return LineResult{}, false
 	}
 	data, err := os.ReadFile(filepath.Join(workDir, segmentRecordName(seg.ID)))
 	if err != nil {
+		discardOrphanTakes(ctx, "", freshTakes...)
 		return LineResult{}, false
 	}
 	var rec segmentRecord
 	if err := json.Unmarshal(data, &rec); err != nil {
+		discardOrphanTakes(ctx, "", freshTakes...)
 		return LineResult{}, false
 	}
 	if rec.Language != language || rec.Result.Segment != seg {
+		discardOrphanTakes(ctx, rec.Result.ChosenTake.File, freshTakes...)
 		return LineResult{}, false
 	}
 	if !takeFileUsable(ctx, rec.Result.ChosenTake.File) {
 		if ctx.Err() == nil {
 			discardTakeFile(rec.Result.ChosenTake.File)
 		}
+		discardOrphanTakes(ctx, rec.Result.ChosenTake.File, freshTakes...)
 		return LineResult{}, false
 	}
 	return rec.Result, true
@@ -824,16 +859,8 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 		target:   p.cfg.TargetLanguageName,
 	}
 
-	resolveTakePath := func(segmentID, attempt int, stretched bool) string {
-		filename := p.cfg.PathBuilder(segmentID, attempt, stretched)
-		if p.cfg.WorkDir != "" && !filepath.IsAbs(filename) {
-			return filepath.Join(p.cfg.WorkDir, filename)
-		}
-		return filename
-	}
-
 	wrappedPathBuilder := func(segmentID, attempt int, stretched bool) string {
-		destPath := resolveTakePath(segmentID, attempt, stretched)
+		destPath := resolveTakePath(p.cfg.PathBuilder, p.cfg.WorkDir, segmentID, attempt, stretched)
 		if stretched {
 			takeFile := filepath.Base(destPath)
 			emitter.emit(api.ProgressEvent{
@@ -940,10 +967,21 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 // take still holds audio the loop can measure. The loop hands a reusable take
 // to RepairLine as the initial take, so RepairLine measures it and skips the
 // synthesis that produced it. Every other recorded line replays its stored
-// result, because RepairLine cannot consume that take. A line without a record
-// renders as it always did.
+// result, because RepairLine cannot consume that take. A line with no usable
+// record renders fresh after the loop clears every take that no record owns.
 func (p *Pipeline) repairSegment(ctx context.Context, seg types.Segment, cfg RewriteConfig) (LineResult, error) {
-	if recorded, ok := readSegmentRecord(ctx, p.cfg.WorkDir, p.cfg.Language, seg); ok {
+	attempts := cfg.MaxAttempts
+	if attempts <= 0 {
+		attempts = DefaultMaxAttempts
+	}
+	freshTakes := make([]string, 0, 2*attempts)
+	for attempt := 1; attempt <= attempts; attempt++ {
+		freshTakes = append(freshTakes,
+			resolveTakePath(p.cfg.PathBuilder, p.cfg.WorkDir, seg.ID, attempt, false),
+			resolveTakePath(p.cfg.PathBuilder, p.cfg.WorkDir, seg.ID, attempt, true))
+	}
+
+	if recorded, ok := readSegmentRecord(ctx, p.cfg.WorkDir, p.cfg.Language, seg, freshTakes...); ok {
 		take := reusableTake(recorded)
 		if take == nil {
 			return recorded, nil
