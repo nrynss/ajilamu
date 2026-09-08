@@ -237,7 +237,7 @@ requires:   T2.2, T2.3, T2.5
 fixture-ok: yes
 size:       M · mid
 owns:       internal/fit/rewrite.go
-status:     not-started
+status:     done
 ```
 Request shorter translations when takes overrun by more than 8%. Request fuller translations when takes underrun by more than 8%.
 
@@ -642,3 +642,44 @@ segments 2, 5, 6 and 7. `metrics.json` records `"repair": "none"` for all
 four while this package now plans `atempo`. T2.7 also chooses take names, and
 `checkPaths` refuses a second write to any name, so a scheme like
 `seg_3_try2_stretched.wav` avoids `ErrOutputExists`.
+
+### T2.6: Rewrite repair and third attempt (implemented 2026-09-08)
+
+The rewrite repair lives in `internal/fit/rewrite.go`. It exports `RepairLine`,
+`NewRepairer`, and `DefaultTakeName`. It exports types `RewriteConfig`,
+`LineRepairer`, `Repairer`, `LineAttempt`, and `LineResult`. It exports sentinels
+`ErrAlreadyStretched`, `ErrTotalStretchExceeded`, `ErrTranslatorRequired`, and
+`ErrSynthesizerRequired`.
+
+**Three attempts per line.** The repair loop executes up to three consecutive attempts.
+Attempt 1 translates with normal mode unless the caller provides an initial take or text.
+If an attempt fits inside the dead band, the loop succeeds with no repair.
+If duration enters the repair window, the loop calls `StretchWithLimits`.
+A successful stretch returns `RepairAtempo` with the stretched take.
+
+**Direction-aware rewrites.** An overrun beyond the stretch budget requests `ModeShorter`.
+An underrun beyond the stretch budget requests `ModeFuller`.
+The loop re-evaluates direction after every attempt from measured duration minus slot.
+Over-corrections flip direction automatically for the next attempt.
+
+**Flagged line handling and closest take.** If three attempts fail to fit, the repairer flags the line.
+It sets `Flagged` to true.
+The pipeline selects the closest take by finding the attempt with minimum absolute delta.
+The result records signed deltas for all attempts.
+It generates concise notification copy explaining the failure and naming the closest take.
+
+**Guards and limits.** Each retry synthesizes fresh audio and stretches only fresh takes.
+The loop refuses to re-stretch an already stretched take.
+It validates caller stretch limits against `MaxStretchLimit`.
+It never calls unexported sibling functions `applyStretch` or `renderStretch`.
+All stretching routes strictly through `StretchWithLimits`.
+It derives signed miss directly and ignores unverified delta fields.
+
+**Clean notification sentences.** Sentinel errors from `StretchWithLimits` map to bounded sentences.
+User notifications never include raw ffmpeg or ffprobe output banners.
+Each notification sentence stays under 30 words and uses active voice.
+
+**Next agent.** T2.7 orchestrates the dubbing pipeline across all segments.
+Call `RepairLine` with `types.Segment` and `RewriteConfig`.
+Use `DefaultTakeName` or supply a custom `PathBuilder` for immutable WAV naming.
+Log itemized charges through ledger recorders after each API call.
