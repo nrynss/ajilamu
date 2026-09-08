@@ -527,7 +527,7 @@ owns:       internal/tts/catalog.go, internal/tts/catalog_test.go,
             internal/api/wire.go, internal/api/wire_test.go,
             web/src/lib/types.ts, web/src/lib/LanguagePicker.svelte,
             internal/api/server.go, cmd/ajilamu/main.go
-status:     not-started
+status:     done
 ```
 The create screen offers one hardcoded language today. Fetch the languages Cloud TTS Chirp 3
 HD supports through `voices.list` with ADC, and cache the answer.
@@ -934,3 +934,50 @@ updated_at`. A take with no charge marshalled `"charges":[]`. Headless Chromium 
 title, two lines, both fits, and the itemized charge on `/d/<real id>`. No fixture marker appeared.
 With no credentials `/d/fixture` rendered eight lines and In review. A real id with no ledger
 answered the 503 sentence and no fixture data.
+
+### T7.7: Supported-language catalog
+
+`internal/tts/catalog.go` adds `Catalog`, `CatalogState`, and `VoiceLister`. `NewCatalog(nil)`
+serves 53 committed Chirp 3 HD locales and opens the ADC client on the first refresh. `Refresh`
+calls `voices.list`, keeps only `-Chirp3-HD-` voices, validates every code, sorts and dedupes the
+result, and swaps the cache only after a success. A failed fetch leaves the cache untouched.
+`nameMissingCredential` names Application Default Credentials and `GOOGLE_APPLICATION_CREDENTIALS`
+when the SDK cannot authenticate.
+
+`internal/api/languages.go` serves `GET /api/languages` from the cache and
+`POST /api/languages/refresh` from the provider. A failed refresh answers 502 with the reason.
+`internal/api/server.go` mounts both routes through two new `ServerOptions` fields.
+`cmd/ajilamu/main.go` adapts `tts.Catalog` onto `api.LanguageCatalogSource` and always builds the
+catalog, so a clone with no credentials still serves the committed list.
+
+The wire type is `LanguageCatalog` with `languages`, `source`, and optional `fetched_at`. It
+reaches `mirroredTypes`, `wireExamples`, `testdata/wire/language_catalog.json`, and
+`web/src/lib/types.ts`. `LanguagePicker.svelte` loads the catalog on mount, renders a select, and
+exposes a button that posts to the refresh route.
+
+Surprises. The live `voices.list` on 2026-09-09 returned exactly the 53 documented locales, so the
+committed fallback equals the provider answer byte for byte. This machine holds ADC, so the
+no-credential path needed `HOME` pointed at an empty directory. `GOOGLE_APPLICATION_CREDENTIALS`
+alone is not enough, because the SDK also reads
+`$HOME/.config/gcloud/application_default_credentials.json`. The SDK reports a missing credential
+in prose rather than a sentinel error, so classification matches the `default credentials`
+substring.
+The headless probe ran `page.evaluate` in an isolated world. That world shares the DOM and not
+custom `window` properties, so a callback can look dead when it fires. Read a DOM attribute or
+`document.title` to observe one.
+
+T7.5b mounts the picker twice. Pass `id`, `name`, `label`, `value`, and `onlanguagechange`. Use
+`name="source_language"` and `name="language"`. The select submits the full BCP-47 code, such as
+`ml-IN`, not the two-letter `ml` the create screen sends today. Set each default `value` to a
+catalog code, or to empty for a source language an older record may not carry. An empty value
+renders "Choose a language" and submits empty.
+
+Measured pins. A credential-free server answered `GET /api/languages` 200 with 53 committed
+languages and no `fetched_at`. `POST /api/languages/refresh` on the same server answered 502 and
+named Application Default Credentials, and `GET` still served all 53. A fake provider returned
+`["en-US","ml-IN","ta-IN"]` with `source` provider and a fetch time. Headless Chromium rendered 53
+options plus the placeholder, and selecting Malayalam fired `onlanguagechange` with `ml-IN`. The
+button issued `POST /api/languages/refresh`, and the status changed to "53 live languages from
+Cloud Text-to-Speech." The failure click showed the credential sentence and kept 53 options.
+`go test -count=1 ./internal/api ./internal/tts ./cmd/...` passed and `npm --prefix web run check`
+reported 0 errors.

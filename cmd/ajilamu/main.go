@@ -79,6 +79,10 @@ func run() error {
 		}
 	}
 
+	// The catalog serves the committed list with no credentials, and a
+	// refresh fetches the live list through ADC.
+	languageCatalog := tts.NewCatalog(nil)
+
 	settings, err := config.OpenSettings(cfg.DataDir)
 	if err != nil {
 		return fmt.Errorf("open settings store: %w", err)
@@ -110,8 +114,10 @@ func run() error {
 		}),
 		// T7.4a persists submitted credentials under AJILAMU_DATA_DIR. The
 		// store never returns a value, so the read route reports presence only.
-		Config:         api.ConfigHandler(newConfigSaver(settings)),
-		ConfigPresence: api.ConfigPresenceHandler(newConfigPresence(settings)),
+		Config:           api.ConfigHandler(newConfigSaver(settings)),
+		ConfigPresence:   api.ConfigPresenceHandler(newConfigPresence(settings)),
+		Languages:        api.LanguagesHandler(languageSource{catalog: languageCatalog}),
+		LanguagesRefresh: api.LanguagesRefreshHandler(languageSource{catalog: languageCatalog}),
 	})
 	if err != nil {
 		return err
@@ -178,6 +184,43 @@ func newConfigPresence(store *config.SettingsStore) func() (api.ConfigPresence, 
 			VoiceKey:       presence.VoiceKey,
 			TranslationKey: presence.TranslationKey,
 		}, nil
+	}
+}
+
+// languageSource adapts the TTS catalog onto the api language routes.
+type languageSource struct {
+	catalog *tts.Catalog
+}
+
+var _ api.LanguageCatalogSource = languageSource{}
+
+// Catalog returns the catalog as it stands.
+func (l languageSource) Catalog() api.LanguageCatalog {
+	return wireLanguageCatalog(l.catalog.Current())
+}
+
+// Refresh fetches the provider list and returns the refreshed catalog.
+func (l languageSource) Refresh(ctx context.Context) (api.LanguageCatalog, error) {
+	if err := l.catalog.Refresh(ctx); err != nil {
+		return api.LanguageCatalog{}, err
+	}
+	return wireLanguageCatalog(l.catalog.Current()), nil
+}
+
+// wireLanguageCatalog maps one catalog reading onto the wire payload.
+func wireLanguageCatalog(state tts.CatalogState) api.LanguageCatalog {
+	source := api.CatalogSourceCommitted
+	if state.FromProvider {
+		source = api.CatalogSourceProvider
+	}
+	fetchedAt := ""
+	if !state.FetchedAt.IsZero() {
+		fetchedAt = state.FetchedAt.UTC().Format(time.RFC3339)
+	}
+	return api.LanguageCatalog{
+		Languages: state.Languages,
+		Source:    source,
+		FetchedAt: fetchedAt,
 	}
 }
 

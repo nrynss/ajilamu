@@ -299,3 +299,18 @@ export interface ProgressEvent {
   /** TakeFile names the attempt involved when one exists. */
   take_file: string
 }
+
+// CatalogSource names where the supported-language list came from.
+export type CatalogSource = "committed" | "provider"
+
+// LanguageCatalog is the supported-language list the create screen offers.
+// GET /api/languages serves it, and POST /api/languages/refresh replaces it.
+export interface LanguageCatalog {
+  /** Languages lists supported BCP-47 codes, sorted. */
+  languages: string[]
+  /** Source names where the list came from. */
+  source: CatalogSource
+  /** FetchedAt is the RFC 3339 time of the last provider fetch.
+   * It is absent for the committed list. */
+  fetched_at?: string
+}

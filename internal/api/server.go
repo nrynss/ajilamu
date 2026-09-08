@@ -35,20 +35,22 @@ type HistoryReader interface {
 
 // ServerOptions supplies dependencies owned by other API tasks.
 type ServerOptions struct {
-	FrontendRoot   string
-	Ledger         LedgerFlusher
-	Index          http.Handler
-	History        HistoryReader
-	Workspace      WorkspaceReader
-	Project        ProjectLookup
-	Config         http.Handler
-	ConfigPresence http.Handler
-	Upload         http.Handler
-	Sample         http.Handler
-	Runner         PipelineRunner
-	Recorder       RunRecorder
-	StorageDir     string
-	Logger         *slog.Logger
+	FrontendRoot     string
+	Ledger           LedgerFlusher
+	Index            http.Handler
+	History          HistoryReader
+	Workspace        WorkspaceReader
+	Project          ProjectLookup
+	Config           http.Handler
+	ConfigPresence   http.Handler
+	Languages        http.Handler
+	LanguagesRefresh http.Handler
+	Upload           http.Handler
+	Sample           http.Handler
+	Runner           PipelineRunner
+	Recorder         RunRecorder
+	StorageDir       string
+	Logger           *slog.Logger
 }
 
 // Server owns the HTTP mux and coordinates HTTP draining with ledger flushing.
@@ -163,6 +165,12 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	}
 	if options.ConfigPresence != nil {
 		mux.Handle("GET /api/config", options.ConfigPresence)
+	}
+	if options.Languages != nil {
+		mux.Handle("GET /api/languages", options.Languages)
+	}
+	if options.LanguagesRefresh != nil {
+		mux.Handle("POST /api/languages/refresh", options.LanguagesRefresh)
 	}
 	if options.Upload != nil {
 		mux.Handle("POST /api/dubs/new", options.Upload)

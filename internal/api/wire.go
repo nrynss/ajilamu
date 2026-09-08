@@ -378,3 +378,23 @@ type ProgressEvent struct {
 	// TakeFile names the attempt involved when one exists.
 	TakeFile string `json:"take_file"`
 }
+
+// CatalogSource names where the supported-language list came from.
+const (
+	// CatalogSourceCommitted is the list committed to this repository.
+	CatalogSourceCommitted = "committed"
+	// CatalogSourceProvider is a list fetched from Cloud Text-to-Speech.
+	CatalogSourceProvider = "provider"
+)
+
+// LanguageCatalog is the supported-language list the create screen offers.
+// GET /api/languages serves it, and POST /api/languages/refresh replaces it.
+type LanguageCatalog struct {
+	// Languages lists supported BCP-47 codes, sorted.
+	Languages []string `json:"languages"`
+	// Source names where the list came from.
+	Source string `json:"source"`
+	// FetchedAt is the RFC 3339 time of the last provider fetch.
+	// It is absent for the committed list.
+	FetchedAt string `json:"fetched_at,omitempty"`
+}

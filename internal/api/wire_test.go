@@ -79,6 +79,7 @@ var wireExamples = []wireExample{
 	{"branch_comparison.json", func() any { return &BranchComparison{} }},
 	{"branch_summary.json", func() any { return &BranchSummary{} }},
 	{"progress.json", func() any { return &ProgressEvent{} }},
+	{"language_catalog.json", func() any { return &LanguageCatalog{} }},
 }
 
 // TestExamplesUnmarshal proves every example payload parses into its struct.
@@ -196,6 +197,7 @@ var mirroredTypes = []any{
 	TimelineEntry{},
 	BranchComparison{},
 	BranchSummary{},
+	LanguageCatalog{},
 }
 
 // parseWireStructs extracts every exported struct name from wire.go.
