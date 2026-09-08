@@ -29,6 +29,31 @@ a workaround. L is polish.
 a finding as a false positive. That judgement decides whether the defect is real, never whether
 a real defect deserves a fix.
 
+### The loop cannot see what no task owns
+
+A reviewer reads a diff against a specification. A claim that no task owns appears in no diff,
+so no reviewer ever reads it. This is a blind spot in the loop rather than a lapse by any agent
+inside it.
+
+It has cost this project twice. `project.md` named `google/adk-go` and `mcp-clickhouse` in the
+stack table from the first commit and no task owned either, so eight phases shipped against a
+stack the documents did not describe. Nothing owned a server entrypoint either, so the same
+eight phases wrote handlers and a frontend for a process that did not exist.
+
+Run the audit at every phase close, before the close review is written:
+
+```bash
+python3 tools/audit_docs.py
+```
+
+It compares the phase files, `README.md`, `project.md` and `infrastructure.md` against `go.mod`,
+`.env.example` and the filesystem. Exit code 1 means drift. A close review that has not run it
+is incomplete.
+
+Fix the doc or write the task. A finding is never closed by deleting the claim that exposed it.
+A module the documents name before a task lands it goes in the script's `PENDING_MODULES` with
+the task id that lands it, which makes the gap explicit rather than invisible.
+
 ## Four roles, kept separate
 
 | Role | Does | Never does |
