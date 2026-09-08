@@ -450,7 +450,7 @@ requires:   T4.2a, T4.6, T7.2a
 fixture-ok: yes
 size:       M · frontier
 owns:       internal/ledger/workspace.go, internal/ledger/workspace_test.go
-status:     not-started
+status:     done
 ```
 The wire `Dub` needs takes with their fit and itemized charges, the whole-pass charges, the
 running total, the language list, and project metadata. The ledger exposes four reads and none
@@ -494,7 +494,7 @@ fixture-ok: yes
 size:       S · mid
 owns:       web/package.json, web/package-lock.json, web/src/app.html, .gitignore,
             cmd/ajilamu/main.go
-status:     not-started
+status:     claimed:FrontendHygiene
 ```
 Three live defects. Every page load logs a 404 because `web/src/app.html` declares no favicon.
 No `package-lock.json` exists and `web/package.json` pins no Node engine, so the version
@@ -746,3 +746,59 @@ temporary file and a rename.
 Rounds 1 to 3 each found one member of the same resume-corruption class. Round 4 found no code
 defect and one L, applied by the orchestrator under the exemption. Round 5 returned APPROVE with
 zero residue.
+
+### T7.6: Frontend and entrypoint hygiene
+
+Three defects fixed. `web/src/app.html` declares a data URI favicon, so the browser asks for no
+`/favicon.ico`. `web/package.json` pins `engines.node` to `>=26 <27`, and `web/package-lock.json`
+locks 83 packages at lockfile version 3. `findFrontendRoot` serves only `web/build`. The probe
+refuses a stale `web/dist`, and `.gitignore` now covers `web/dist/`.
+
+Measured pins. A headed Chrome load of `/` through a logging proxy logged `GET /favicon.ico -> 404
+Not Found` before the fix. The same load after the fix made 14 requests with zero 404. `npm ci` in
+a scratch copy of `package.json` plus the lockfile installed 57 packages. With `web/build` absent
+and a marker at `web/dist/index.html`, the HEAD binary answered 200 with the marker, and the fixed
+binary answered 503 `Frontend build is unavailable`. `AJILAMU_FRONTEND_DIR=web/dist` still serves
+the marker, so the 503 is the probe refusing, not a broken directory.
+
+Surprise. Headless Chrome 152.0.7977.82 does fetch the favicon. Every mode I ran asked for
+`/favicon.ico`, and the logging proxy logged `GET /favicon.ico -> 404 Not Found 19 bytes`. The
+modes were `--headless`, `--headless=new`, `--headless=old`, `--headless --dump-dom`, and
+`--headless --screenshot`. A page-level CDP Network listener recorded
+`Network.requestWillBeSent GET /favicon.ico` and `Network.responseReceived 404` for the same
+request. The fixed build made 14 requests and asked for no favicon. A logging reverse proxy in
+front of the server is the tool that sees the request.
+
+The next agent should know: `web/build` is gitignored and is the only directory the probe serves.
+Regenerating the lockfile needs `npm install --package-lock-only`. `npm ci` ran in a scratch copy,
+because a run in `web/` would wipe the shared `node_modules`. Plain `npm ci` succeeded. The
+`--prefer-offline` flag failed once with a stale cached metadata `ETARGET` for `vite@8.2.2`.
+
+### T7.5a: Ledger workspace reads
+
+`internal/ledger/workspace.go` holds five reads. Every read routes through `queryClickHouse`,
+so both pinned settings reach every statement. Every read binds `dub_id` as a parameter and
+orders its rows.
+
+- `WorkspaceTakes(ctx, dubID) ([]api.LanguageTrack, error)` returns one track per language.
+  Each line carries its takes oldest attempt first. Each take carries its fit, itemized
+  charges, and peaks. A line is flagged when it holds a take and none of its takes fits.
+- `WholePassCharges(ctx, dubID) ([]api.Charge, error)` returns the charges no take owns.
+- `RunningTotal(ctx, dubID) (api.Total, error)` sums every charge in exact nanodollars.
+- `Languages(ctx, dubID) ([]string, error)` lists the target language codes.
+- `ProjectMetadata(ctx, dubID) (api.DubSummary, error)` returns the identity and timestamps.
+
+The read identifies whole-pass work by `kind = 'segment'`. T7.3 attributes the segmentation row to
+the first rendered take, so the schema's `-1` segment sentinel and empty `take_id` no longer
+survive the write path. Do not split the two charge sets by those fields.
+
+The ledger stores no project title and no readiness. `ProjectMetadata` leaves both empty for
+the route to fill from the upload record. The ledger stores no atempo ratio column either, so
+`Take.StretchFactorMilli` stays zero.
+
+Measured pins. `go test -count=1 ./internal/ledger` passes. `TestWorkspaceReadsSurviveQuotedIntegers`
+drives all six statements against a stand-in that quotes 64-bit integers unless the request
+pins the quoting setting. The same six statements ran on ClickHouse 26.8.2.7 through
+`clickhouse local` over `sql/schema.sql`. They returned the expected rows, and the quoting
+setting at 1 quoted every 64-bit field. `TestOnlyClientPinsServerSettings` still finds no
+setting name outside `client.go`.
