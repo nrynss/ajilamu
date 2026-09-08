@@ -308,12 +308,29 @@ the caller gets Code 306, which names the setting, rather than an opaque timeout
 The runtime default is 0, but the setting's own description says integers are quoted by
 default, so the client does not inherit it.
 
-#### The view changed and must be redeployed
+#### The view changed, and the live database has it
 
 `sql/schema.sql` now defines `timeline_at_commit` with `argMax(..., (version_seq, commit_id))`.
-A live database still holds the old definition until someone runs the file against it. Run
-`sql/schema.sql` into the target database before trusting the tie-break there. The file uses
-`CREATE OR REPLACE VIEW`, so a rerun is safe and keeps every row.
+The owner deployed that statement to the live ClickHouse Cloud database on 2026-09-08. Reading
+`system.tables` back confirms all seven `argMax` calls carry the pair and `state_version_seq`
+stays `max(version_seq)`. Every `_raw` table held zero rows at that moment, so no stored row
+ever sat under the unspecified ordering.
+
+Any other database still holds the old definition until someone runs the file against it. The
+file uses `CREATE OR REPLACE VIEW`, so a rerun is safe and keeps every row.
+
+#### Measured against the real target
+
+Earlier T4.5 evidence came off a local ClickHouse 26.8.2.7 binary. The live service runs
+26.2.1.641, an older minor. Both shipped statements returned HTTP 200 there. `selectTimelineAt`
+confirms Cloud accepts `{name:String}` query parameters as parameterized view arguments.
+`selectBranchCost` returned an empty label and a zero cost on an absent head, which is the
+Code 125 path `any(branch)` closed.
+
+Cloud defaults `max_recursive_cte_evaluation_depth` to 1000, so the depth finding holds there,
+and it accepts the client's pin to 5000. It defaults `output_format_json_quote_64bit_integers`
+to false and accepts that pin too. The service idles down and takes about a minute to wake, so
+a short client timeout on a first call reads as a network failure rather than an idle service.
 
 #### What rests on a test and what rests on a measurement
 
