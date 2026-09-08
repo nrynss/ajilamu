@@ -10,6 +10,7 @@
     referenceSlotMs
   } from "$lib/fixture"
   import Boundary, { type BoundaryChange } from "$lib/edit/Boundary.svelte"
+  import Speaker, { type SpeakerChange } from "$lib/edit/Speaker.svelte"
   import CommandBar, {
     type CommandIntent,
     type CommandParseFailure
@@ -212,6 +213,17 @@
   }
 
   function handleBoundaryChange(change: BoundaryChange): void {
+    if (!dub) return
+    commandPreview = undefined
+    dub = {
+      ...dub,
+      segments: dub.segments.map((segment) => (
+        segment.id === change.segment.id ? change.segment : segment
+      ))
+    }
+  }
+
+  function handleSpeakerChange(change: SpeakerChange): void {
     if (!dub) return
     commandPreview = undefined
     dub = {
@@ -577,13 +589,21 @@
         <section class="editor" aria-label="Timeline editor">
           <CommandBar bind:this={commandBar} parse={previewCommand} onconfirm={confirmCommand} />
           {#if selectedRow}
-            <Boundary
-              segment={selectedRow.segment}
-              segments={dub.segments}
-              takes={selectedRow.line?.takes ?? []}
-              timelineDurationMs={sharedPictureDurationMs}
-              onchange={handleBoundaryChange}
-            />
+            <div class="editor-panels">
+              <Boundary
+                segment={selectedRow.segment}
+                segments={dub.segments}
+                takes={selectedRow.line?.takes ?? []}
+                timelineDurationMs={sharedPictureDurationMs}
+                onchange={handleBoundaryChange}
+              />
+              <Speaker
+                segment={selectedRow.segment}
+                segments={dub.segments}
+                takes={selectedRow.line?.takes ?? []}
+                onchange={handleSpeakerChange}
+              />
+            </div>
           {/if}
           <Timeline
             segments={dub.segments}
@@ -787,6 +807,13 @@
     min-height: 156px;
   }
 
+  .editor-panels {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    padding: 12px 16px;
+  }
+
   dialog {
     background: var(--surface);
     border: 1px solid var(--line);
@@ -851,6 +878,10 @@
 
     .editor {
       grid-column: 1;
+    }
+
+    .editor-panels {
+      grid-template-columns: 1fr;
     }
   }
 

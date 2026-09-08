@@ -41,8 +41,8 @@ Snap dragging to adjacent segment boundaries and silence gaps. Disallow silent o
 requires:   T5.3, T5.5
 fixture-ok: yes
 size:       S · mid
-owns:       web/src/lib/edit/Speaker.svelte
-status:     not-started
+owns:       web/src/lib/edit/Speaker.svelte, web/src/routes/d/[id]/+page.svelte
+status:     done
 ```
 Provide quick speaker toggles per dialogue line. Changing speaker attribution alters voice assignment and requires re-rendering.
 
@@ -54,10 +54,10 @@ Always display estimated re-rendering costs before triggering synthesis calls. N
 
 ### T6.3: Text correction ★
 ```yaml
-requires:   T5.5
+requires:   T5.5, T6.5a
 fixture-ok: yes
 size:       M · mid
-owns:       web/src/lib/edit/Text.svelte
+owns:       web/src/lib/edit/Text.svelte, web/src/routes/d/[id]/+page.svelte
 status:     not-started
 ```
 Support in-place text editing for transcribed source sentences and translated target lines.
@@ -95,21 +95,47 @@ Display parsed intent before applying changes so creators can confirm modificati
 
 ---
 
-### T6.5: Re-render a line ★
+### T6.5a: Line re-render route ★
 ```yaml
-requires:   T6.2, T6.3, T2.7
+requires:   T6.2, T2.7
 fixture-ok: no
-size:       M · mid
-owns:       internal/api/rerender.go
+size:       M · frontier
+owns:       internal/api/rerender.go, internal/api/rerender_test.go,
+            internal/api/server.go, cmd/ajilamu/main.go
 status:     not-started
 ```
-Re-run an individual dialogue line through the fit loop and save the output as a new take. Never overwrite previous takes.
+Re-run one dialogue line through the fit loop and save the output as a new take. Never
+overwrite a previous take. Preserve `seg_3_try1.wav` when creating `seg_3_try2.wav`.
 
-Preserve `seg_3_try1.wav` when creating `seg_3_try2.wav`. Render older takes as ghost outlines on the timeline.
+`RepairLine` with `RewriteConfig.InitialText` makes a corrected target text authoritative,
+so a re-render after a text correction calls no translation model. The route accepts an
+optional target text and an optional speaker, so a speaker change re-renders with the
+voice `tts.Assign` maps to the new speaker.
 
-Display cost estimates before running and record new commits in ClickHouse.
+`internal/api` cannot import `internal/fit`, so the route reaches the renderer through an
+api-owned interface that `cmd/ajilamu/main.go` adapts. The route records the new take, its
+charges and one commit in ClickHouse.
 
-**Done when:** Re-rendering creates a secondary take file, both takes play independently, and the timeline shows ghost take history.
+**Done when:** A POST re-render of one line writes `seg_3_try2.wav` beside
+`seg_3_try1.wav`, both decode, a stand-in ClickHouse records one take, one charge row and
+one commit, and the response names the new take.
+
+---
+
+### T6.5: Ghost take history ★
+```yaml
+requires:   T6.3, T6.5a
+fixture-ok: yes
+size:       S · mid
+owns:       web/src/routes/d/[id]/+page.svelte
+status:     not-started
+```
+Display the cost estimate before a re-render runs, and render older takes as ghost
+outlines on the timeline. The page calls T6.5a's route and keeps the active take as the
+only audible one.
+
+**Done when:** The timeline shows ghost take history, both takes play independently, and
+the estimate shows before the call runs.
 
 ---
 
@@ -122,7 +148,9 @@ owns:       internal/agent/agent.go, internal/agent/tools.go,
             internal/agent/agent_test.go, internal/agent/agent_live_test.go,
             internal/cost/cost.go, internal/cost/cost_test.go,
             internal/config/config.go, internal/config/config_test.go,
-            deploy/mcp-clickhouse/,
+            internal/api/wire.go, internal/api/wire_test.go,
+            web/src/lib/types.ts,
+            deploy/mcp-clickhouse/, tools/audit_docs.py,
             go.mod, go.sum, .env.example,
             dev-diary/infrastructure.md, dev-diary/PHASE-8-ship.md
 status:     not-started
@@ -244,3 +272,59 @@ richer language later. It still has to land on this mutation and this validator.
 
 T6.1 documented boundary snap and the 100ms minimum in
 [t6.1-round3.md](adversarial-review/t6.1-round3.md). This task does not change that.
+
+### Seam expansion and the T6.5 split, 2026-09-09
+
+T6.2, T6.3 and T6.5 each compose into the workspace route. T6.5 also mounted an HTTP
+route. Their `owns` lines named neither the route nor the server files, so no
+implementer could finish inside its seam. The orchestrator expanded them before
+dispatch.
+
+- T6.2 and T6.3 gain `web/src/routes/d/[id]/+page.svelte`.
+- T6.6 gains `internal/api/wire.go`, `internal/api/wire_test.go`,
+  `web/src/lib/types.ts` and `tools/audit_docs.py`. An agent charge crosses the
+  wire, so the UI needs its kind. The audit script holds the ADK pending entry
+  that T6.6 retires.
+
+T6.5 split. T6.3's done condition needs a per-line synthesis trigger, and T6.5 owned
+that trigger. Landing T6.3 first would ship a call to a route that did not exist.
+T6.5a now owns the route, its tests and the two server files. T6.3 requires T6.5a and
+owns the text fields plus the page. T6.5 keeps the ghost take history and the estimate
+display, and it requires T6.3 and T6.5a.
+
+Shared paths carry a serialization rule. One task owns each at a time. The page
+passes from T6.2 to T6.3 to T6.5. The server files pass from T7.6 to T7.4a to T7.5
+to T6.5a.
+
+T6.2 shows the re-render fee from the measured charges on the selected line's newest
+billed take. A line whose takes carry no charges reads zero. That number is already
+on the payload. No new endpoint carries it.
+
+### T6.2 speaker reassignment
+
+`Speaker.svelte` shows one toggle per speaker for the selected line. The toggle set
+comes from the distinct `Segment.speaker` values plus the current speaker, sorted.
+For `/d/fixture` that set is exactly `Mark Vande Hei` and `Suni Williams`. The panel
+never invents a speaker, so it cannot bind a name that `tts.Assign` rejects.
+
+The estimate sums `Take.Charges` on the selected line's newest take whose
+`charges` array is non-empty. The panel labels it as estimated and names that
+take. Line 1 shows `$0.0008421` from `seg_1_try1.wav`. Line 7 shows `$0.004751`
+from `seg_7_try1.wav`. Neither line moved. Line 3 shows `$0.0023182` from
+`seg_3_try1.wav`. Line 4 shows `$0.0036392` from `seg_4_try1.wav`. A line whose
+takes carry no charges reads zero and names that take. The hint reads: "A new
+speaker needs a fresh voice render. The estimate uses the newest billed take, or
+reads zero when none is billed."
+
+Changing a speaker opens a confirmation panel. Cancel closes it and leaves every take
+untouched. Confirm applies the speaker to route-local state and states that the take
+still needs a re-render. Nothing here fetches. A headless Chromium run against the Go
+server triggered zero synthesis calls and zero API calls. T6.5a owns the route that
+will make the confirm billable, so T6.3 must keep this confirmation before that call.
+
+Surprise. The first draft ordered toggles by first appearance in `segments`. Confirming
+a change to line 1 reordered the buttons, because line 1 then led with the new speaker.
+Sorting the names keeps the order stable.
+
+`npm --prefix web run check` passes with zero errors and zero warnings. The changed
+files carry no `export let`, no `$:` and no store.
