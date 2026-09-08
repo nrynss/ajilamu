@@ -154,11 +154,28 @@ Provide population aggregates across all users to address cold starts. Shift wei
 
 ## Exit Criteria
 
-- [ ] Implemented resilient write queues verified under network drops.
-- [ ] Sum of logged charges matches total API expenses without double counting.
-- [ ] Database stores signed duration deltas.
-- [ ] Commit DAG supports branching and time travel queries.
-- [ ] All tables created via `sql/schema.sql`.
+- [x] Implemented resilient write queues verified under network drops.
+- [x] Sum of logged charges matches total API expenses without double counting.
+- [x] Database stores signed duration deltas.
+- [x] Commit DAG supports branching and time travel queries.
+- [x] All tables created via `sql/schema.sql`.
+
+Closed on 2026-09-08. The close review at
+[p4-close-round2.md](adversarial-review/p4-close-round2.md) approved every task and left
+these boxes for someone holding evidence for the phase claim rather than the task claims.
+
+Box 1 rests on the 503 replay measured in T4.1 and re-measured at T4.2 and T4.5. A failed
+insert stays durable and the flush replays it. Box 2 rests on the `_raw` plus FINAL view
+split from T1.3, which makes a re-sent batch collapse instead of doubling a sum. Box 3 rests
+on `takes_raw.delta_ms Int32` and `CONSTRAINT delta_is_signed CHECK delta_ms = measured_ms -
+slot_ms`. Box 5 rests on loading the file into an empty database, which creates twelve
+objects and exits 0.
+
+Box 4 is the one the reviewer had least evidence for, and it now has the most. The live
+probe at [t4.5-live-probe.md](adversarial-review/t4.5-live-probe.md) ran the shipped
+statements against a real server, and the remediation was then measured against the live
+ClickHouse Cloud instance itself. Branching, time travel and branch compare all answer
+there. See the T4.5 handoff.
 
 ---
 
@@ -348,6 +365,34 @@ than the `commits` view, which is what the view itself already does and which re
 rows. Together those took the statement from 15.2 seconds to 1.8 at 1000 ancestors. The
 `any(branch)` guard from commit 3c1035e stays, so a head still sitting in the write queue
 returns an empty label rather than Code 125.
+
+### FINDING: BranchView.CostUSD has no caller and does not mean what it says
+
+`CompareBranches` sums `charges.cost_usd` over each head's ancestry. The ancestry is a set of
+commit ids, so the sum silently drops every charge row carrying the default empty `commit_id`,
+which `charges_raw` documents as a whole pass call. The live probe added one whole pass charge
+of 0.75 to the fixture dub. The dub then billed 0.7508 and both branches still reported 0.0003
+and 0.0006.
+
+The number is correct for the contract the doc comment states. The field name is what misleads.
+`CostUSD` on a branch view reads as that branch's spend, and here it omitted 99.9 percent of the
+dub's charges.
+
+Nothing calls `CompareBranches` today. That is why this is a finding and not a defect. It also
+means the first caller inherits the gap rather than discovering it.
+
+Named dependents. T5.5 owns the rail, and its History tab is where branch compare surfaces. Its
+Details tab is NOT affected: it sums `take.charges` per line through a different path, so T5.5
+as built is correct and stays closed. T8.3 documents what a dub costs, which is the other place
+a wrong total would show.
+
+The decision, for whoever wires the first caller. Either attribute a whole pass charge to a
+commit at write time, which makes the ancestry sum complete, or rename the field to say it
+counts attributed charges only. Do not leave a field named `CostUSD` that answers a narrower
+question than its name asks. Check `internal/gemini/segment.go` and `internal/tts/chirp.go`
+first: both build a `cost.Charge` with no `CommitID`, while `internal/ledger/takes.go` rejects
+a charge whose `CommitID` is empty. Whether an unattributed charge can reach `charges_raw`
+today is unresolved, and it decides which of the two fixes is right.
 
 The package now has a snapshot writer, a view query, a replay pin, branch compare, and 503
 replay. The view names the ranked version `state_version_seq`, not `version_seq`. Decode

@@ -579,6 +579,18 @@ ORDER BY (dub_id, language, commit_id, segment_index, attempt, event_key);
 -- ORDER BY (dub_id, commit_id) because the walk looks a commit up by id at every step. That
 -- pair is the natural identity of a commit, so it also collapses a resend. version_seq
 -- still orders the history panel, which reads one dub and sorts a small result.
+--
+-- The walk terminates because parent_commit_id points at an earlier commit, and nothing in
+-- this file enforces that. ClickHouse checks a constraint against one row, so no CHECK here
+-- can see a cycle. validateCommit and validateCommitParent in internal/ledger/commits.go
+-- carry the guarantee. They reject a self-parent and require a parent that already exists at
+-- a lower version_seq.
+--
+-- Read that as a writer invariant, not a database one. A backfill or a direct write that
+-- skips the Go path can seat a cycle here. A measured cycle does not hang. Both read
+-- statements walk to max_recursive_cte_evaluation_depth and raise Code 306, after burning
+-- the CPU that walk costs. commitAncestry in Go breaks on a repeat and returns a finite set,
+-- so replay and query disagree on a cyclic dub.
 CREATE TABLE IF NOT EXISTS commits_raw
 (
     commit_id        String,
