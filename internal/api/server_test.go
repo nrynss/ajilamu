@@ -196,6 +196,63 @@ func TestServerMountsUploadHandlerOnPersistentStorage(t *testing.T) {
 	}
 }
 
+func TestServerMountsSampleHandlerOnPersistentStorage(t *testing.T) {
+	storage := filepath.Join(t.TempDir(), "uploads")
+	cfg, err := config.LoadFromMap(map[string]string{})
+	if err != nil {
+		t.Fatalf("load no-environment config: %v", err)
+	}
+	server, err := api.NewServer(cfg, api.ServerOptions{
+		FrontendRoot: testFrontend(t),
+		Sample:       api.NewSampleHandler(storage),
+		Index: api.IndexHandlerFrom(func() []api.DubSummary {
+			return api.ListUploadSummaries(storage)
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	response, err := http.Post(httpServer.URL+"/api/dubs/sample", "", nil)
+	if err != nil {
+		t.Fatalf("post sample: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		payload, _ := io.ReadAll(response.Body)
+		t.Fatalf("sample status = %d, want %d: %s", response.StatusCode, http.StatusCreated, payload)
+	}
+	var sample api.Upload
+	if err := json.NewDecoder(response.Body).Decode(&sample); err != nil {
+		t.Fatalf("decode sample response: %v", err)
+	}
+	if sample.ID == "" || sample.Video.Name != "NASA 75-second clip" {
+		t.Fatalf("sample response = %+v, want named persisted project", sample)
+	}
+	stored, err := os.Stat(filepath.Join(storage, filepath.FromSlash(sample.Video.Path)))
+	if err != nil {
+		t.Fatalf("stat persisted sample: %v", err)
+	}
+	if stored.Size() != sample.Video.Bytes || stored.Size() == 0 {
+		t.Fatalf("persisted bytes = %d, response bytes = %d", stored.Size(), sample.Video.Bytes)
+	}
+
+	indexResponse, err := http.Get(httpServer.URL + "/api/dubs")
+	if err != nil {
+		t.Fatalf("get sample index: %v", err)
+	}
+	defer indexResponse.Body.Close()
+	var index api.DubIndex
+	if err := json.NewDecoder(indexResponse.Body).Decode(&index); err != nil {
+		t.Fatalf("decode sample index: %v", err)
+	}
+	if len(index.Dubs) != 1 || index.Dubs[0].ID != sample.ID || index.Dubs[0].Title != "NASA 75-second clip" {
+		t.Fatalf("index dubs = %+v, want sample project %q", index.Dubs, sample.ID)
+	}
+}
+
 func TestServerRejectsUnmatchedAPIRoutesBeforeSPA(t *testing.T) {
 	cfg, err := config.LoadFromMap(map[string]string{})
 	if err != nil {
@@ -212,6 +269,9 @@ func TestServerRejectsUnmatchedAPIRoutesBeforeSPA(t *testing.T) {
 		Upload: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusCreated)
 		}),
+		Sample: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+		}),
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -224,6 +284,7 @@ func TestServerRejectsUnmatchedAPIRoutesBeforeSPA(t *testing.T) {
 		path   string
 	}{
 		{http.MethodGet, "/api/dubs/new"},
+		{http.MethodGet, "/api/dubs/sample"},
 		{http.MethodPost, "/api/dubs"},
 		{http.MethodGet, "/api/config"},
 		{http.MethodPost, "/api/healthz"},
@@ -256,6 +317,7 @@ func TestServerRejectsUnmatchedAPIRoutesBeforeSPA(t *testing.T) {
 		status int
 	}{
 		{http.MethodPost, "/api/dubs/new", http.StatusCreated},
+		{http.MethodPost, "/api/dubs/sample", http.StatusCreated},
 		{http.MethodGet, "/api/dubs", http.StatusOK},
 		{http.MethodGet, "/api/healthz", http.StatusOK},
 	} {
@@ -279,6 +341,18 @@ func TestEntrypointExitsCleanlyWithoutLedger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve project root: %v", err)
 	}
+	portListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve entrypoint port: %v", err)
+	}
+	_, port, err := net.SplitHostPort(portListener.Addr().String())
+	if err != nil {
+		portListener.Close()
+		t.Fatalf("split entrypoint port: %v", err)
+	}
+	if err := portListener.Close(); err != nil {
+		t.Fatalf("free entrypoint port: %v", err)
+	}
 	binary := filepath.Join(t.TempDir(), "ajilamu")
 	build := exec.Command("go", "build", "-o", binary, "./cmd/ajilamu")
 	build.Dir = projectRoot
@@ -288,7 +362,12 @@ func TestEntrypointExitsCleanlyWithoutLedger(t *testing.T) {
 
 	command := exec.Command(binary)
 	command.Dir = projectRoot
-	command.Env = []string{"ENV=development", "PORT=0"}
+	command.Env = []string{
+		"AJILAMU_DATA_DIR=" + filepath.Join(t.TempDir(), "data"),
+		"AJILAMU_SAMPLE_CLIP=" + filepath.Join(projectRoot, "testdata", "clip.mp4"),
+		"ENV=development",
+		"PORT=" + port,
+	}
 	stderr, err := command.StderrPipe()
 	if err != nil {
 		t.Fatalf("capture entrypoint stderr: %v", err)
@@ -343,6 +422,20 @@ func TestEntrypointExitsCleanlyWithoutLedger(t *testing.T) {
 	}
 
 listening:
+	response, err := http.Post("http://127.0.0.1:"+port+"/api/dubs/sample", "", nil)
+	if err != nil {
+		t.Fatalf("post sample through entrypoint: %v", err)
+	}
+	var sample api.Upload
+	decodeErr := json.NewDecoder(response.Body).Decode(&sample)
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("sample through entrypoint status = %d, want %d", response.StatusCode, http.StatusCreated)
+	}
+	if decodeErr != nil || sample.ID == "" {
+		t.Fatalf("sample through entrypoint = %+v, %v", sample, decodeErr)
+	}
+
 	if err := command.Process.Signal(os.Interrupt); err != nil {
 		t.Fatalf("signal entrypoint: %v", err)
 	}

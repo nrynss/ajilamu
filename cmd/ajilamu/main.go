@@ -70,6 +70,7 @@ func run() error {
 		FrontendRoot: frontendRoot(cfg),
 		Ledger:       ledgerFlusher,
 		Upload:       api.NewUploadHandler(uploadDir),
+		Sample:       api.NewSampleHandler(uploadDir),
 		Index: api.IndexHandlerFrom(func() []api.DubSummary {
 			return append([]api.DubSummary{fixtureSummary}, api.ListUploadSummaries(uploadDir)...)
 		}),

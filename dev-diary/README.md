@@ -194,7 +194,7 @@ Protect this core flow above auxiliary features.
 | P4 | 6 / 8 | In progress. Six tasks complete. T4.4 and T4.5 remain. See [PHASE-4-ledger.md](PHASE-4-ledger.md). |
 | P5 | 7 / 7 | Complete. Workspace renders from offline fixtures. See [PHASE-5-workspace.md](PHASE-5-workspace.md). |
 | P6 | 0 / 6 | Not started. |
-| P7 | 4 / 7 | In progress. T7.0, T7.0a, T7.1, and T7.4 approved. See [PHASE-7-ingestion.md](PHASE-7-ingestion.md). |
+| P7 | 5 / 7 | In progress. T7.0, T7.0a, T7.1, T7.2, and T7.4 approved. See [PHASE-7-ingestion.md](PHASE-7-ingestion.md). |
 | P8 | 0 / 4 | Not started. |
 
 **Concept validation:** Complete. Recorded in [observations.md](observations.md) and reviewed in [adversarial-review](adversarial-review/2026-09-07-pipeline-and-claims.md).

@@ -125,8 +125,11 @@ Provide drag-and-drop zones for video and audio. Display projected cost estimate
 requires:   T7.1
 fixture-ok: yes
 size:       XS · light
-owns:       internal/api/sample.go
-status:     not-started
+owns:       internal/api/sample.go, internal/api/sample_test.go, internal/api/server.go,
+            internal/api/server_test.go, cmd/ajilamu/main.go, web/src/routes/new/+page.svelte,
+            web/src/routes/d/[id]/+page.svelte, web/src/lib/fixture.ts,
+            web/src/routes/+layout.svelte
+status:     done
 ```
 Provide a one-click button to launch sample projects using the committed NASA 75-second video. Evaluators can test the system without uploading files.
 
@@ -245,6 +248,18 @@ The NASA clip reference is 23,414,000 nanodollars for 75.008267 seconds.
 Round 2 review returned APPROVE with zero residue.
 
 T7.0 mounts the handler at `POST /api/dubs/new`.
+
+### T7.2: Sample mode
+
+- `POST /api/dubs/sample` copies the NASA clip into persistent upload storage, records Malayalam, and returns a project-relative response.
+- Clip discovery checks `AJILAMU_SAMPLE_CLIP` first, then searches relative testdata locations. Missing clip logs name searched paths and override variables.
+- All fixture ids (`fixture`, manifest id, and wire id) show completed fixture work. Real pending sample ids render honest empty workspaces, and unknown ids render error states.
+- The chrome frame dynamically updates status and spend per route.
+- Fixture chrome uses the fixture readiness `review`, so it shows In review with the amber class.
+- A failed index fetch says the list could not load. It does not claim the project is missing.
+- Pending copy names a project, not a sample, so an upload is not called the NASA clip.
+- The create screen shows the sample fee before launch and names the copy step while busy.
+- Operator skipped a fourth review after those remediations.
 
 ### T7.4: Index and config routes
 

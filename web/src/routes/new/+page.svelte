@@ -8,6 +8,7 @@
   const p2ReferenceDurationSeconds = 75.008267;
   const p2ReferenceNanodollars = 23_414_000;
   const projectedNanodollarsPerSecond = p2ReferenceNanodollars / p2ReferenceDurationSeconds;
+  const formattedSampleFee = formatSampleCurrency(p2ReferenceNanodollars);
 
   let videoFile = $state<File | null>(null);
   let musicFile = $state<File | null>(null);
@@ -15,6 +16,7 @@
   let estimateError = $state("");
   let submitError = $state("");
   let uploading = $state(false);
+  let creatingSample = $state(false);
   let videoDragging = $state(false);
   let musicDragging = $state(false);
   let videoSelection = $state(0);
@@ -34,6 +36,15 @@
       minimumFractionDigits: 2,
       maximumFractionDigits: 2
     }).format(value);
+  }
+
+  function formatSampleCurrency(nanodollars: number): string {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 6,
+      maximumFractionDigits: 6
+    }).format(nanodollars / nanodollarsPerDollar);
   }
 
   function formatDuration(seconds: number): string {
@@ -98,7 +109,7 @@
 
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (!videoFile || durationSeconds === null || uploading) return;
+    if (!videoFile || durationSeconds === null || uploading || creatingSample) return;
     uploading = true;
     submitError = "";
     const body = new FormData();
@@ -115,6 +126,22 @@
     } catch (error) {
       submitError = error instanceof Error && error.message ? error.message : "The upload did not finish. Try again.";
       uploading = false;
+    }
+  }
+
+  async function createSample(): Promise<void> {
+    if (creatingSample || uploading) return;
+    creatingSample = true;
+    submitError = "";
+    try {
+      const response = await fetch("/api/dubs/sample", { method: "POST" });
+      if (!response.ok) throw new Error(await response.text());
+      const sample = (await response.json()) as { id?: string };
+      if (!sample.id) throw new Error("The sample did not return a project id.");
+      window.location.assign(`/d/${encodeURIComponent(sample.id)}`);
+    } catch (error) {
+      submitError = error instanceof Error && error.message ? error.message : "The sample did not start. Try again.";
+      creatingSample = false;
     }
   }
 </script>
@@ -169,7 +196,7 @@
         <p>Estimated from this video’s {formattedDuration} runtime. It includes one analysis pass, translation, and voice rendering.</p>
       {:else}
         <strong>Choose a video to estimate its fee.</strong>
-        <p>The estimate uses the video runtime and a completed project’s measured cost.</p>
+        <p>The NASA sample has a measured fee of <span class="numeric">{formattedSampleFee}</span>.</p>
       {/if}
       {#if estimateError}<p class="error">{estimateError}</p>{/if}
     </div>
@@ -177,8 +204,19 @@
     {#if submitError}<p class="error" role="alert">{submitError}</p>{/if}
 
     <div class="actions">
-      <a href="/d/fixture" class="sample-link">Try sample video, a NASA 75-second clip</a>
-      <button class="start" type="submit" disabled={!videoFile || durationSeconds === null || uploading}>
+      <div class="sample-action">
+        <button
+          class="sample"
+          type="button"
+          disabled={creatingSample || uploading}
+          aria-busy={creatingSample}
+          onclick={createSample}
+        >
+          {creatingSample ? "We are copying the NASA sample into your workspace." : "Try sample video (NASA 75s clip)"}
+        </button>
+        <p class="sample-fee">Measured fee: <span class="numeric">{formattedSampleFee}</span></p>
+      </div>
+      <button class="start" type="submit" disabled={!videoFile || durationSeconds === null || uploading || creatingSample}>
         {uploading ? "Uploading…" : "Start dubbing"}
       </button>
     </div>
@@ -231,13 +269,17 @@
   .error { color: #7a271a !important; margin-top: 8px !important; }
   :global(:root[data-theme="dark"]) .error { color: #ffd3ce !important; }
   .actions { align-items: center; display: flex; gap: 14px; justify-content: space-between; }
-  .sample-link { color: var(--accent); font-size: 11.5px; }
+  .sample-action { align-items: flex-start; display: flex; flex-direction: column; gap: 4px; }
+  .sample { background: var(--surface); border: 1px solid var(--accent); color: var(--accent); font-size: 11.5px; padding: 7px 10px; }
+  .sample-fee { color: var(--dim); font-size: 10px; }
   .start { background: var(--accent); border-color: var(--accent); color: var(--surface); padding: 7px 10px; }
-  .start:disabled { cursor: not-allowed; opacity: 0.55; }
+  .sample:disabled { color: var(--accent); cursor: not-allowed; opacity: 1; }
+  .start:disabled { cursor: not-allowed; opacity: 0.6; }
 
   @media (max-width: 480px) {
     .page-shell { padding: 32px 16px; }
     .actions { align-items: stretch; flex-direction: column; }
-    .start { width: 100%; }
+    .sample-action { align-items: stretch; }
+    .sample, .start { width: 100%; }
   }
 </style>

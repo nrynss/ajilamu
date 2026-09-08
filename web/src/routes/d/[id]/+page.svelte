@@ -4,6 +4,7 @@
   import {
     fixtureLineRows,
     fixtureTakeSource,
+    isFixtureID,
     loadFixtureDub,
     pictureDurationMs,
     referenceSlotMs
@@ -16,11 +17,14 @@
   import { PanelState, type PanelViewState } from "$lib/states"
   import { createShortcutManager } from "$lib/shortcuts"
   import Timeline from "$lib/Timeline.svelte"
-  import type { Dub, Take } from "$lib/types"
+  import type { Dub, DubIndex, Take } from "$lib/types"
 
   type SelectionSource = "user" | "playhead"
 
   const loadingSentence = "We are loading this workspace from the offline project fixture."
+  const pendingProjectSentence = "This project is waiting for dubbing. Its video is saved, but no lines, takes, or costs exist yet."
+  const missingProjectSentence = "We could not find this project. Check the URL or return to the project index."
+  const lookupFailedSentence = "We could not load the project list. Refresh this page or return to the index."
 
   let projectID = $derived(page.params.id ?? "fixture")
   let initialDub: Dub | undefined
@@ -28,18 +32,27 @@
   if (page.url.searchParams.get("panel") === "loading") {
     initialDub = undefined
     initialState = { kind: "loading", sentence: loadingSentence }
-  } else {
+  } else if (isFixtureID(page.params.id ?? "fixture")) {
     try {
       initialDub = loadFixtureDub(page.params.id ?? "fixture")
-      initialState = initialDub.segments.length > 0 && initialDub.languages.length > 0
+      initialState = initialDub && initialDub.segments.length > 0 && initialDub.languages.length > 0
         ? { kind: "populated" }
-        : { kind: "empty", sentence: "This project does not have any lines or dubbed tracks yet." }
+        : {
+            kind: "empty",
+            sentence: pendingProjectSentence
+          }
     } catch {
       initialDub = undefined
       initialState = {
         kind: "error",
         sentence: "We could not load this offline project, so no workspace data was changed."
       }
+    }
+  } else {
+    initialDub = undefined
+    initialState = {
+      kind: "loading",
+      sentence: "We are checking this project workspace."
     }
   }
 
@@ -173,6 +186,60 @@
     event.preventDefault()
     commandStatus = "This workspace cannot run editor commands yet."
   }
+
+  $effect(() => {
+    const id = page.params.id
+    if (!id || isFixtureID(id)) {
+      if (page.url.searchParams.get("panel") !== "loading") {
+        try {
+          dub = loadFixtureDub(id ?? "fixture")
+          workspaceState = dub && dub.segments.length > 0 && dub.languages.length > 0
+            ? { kind: "populated" }
+            : {
+                kind: "empty",
+                sentence: pendingProjectSentence
+              }
+        } catch {
+          dub = undefined
+          workspaceState = {
+            kind: "error",
+            sentence: "We could not load this offline project, so no workspace data was changed."
+          }
+        }
+      }
+      return
+    }
+
+    let active = true
+    fetch("/api/dubs")
+      .then((res) => {
+        if (!res.ok) return Promise.resolve({ ok: false as const })
+        return res.json().then((data: DubIndex) => ({ ok: true as const, data })).catch(() => ({ ok: false as const }))
+      })
+      .then((result) => {
+        if (!active) return
+        if (!result.ok || !Array.isArray(result.data.dubs)) {
+          dub = undefined
+          workspaceState = { kind: "error", sentence: lookupFailedSentence }
+          return
+        }
+        const match = result.data.dubs.find((project) => project.id === id)
+        dub = undefined
+        workspaceState = match
+          ? { kind: "empty", sentence: pendingProjectSentence }
+          : { kind: "error", sentence: missingProjectSentence }
+      })
+      .catch(() => {
+        if (active) {
+          dub = undefined
+          workspaceState = { kind: "error", sentence: lookupFailedSentence }
+        }
+      })
+
+    return () => {
+      active = false
+    }
+  })
 
   onMount(() => {
     const updateTheme = () => {

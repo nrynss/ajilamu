@@ -27,6 +27,7 @@ type ServerOptions struct {
 	Index        http.Handler
 	Config       http.Handler
 	Upload       http.Handler
+	Sample       http.Handler
 	Logger       *slog.Logger
 }
 
@@ -85,6 +86,9 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	}
 	if options.Upload != nil {
 		mux.Handle("POST /api/dubs/new", options.Upload)
+	}
+	if options.Sample != nil {
+		mux.Handle("POST /api/dubs/sample", options.Sample)
 	}
 	mux.Handle("/api/", http.NotFoundHandler())
 	mux.Handle("/", frontend)
