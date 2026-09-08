@@ -336,6 +336,97 @@ func TestServerRejectsUnmatchedAPIRoutesBeforeSPA(t *testing.T) {
 	}
 }
 
+func TestServerMountsHistoryRoutes(t *testing.T) {
+	reader := &standInHistoryReader{
+		commits:    []api.Commit{{
+			CommitID:      "commit-1",
+			VersionNumber: 1,
+			CreatedAt:     "2026-09-08T09:00:00Z",
+		}},
+		segments:   []api.TimelineEntry{{
+			SegmentIndex: 1,
+			StartMs:      0,
+			EndMs:        1200,
+			VersionSeq:   2,
+		}},
+		comparison: api.BranchComparison{
+			A: api.BranchSummary{CommitID: "commit-a", Branch: "main", AttributedCostUSD: "1.230000"},
+			B: api.BranchSummary{CommitID: "commit-b", Branch: "shorter", AttributedCostUSD: "0.750000"},
+		},
+	}
+	cfg, err := config.LoadFromMap(map[string]string{})
+	if err != nil {
+		t.Fatalf("load no-environment config: %v", err)
+	}
+	server, err := api.NewServer(cfg, api.ServerOptions{
+		FrontendRoot: testFrontend(t),
+		History:      reader,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	for _, test := range []struct {
+		path   string
+		marker string
+	}{
+		{"/api/dubs/dub-1/history", `"commits":[{"commit_id":"commit-1"`},
+		{"/api/dubs/dub-1/timeline?language=ml&commit=commit-1", `"segments":[{"segment_index":1`},
+		{"/api/dubs/dub-1/branches?language=ml&a=commit-a&b=commit-b", `"a":{"commit_id":"commit-a"`},
+	} {
+		response, err := http.Get(httpServer.URL + test.path)
+		if err != nil {
+			t.Fatalf("get %s: %v", test.path, err)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			t.Fatalf("read %s: %v", test.path, readErr)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200", test.path, response.StatusCode)
+		}
+		if got := response.Header.Get("Cache-Control"); got != "no-store" {
+			t.Errorf("GET %s Cache-Control = %q, want no-store", test.path, got)
+		}
+		if !strings.Contains(string(body), test.marker) {
+			t.Errorf("GET %s body = %q, want %q", test.path, body, test.marker)
+		}
+	}
+
+	// Every route is mounted without a reader, so a clone with no credentials
+	// answers 503 and the tab keeps its fixture commits.
+	unavailable, err := api.NewServer(cfg, api.ServerOptions{FrontendRoot: testFrontend(t)})
+	if err != nil {
+		t.Fatalf("NewServer without history: %v", err)
+	}
+	unavailableServer := httptest.NewServer(unavailable.Handler())
+	t.Cleanup(unavailableServer.Close)
+	for _, path := range []string{
+		"/api/dubs/dub-1/history",
+		"/api/dubs/dub-1/timeline?language=ml&commit=commit-1",
+		"/api/dubs/dub-1/branches?language=ml&a=commit-a&b=commit-b",
+	} {
+		response, err := http.Get(unavailableServer.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			t.Fatalf("read %s: %v", path, readErr)
+		}
+		if response.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("GET %s without history status = %d, want 503", path, response.StatusCode)
+		}
+		if !strings.Contains(string(body), "Ledger history is unavailable.") {
+			t.Errorf("GET %s without history body = %q", path, body)
+		}
+	}
+}
+
 func TestEntrypointExitsCleanlyWithoutLedger(t *testing.T) {
 	projectRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {

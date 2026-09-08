@@ -221,6 +221,66 @@ export interface Commit {
   instruction: string
 }
 
+// DubHistory is the commit DAG payload for one dub.
+export interface DubHistory {
+  /** Commits lists every commit, oldest first. */
+  commits: Commit[]
+}
+
+// TimelineView is the timeline snapshot at one commit.
+export interface TimelineView {
+  /** CommitID names the commit the state comes from. */
+  commit_id: string
+  /** Language names the target language track. */
+  language: string
+  /** Segments lists the line state at that commit. */
+  segments: TimelineEntry[]
+}
+
+// TimelineEntry is one line snapshot at one commit.
+export interface TimelineEntry {
+  /** SegmentIndex numbers the line inside the dub. */
+  segment_index: number
+  /** StartMs locates the slot start in the film. */
+  start_ms: number
+  /** EndMs locates the slot end in the film. */
+  end_ms: number
+  /** Speaker names the person talking. */
+  speaker: string
+  /** Emotion describes how the line is spoken. */
+  emotion: string
+  /** SourceText is the transcribed source line. */
+  source_text: string
+  /** Text is the target-language line. */
+  text: string
+  /** TakeID names the active take. */
+  take_id: string
+  /** VersionSeq orders the snapshot state. */
+  version_seq: number
+}
+
+// BranchComparison holds metrics for two heads of one language track.
+export interface BranchComparison {
+  /** A reports the first head. */
+  a: BranchSummary
+  /** B reports the second head. */
+  b: BranchSummary
+}
+
+// BranchSummary reports one head of a language track.
+export interface BranchSummary {
+  /** CommitID identifies the head. */
+  commit_id: string
+  /** Branch names the branch label. */
+  branch: string
+  /** SlotMs sums the reconstructed slot lengths. */
+  slot_ms: number
+  /** TakeCount counts the takes at the head. */
+  take_count: number
+  /** AttributedCostUSD sums attributed charges as a decimal string. */
+  attributed_cost_usd: string
+}
+
 // ProgressEvent is one server-sent notification body.
 // Every event carries a complete sentence and the running cost.
 export interface ProgressEvent {

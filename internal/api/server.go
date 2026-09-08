@@ -22,11 +22,23 @@ type LedgerFlusher interface {
 	Pending() (int, error)
 }
 
+// HistoryReader reads ledger history for the workspace routes.
+// It names api wire types only, so this package never imports internal/ledger.
+type HistoryReader interface {
+	// ListCommits returns every commit of one dub, oldest first.
+	ListCommits(ctx context.Context, dubID string) ([]Commit, error)
+	// TimelineAt returns the timeline snapshot at one commit.
+	TimelineAt(ctx context.Context, dubID, language, commitID string) ([]TimelineEntry, error)
+	// CompareBranches returns metrics for two heads of one language track.
+	CompareBranches(ctx context.Context, dubID, language, commitA, commitB string) (BranchComparison, error)
+}
+
 // ServerOptions supplies dependencies owned by other API tasks.
 type ServerOptions struct {
 	FrontendRoot string
 	Ledger       LedgerFlusher
 	Index        http.Handler
+	History      HistoryReader
 	Config       http.Handler
 	Upload       http.Handler
 	Sample       http.Handler
@@ -108,6 +120,9 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	if options.Sample != nil {
 		mux.Handle("POST /api/dubs/sample", options.Sample)
 	}
+	mux.Handle("GET /api/dubs/{id}/history", HistoryHandlerFrom(options.History, logger))
+	mux.Handle("GET /api/dubs/{id}/timeline", TimelineHandlerFrom(options.History, logger))
+	mux.Handle("GET /api/dubs/{id}/branches", BranchCompareHandlerFrom(options.History, logger))
 	mux.Handle("/api/", http.NotFoundHandler())
 	mux.Handle("/", frontend)
 

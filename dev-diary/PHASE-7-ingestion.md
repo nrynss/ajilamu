@@ -253,9 +253,10 @@ size:       L · frontier
 owns:       internal/api/history.go, internal/api/history_test.go,
             internal/api/server.go, internal/api/server_test.go,
             internal/api/wire.go, cmd/ajilamu/main.go,
+            cmd/ajilamu/main_test.go,
             web/src/lib/types.ts, web/src/lib/Rail.svelte,
             web/src/lib/tabs/HistoryTab.svelte
-status:     not-started
+status:     done
 ```
 Serve timeline state, the commit DAG, and branch comparison over HTTP.
 
@@ -290,6 +291,27 @@ answers 503, which is what the fixture fallback needs. Add the mount assertions 
 JSON. Time travel to a commit returns that commit's timeline. Branch comparison returns a cost
 that a reviewer can tie to `charges` by hand, and the field's name matches what it counts. A
 clone with no credentials still serves the tab from fixtures.
+
+---
+
+### T7.2d: Workspace page effect loop
+```yaml
+requires:   []
+fixture-ok: yes
+size:       XS · mid
+owns:       web/src/routes/d/[id]/+page.svelte
+status:     not-started
+```
+The workspace page throws `effect_update_depth_exceeded` on load. The effect reads `dub` after it
+writes `dub`, so Svelte aborts it and rail tab switching stops. The History tab therefore never
+mounts in the running app.
+
+Found on 2026-09-08 by the T7.2c review. Measured at HEAD `26ce432`, whose web sources do not
+carry T7.2c, and the Details tab fails the same way. T7.2c's done-when needs this fixed to be
+demonstrable in the browser.
+
+**Done when:** Loading `/d/fixture` renders the workspace, switching to the History tab works, and
+the console holds no `effect_update_depth_exceeded`.
 
 ---
 
@@ -516,3 +538,21 @@ an empty one. The rename makes the field name match the ancestry sum.
 
 Round 1 returned one L, applied by the orchestrator under the L exemption. Round 2 returned
 APPROVE with zero residue.
+
+### T7.2c: Ledger read routes
+
+`GET /api/dubs/{id}/history`, `/timeline`, and `/branches` answer JSON with `Cache-Control:
+no-store`. A blank parameter answers 400 naming it, a nil reader answers 503, and a read failure
+answers 500 with a fixed sentence while the detail goes to the log. `internal/api` declares a
+`HistoryReader` interface in api types, and `cmd/ajilamu/main.go` adapts `*ledger.Client` to it
+inside the credentials branch, so a typed nil never reaches the interface.
+
+The History tab fetches by project id and renders the fetched commits when the response carries
+at least one. It keeps the fixture commits when the fetch fails or returns none, so a clone with
+no credentials still renders the tab.
+
+The review proved the routes end to end against a stand-in ClickHouse and drove the tab in a
+headless browser: 3 commits from the stand-in, and 7 fixture commits on a 503. It also found a
+pre-existing defect in `web/src/routes/d/[id]/+page.svelte` at HEAD, recorded as T7.2d.
+
+Round 1 returned APPROVE with zero findings.

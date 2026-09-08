@@ -47,6 +47,7 @@ func run() error {
 	}
 	var eventLedger *ledger.Client
 	var ledgerFlusher api.LedgerFlusher
+	var history api.HistoryReader
 	if cfg.RequireClickHouse() == nil {
 		eventLedger, err = ledger.New(cfg, filepath.Join(cfg.DataDir, "ledger-queue"))
 		if err != nil {
@@ -54,6 +55,7 @@ func run() error {
 		}
 		defer eventLedger.Close()
 		ledgerFlusher = eventLedger
+		history = newHistoryReader(eventLedger)
 	}
 
 	uploadDir := filepath.Join(cfg.DataDir, "uploads")
@@ -69,6 +71,7 @@ func run() error {
 	server, err := api.NewServer(cfg, api.ServerOptions{
 		FrontendRoot: frontendRoot(cfg),
 		Ledger:       ledgerFlusher,
+		History:      history,
 		Upload:       api.NewUploadHandler(uploadDir),
 		Sample:       api.NewSampleHandler(uploadDir),
 		Index: api.IndexHandlerFrom(func() []api.DubSummary {
@@ -116,6 +119,104 @@ func run() error {
 			return fmt.Errorf("drain HTTP requests: %w", drainErr)
 		}
 		return flushErr
+	}
+}
+
+// historyReader adapts the ledger client to the api read interface.
+type historyReader struct {
+	client *ledger.Client
+}
+
+// The adapter satisfies the routes without internal/api importing internal/ledger.
+var _ api.HistoryReader = (*historyReader)(nil)
+
+// newHistoryReader returns a reader for client.
+// A nil client returns a nil interface, so a typed nil never reaches the routes.
+func newHistoryReader(client *ledger.Client) api.HistoryReader {
+	if client == nil {
+		return nil
+	}
+	return &historyReader{client: client}
+}
+
+// ListCommits returns the dub's commits as wire commits.
+func (h *historyReader) ListCommits(ctx context.Context, dubID string) ([]api.Commit, error) {
+	rows, err := h.client.ListCommits(ctx, dubID)
+	if err != nil {
+		return nil, err
+	}
+	return commitHistory(rows), nil
+}
+
+// TimelineAt returns the commit's timeline as wire entries.
+func (h *historyReader) TimelineAt(ctx context.Context, dubID, language, commitID string) ([]api.TimelineEntry, error) {
+	segments, err := h.client.TimelineAt(ctx, dubID, language, commitID)
+	if err != nil {
+		return nil, err
+	}
+	return timelineEntries(segments), nil
+}
+
+// CompareBranches returns both heads as a wire comparison.
+func (h *historyReader) CompareBranches(ctx context.Context, dubID, language, commitA, commitB string) (api.BranchComparison, error) {
+	compare, err := h.client.CompareBranches(ctx, dubID, language, commitA, commitB)
+	if err != nil {
+		return api.BranchComparison{}, err
+	}
+	return branchComparison(compare), nil
+}
+
+// commitHistory maps ledger rows onto wire commits.
+// VersionSeq becomes VersionNumber because the wire counts along the chain.
+func commitHistory(rows []ledger.CommitHistoryRow) []api.Commit {
+	commits := make([]api.Commit, 0, len(rows))
+	for _, row := range rows {
+		commits = append(commits, api.Commit{
+			CommitID:       row.CommitID,
+			ParentCommitID: row.ParentCommitID,
+			VersionNumber:  int(row.VersionSeq),
+			CreatedAt:      row.CreatedAt,
+			Action:         row.Action,
+			Author:         row.Author,
+			Instruction:    row.Instruction,
+		})
+	}
+	return commits
+}
+
+// timelineEntries maps ledger segments onto wire timeline entries.
+func timelineEntries(segments []ledger.TimelineSegment) []api.TimelineEntry {
+	entries := make([]api.TimelineEntry, 0, len(segments))
+	for _, segment := range segments {
+		entries = append(entries, api.TimelineEntry{
+			SegmentIndex: int(segment.SegmentIndex),
+			StartMs:      segment.StartMs,
+			EndMs:        segment.EndMs,
+			Speaker:      segment.Speaker,
+			Emotion:      segment.Emotion,
+			SourceText:   segment.SourceText,
+			Text:         segment.Text,
+			TakeID:       segment.TakeID,
+			VersionSeq:   segment.VersionSeq,
+		})
+	}
+	return entries
+}
+
+// branchComparison maps both ledger heads onto the wire comparison.
+func branchComparison(compare ledger.BranchCompare) api.BranchComparison {
+	return api.BranchComparison{A: branchSummary(compare.A), B: branchSummary(compare.B)}
+}
+
+// branchSummary maps one ledger head onto the wire summary.
+// AttributedCostUSD stays a decimal string, so the exact value survives transport.
+func branchSummary(view ledger.BranchView) api.BranchSummary {
+	return api.BranchSummary{
+		CommitID:          view.CommitID,
+		Branch:            view.Branch,
+		SlotMs:            view.SlotMs,
+		TakeCount:         view.TakeCount,
+		AttributedCostUSD: view.AttributedCostUSD,
 	}
 }
 

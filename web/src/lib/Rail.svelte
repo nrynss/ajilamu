@@ -85,7 +85,7 @@
     {:else if activeTab === "details"}
       <DetailsTab segment={selectedSegment} line={selectedLine} total={dub.total} projectCharges={dub.charges} {onplaytake} />
     {:else}
-      <HistoryTab commits={dub.commits} lines={activeTrack?.lines ?? []} selectedSegmentId={localSelectedSegmentId} />
+      <HistoryTab projectId={dub.id} commits={dub.commits} lines={activeTrack?.lines ?? []} selectedSegmentId={localSelectedSegmentId} />
     {/if}
   </div>
 </aside>

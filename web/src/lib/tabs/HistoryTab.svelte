@@ -1,21 +1,49 @@
 <script lang="ts">
-  import type { Commit, Line } from "$lib/types"
+  import type { Commit, DubHistory, Line } from "$lib/types"
 
   interface Props {
+    projectId: string
     commits: readonly Commit[]
     lines: readonly Line[]
     selectedSegmentId: number
   }
 
-  let { commits, lines, selectedSegmentId }: Props = $props()
+  let { projectId, commits, lines, selectedSegmentId }: Props = $props()
+
+  // The ledger is the source of truth when it answers with commits.
+  // The fixture commits stay as the fallback for a clone with no credentials.
+  let fetchedCommits = $state<readonly Commit[]>([])
+  let visibleCommits = $derived(fetchedCommits.length > 0 ? fetchedCommits : commits)
+
+  $effect(() => {
+    const id = projectId
+    let active = true
+    fetchedCommits = []
+    fetch(`/api/dubs/${encodeURIComponent(id)}/history`)
+      .then((response) => {
+        if (!response.ok) return Promise.resolve<Commit[]>([])
+        return response.json()
+          .then((body: DubHistory) => (Array.isArray(body.commits) ? body.commits : []))
+          .catch(() => [])
+      })
+      .then((commits) => {
+        if (active) fetchedCommits = commits
+      })
+      .catch(() => {
+        // Keep the fallback commits when the ledger is unreachable.
+      })
+    return () => {
+      active = false
+    }
+  })
 
   let graph = $derived.by(() => {
-    const byID = new Map(commits.map((commit) => [commit.commit_id, commit]))
+    const byID = new Map(visibleCommits.map((commit) => [commit.commit_id, commit]))
     const children = new Map<string, Commit[]>()
     const roots: Commit[] = []
     const compare = (left: Commit, right: Commit) => left.created_at.localeCompare(right.created_at) || left.version_number - right.version_number
 
-    for (const commit of commits) {
+    for (const commit of visibleCommits) {
       if (!commit.parent_commit_id || !byID.has(commit.parent_commit_id)) {
         roots.push(commit)
         continue
