@@ -132,7 +132,7 @@ requires:   T5.2, T5.3, T5.4, T5.5, T5.6
 fixture-ok: yes
 size:       M · frontier
 owns:       web/src/routes/d/[id]/+page.svelte, web/src/lib/fixture.ts
-status:     not-started
+status:     done
 ```
 Compose the reviewed workspace components into the `/d/{id}` route. Load the T1.5 offline
 fixture through one typed client helper. Connect shared selection, playback, theme repaint, and
@@ -145,14 +145,26 @@ rail, states, and shortcuts interact as one route.
 
 ## Exit Criteria
 
-- [ ] Complete workspace renders from offline fixture data.
-- [ ] Timeline and length bar clearly identify segment 8's underrun.
-- [ ] Light and dark themes function with complete token parity.
-- [ ] All displayed metrics trace directly to underlying takes or charges.
-- [ ] All UI strings use natural sentence structure.
+- [x] Complete workspace renders from offline fixture data.
+- [x] Timeline and length bar clearly identify segment 8's underrun.
+- [x] Light and dark themes function with complete token parity.
+- [x] All displayed metrics trace directly to underlying takes or charges.
+- [x] All UI strings use natural sentence structure.
 
 ---
 
 ## Handoff Log
 
-_(Fill on completion: record component layout decisions and canvas rendering performance.)_
+T5.7 landed after three review rounds. Round 3 returned APPROVE with zero findings.
+
+The `/d/{id}` route loads `testdata/wire/dub.json` through `loadFixtureDub`. Discrete take WAVs resolve through `fixtureTakeSource`. There is no mixed language track, so Preview stays on picture audio. Takes play from the length checks and the Lines rail.
+
+Length bars use a shared 7110 ms reference so troughs stay on true scale. Line 8 remains 2.91 seconds short. The route names that line in a separate "Lines needing you" block.
+
+Selection is shared across the rail, length rows, keyboard, and playhead. The length list reveals the selected row by changing only its own `scrollTop`. It never calls `scrollIntoView`, which had scrolled the picture away.
+
+`pictureDurationMs` is 75008, matching the public clip. The scrubber and timeline ruler reach 1:15.0.
+
+Two leftovers sit outside this task. T5.2 still needs a per-language mix before Preview can switch dubbed audio. T5.3 still needs Timeline selection and playhead props.
+
+`?panel=loading` reaches the loading panel state. The default route stays populated on first paint.
