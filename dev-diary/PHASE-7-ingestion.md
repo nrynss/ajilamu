@@ -320,9 +320,11 @@ the console holds no `effect_update_depth_exceeded`.
 requires:   T7.3c, T1.4, T2.7, T3.4, T7.2a
 fixture-ok: yes
 size:       L · frontier
-owns:       internal/api/run.go, internal/api/events.go,
-            internal/api/server.go, cmd/ajilamu/main.go
-status:     not-started
+owns:       internal/api/run.go, internal/api/run_test.go,
+            internal/api/events.go, internal/api/events_test.go,
+            internal/api/server.go, internal/api/server_test.go,
+            cmd/ajilamu/main.go, cmd/ajilamu/main_test.go
+status:     done
 ```
 Start a run over HTTP, drive the fit loop and the assembler, persist what they produce, and stream server-sent events.
 
@@ -330,7 +332,7 @@ Send natural sentences rather than technical status codes. For example: "Renderi
 
 **The import cycle decides the shape.** `internal/fit/loop.go` imports `internal/api` for the wire types, so `internal/api/run.go` cannot import the loop. Break it the way T7.2c broke the ledger seam. Declare the run interface in api types, adapt the pipeline in `cmd/ajilamu/main.go`, and assign the adapter only when its dependencies exist. Do not move the wire types.
 
-**Persistence.** The run mints project_id, owner_id, commit_id, version_seq, and take_id. It writes takes, charges, commits, actions, and timeline snapshots through `internal/ledger`. `AppendCommit` checks its parent against ClickHouse, so the run must handle a parent still in the durable queue rather than fail. A whole-pass charge has no commit until one exists, so decide its attribution here and record the decision.
+**Persistence.** The run mints project_id, owner_id, commit_id, version_seq, and take_id. It flushes the durable queue before it reads the dub's head, so a parent still queued is delivered before `AppendCommit` checks it. It writes takes, charges, commits, actions, and timeline snapshots through `internal/ledger`. A whole-pass charge has no commit until one exists, so decide its attribution here and record the decision.
 
 **Resume is T7.3a. The client is T7.3b.** This task stops at the last event.
 
@@ -691,3 +693,23 @@ Two implementers collided in this working tree. One repaired a corrupted call at
 function contract and that no assertion changed.
 
 Round 1 returned APPROVE with zero findings.
+
+### T7.3: Run engine, server-sent events, and persistence
+
+`POST /api/dubs/{id}/run?language=L` starts a run and answers 202 before it finishes. `GET
+/api/dubs/{id}/events` streams `ProgressEvent` frames with a per-run id and the cumulative cost,
+and ends with one terminal event. `POST /api/dubs/{id}/run/cancel` stops it. A duplicate run and a
+cancel with no run answer 409. A missing language answers 400. A project with no source video
+answers 404, and so does any id that is not a plain identifier.
+
+`internal/api` declares `PipelineRunner` and `RunRecorder` in api types, and `cmd/ajilamu/main.go`
+adapts the fit loop and the ledger client to them, so `internal/api` still imports no pipeline
+package. `Shutdown` cancels active runs and waits a bounded time before the ledger flush.
+
+`Persist` flushes the queue, reads the dub head, appends one commit, records its action, one take
+with charges per rendered take, and one snapshot per segment, then flushes again. A whole-pass
+charge rides the first rendered take, because `charges_raw` keys every row by take.
+
+Round 1 returned two H and one M. The assembly and export frames carried zero cost, the run route
+globbed a path built from the raw dub id, and four history adapter tests were deleted. Remediation
+fixed all three. Round 2 returned APPROVE with zero residue.

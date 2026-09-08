@@ -961,3 +961,108 @@ func reserveClosedPort(t *testing.T) int {
 	}
 	return number
 }
+
+// TestServerMountsRunRoutes proves the start, events, and cancel routes mount.
+func TestServerMountsRunRoutes(t *testing.T) {
+	storage := t.TempDir()
+	writeProjectSource(t, storage, "dub-mount")
+	started := make(chan struct{})
+	runner := runFunc(func(ctx context.Context, _ api.RunRequest, _ func(api.ProgressEvent)) (api.RunResult, error) {
+		close(started)
+		<-ctx.Done()
+		return api.RunResult{}, ctx.Err()
+	})
+	cfg, err := config.LoadFromMap(map[string]string{})
+	if err != nil {
+		t.Fatalf("load fixture config: %v", err)
+	}
+	server, err := api.NewServer(cfg, api.ServerOptions{
+		FrontendRoot: testFrontend(t),
+		Runner:       runner,
+		Recorder:     recordFunc(func(context.Context, api.RunRequest, api.RunResult) error { return nil }),
+		StorageDir:   storage,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	start := postRun(t, httpServer.URL, "dub-mount", "language=ml")
+	start.Body.Close()
+	if start.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", start.StatusCode)
+	}
+	<-started
+
+	events, err := http.Get(httpServer.URL + "/api/dubs/dub-mount/events")
+	if err != nil {
+		t.Fatalf("get events: %v", err)
+	}
+	if events.StatusCode != http.StatusOK {
+		events.Body.Close()
+		t.Fatalf("events status = %d, want 200", events.StatusCode)
+	}
+	if got := events.Header.Get("Content-Type"); got != "text/event-stream" {
+		events.Body.Close()
+		t.Fatalf("events content type = %q, want text/event-stream", got)
+	}
+	events.Body.Close()
+
+	cancel := postCancel(t, httpServer.URL, "dub-mount")
+	cancel.Body.Close()
+	if cancel.StatusCode != http.StatusAccepted {
+		t.Fatalf("cancel status = %d, want 202", cancel.StatusCode)
+	}
+}
+
+// TestShutdownCancelsRunningPipeline proves shutdown cancels the pipeline
+// context and waits for the run goroutine to stop.
+func TestShutdownCancelsRunningPipeline(t *testing.T) {
+	storage := t.TempDir()
+	writeProjectSource(t, storage, "dub-shutdown")
+	started := make(chan struct{})
+	stopped := make(chan error, 1)
+	runner := runFunc(func(ctx context.Context, _ api.RunRequest, _ func(api.ProgressEvent)) (api.RunResult, error) {
+		close(started)
+		<-ctx.Done()
+		stopped <- ctx.Err()
+		return api.RunResult{}, ctx.Err()
+	})
+	cfg, err := config.LoadFromMap(map[string]string{})
+	if err != nil {
+		t.Fatalf("load fixture config: %v", err)
+	}
+	server, err := api.NewServer(cfg, api.ServerOptions{
+		FrontendRoot: testFrontend(t),
+		Runner:       runner,
+		Recorder:     recordFunc(func(context.Context, api.RunRequest, api.RunResult) error { return nil }),
+		StorageDir:   storage,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	start := postRun(t, httpServer.URL, "dub-shutdown", "language=ml")
+	start.Body.Close()
+	if start.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", start.StatusCode)
+	}
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("pipeline context error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown returned before the pipeline stopped")
+	}
+}

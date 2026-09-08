@@ -42,6 +42,9 @@ type ServerOptions struct {
 	Config       http.Handler
 	Upload       http.Handler
 	Sample       http.Handler
+	Runner       PipelineRunner
+	Recorder     RunRecorder
+	StorageDir   string
 	Logger       *slog.Logger
 }
 
@@ -50,6 +53,7 @@ type Server struct {
 	cfg    *config.Config
 	http   *http.Server
 	ledger LedgerFlusher
+	runs   *runRegistry
 	logger *slog.Logger
 }
 
@@ -123,12 +127,17 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	mux.Handle("GET /api/dubs/{id}/history", HistoryHandlerFrom(options.History, logger))
 	mux.Handle("GET /api/dubs/{id}/timeline", TimelineHandlerFrom(options.History, logger))
 	mux.Handle("GET /api/dubs/{id}/branches", BranchCompareHandlerFrom(options.History, logger))
+	runs := newRunRegistry(options.Runner, options.Recorder, logger)
+	mux.Handle("POST /api/dubs/{id}/run", RunStartHandler(runs, options.StorageDir))
+	mux.Handle("POST /api/dubs/{id}/run/cancel", RunCancelHandler(runs))
+	mux.Handle("GET /api/dubs/{id}/events", EventsHandler(runs))
 	mux.Handle("/api/", http.NotFoundHandler())
 	mux.Handle("/", frontend)
 
 	return &Server{
 		cfg:    cfg,
 		ledger: options.Ledger,
+		runs:   runs,
 		logger: logger,
 		http: &http.Server{
 			Handler:           mux,
@@ -148,13 +157,22 @@ func (s *Server) Serve(listener net.Listener) error {
 	return s.http.Serve(listener)
 }
 
-// Shutdown stops new connections and drains in-flight requests. The caller
-// must still call FlushLedger, even when the drain exhausts its deadline.
+// Shutdown stops new connections and drains in-flight requests. It cancels
+// every active run first, so an event stream closes and the drain can finish,
+// and it waits a bounded time for those runs to stop before it returns. The
+// caller must still call FlushLedger, even when the drain exhausts its deadline.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s == nil || s.http == nil {
 		return nil
 	}
-	if err := s.http.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if s.runs != nil {
+		s.runs.cancelAll()
+	}
+	err := s.http.Shutdown(ctx)
+	if s.runs != nil {
+		s.runs.wait(ctx)
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
