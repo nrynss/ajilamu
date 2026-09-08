@@ -25,8 +25,8 @@ Manual correction of boundaries, speakers, and transcript text is essential.
 requires:   T5.3, T1.1
 fixture-ok: yes
 size:       L · frontier
-owns:       web/src/lib/edit/Boundary.svelte
-status:     not-started
+owns:       web/src/lib/edit/Boundary.svelte, web/src/routes/d/[id]/+page.svelte
+status:     done
 ```
 Implement draggable start and end handles on timeline segments. Adjusting handles alters slot duration and updates the length bar dynamically.
 

@@ -9,6 +9,7 @@
     pictureDurationMs,
     referenceSlotMs
   } from "$lib/fixture"
+  import Boundary, { type BoundaryChange } from "$lib/edit/Boundary.svelte"
   import LanguageStrip from "$lib/LanguageStrip.svelte"
   import LengthBar from "$lib/LengthBar.svelte"
   import Preview from "$lib/Preview.svelte"
@@ -170,6 +171,16 @@
     if (hit) selectSegment(hit.id, "playhead")
   }
 
+  function handleBoundaryChange(change: BoundaryChange): void {
+    if (!dub) return
+    dub = {
+      ...dub,
+      segments: dub.segments.map((segment) => (
+        segment.id === change.segment.id ? change.segment : segment
+      ))
+    }
+  }
+
   function showHelp(): void {
     if (helpDialog && !helpDialog.open) helpDialog.showModal()
   }
@@ -192,8 +203,9 @@
     if (!id || isFixtureID(id)) {
       if (page.url.searchParams.get("panel") !== "loading") {
         try {
-          dub = loadFixtureDub(id ?? "fixture")
-          workspaceState = dub && dub.segments.length > 0 && dub.languages.length > 0
+          const fixtureDub = loadFixtureDub(id ?? "fixture")
+          dub = fixtureDub
+          workspaceState = fixtureDub && fixtureDub.segments.length > 0 && fixtureDub.languages.length > 0
             ? { kind: "populated" }
             : {
                 kind: "empty",
@@ -370,6 +382,15 @@
           </form>
           {#if commandStatus}
             <p class="command-status" role="status">{commandStatus}</p>
+          {/if}
+          {#if selectedRow}
+            <Boundary
+              segment={selectedRow.segment}
+              segments={dub.segments}
+              takes={selectedRow.line?.takes ?? []}
+              timelineDurationMs={sharedPictureDurationMs}
+              onchange={handleBoundaryChange}
+            />
           {/if}
           <Timeline
             segments={dub.segments}
