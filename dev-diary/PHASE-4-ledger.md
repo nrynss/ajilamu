@@ -391,11 +391,19 @@ description. Nothing here owns `TimelineAt`, `CompareBranches`, or a history han
 mounts handlers and states that it owns nothing inside them. Only `internal/fit/stretch.go`
 imports `internal/ledger`, for priors.
 
-VERIFY BEFORE ACTING ON THAT PARAGRAPH. P7 landed on another machine and this tree has not
-seen it. Here T7.0 through T7.4 all read `not-started` and `internal/api` holds only
-`wire.go`, so the reading above is drawn from a stale P7. The P7 tree may already carry a
-history handler, and it may have added tasks this graph does not list. Whoever holds both
-trees should re-run the check there before concluding the work is unowned.
+VERIFIED against the merged P7 on 2026-09-08. An earlier draft of this finding drew on a tree
+that had not seen P7, so the claim was marked as needing a recheck. P7 is now merged here and
+the recheck is done. It holds.
+
+`internal/api/server.go` mounts `GET /api/healthz`, `GET /api/ledger/ready`, `GET /api/dubs`,
+`POST /api/config`, `POST /api/dubs/new` and `POST /api/dubs/sample`. None reads timeline
+state, commits or costs. `/api/ledger/ready` is a health probe. `cmd/ajilamu/main.go` imports
+`internal/ledger` only to construct the client for the T7.0 shutdown flush, never to read.
+Outside this package the only other importer is `internal/fit/stretch.go`, for priors.
+
+So the History tab still has no path to real data, and `TimelineAt` and `CompareBranches`
+still have no caller. T7.3 remains `not-started`, and it is the nearest owned surface because
+it puts cumulative project cost on every progress event.
 
 If it is unowned, it is the third instance of the cause T7.0 names, work nobody owns never
 gets built, and it needs a task rather than a note.
