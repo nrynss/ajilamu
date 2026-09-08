@@ -344,7 +344,7 @@ requires:   T7.3
 fixture-ok: yes
 size:       M · mid
 owns:       internal/fit/loop.go, internal/fit/loop_test.go
-status:     not-started
+status:     claimed:orchestrator
 ```
 An interrupted run must resume without re-rendering completed takes.
 
@@ -360,11 +360,15 @@ requires:   T7.3
 fixture-ok: yes
 size:       M · mid
 owns:       web/src/lib/progress.ts, web/src/routes/d/[id]/+page.svelte
-status:     not-started
+status:     done
 ```
 No web code consumes `ProgressEvent`. `ProcessingBanner.svelte` exists and is exported, and nothing imports it.
 
 Subscribe to the run's event stream, feed the banner the active step and sentence, keep the budget meter on the cumulative cost, and reconnect after the stream drops. `ui-ux.md` lines 130 and 177 name the running totals and the active step banner.
+
+Nothing starts a run today. `ui-ux.md` puts start on the create screen, and that screen only
+uploads. This task adds the smallest control that makes the workspace able to start the run it
+watches: a start button that posts `/run` for the active language when no run exists.
 
 **Done when:** A run shows its active step and running cost in the workspace, and a dropped stream reconnects without losing the last known cost.
 
@@ -713,3 +717,17 @@ charge rides the first rendered take, because `charges_raw` keys every row by ta
 Round 1 returned two H and one M. The assembly and export frames carried zero cost, the run route
 globbed a path built from the raw dub id, and four history adapter tests were deleted. Remediation
 fixed all three. Round 2 returned APPROVE with zero residue.
+
+### T7.3b: Live progress in the workspace
+
+`web/src/lib/progress.ts` opens the run's event stream, parses `id:` and `data:` frames, ignores
+frames at or below the last id, and keeps the last cumulative cost across a reconnect. A first
+contact that fails never retries. A stream that opened and dropped reconnects at 500 ms doubling
+to 8 seconds, at most six times, and a terminal event ends the watch.
+
+The workspace shows a start control that posts `/run` for the active language, renders the active
+step and sentence, and shows the running cost. A 409 attaches to the existing run. A 503, 404,
+other status, or network error shows a sentence and opens no stream.
+
+The review drove the built frontend through the real server, severed the stream, and measured the
+cost rise from $0.05 to $0.06 rather than a reset. Round 1 returned APPROVE with zero findings.
