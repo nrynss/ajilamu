@@ -103,6 +103,25 @@ Progress events must transmit natural sentences rather than raw status codes. Th
 
 ---
 
+### T1.4a: Wire examples for the ledger read payloads
+```yaml
+requires:   T7.2c
+fixture-ok: yes
+size:       XS · mid
+owns:       testdata/wire/, internal/api/wire_test.go
+status:     not-started
+```
+T1.4's done condition says `testdata/` stores one example payload per structure. T7.2c added five
+wire types with no example, so the claim is false for `DubHistory`, `TimelineView`,
+`TimelineEntry`, `BranchComparison`, and `BranchSummary`.
+
+Add one payload each and register them in `TestExamplesUnmarshal`, so a decode failure fails the
+suite. Keep every key identical to the Go tag.
+
+**Done when:** Every shared struct has an example payload and the suite decodes each one.
+
+---
+
 ### T1.5: Fixture manifest ★
 ```yaml
 requires:   T0.4, T1.1, T1.4

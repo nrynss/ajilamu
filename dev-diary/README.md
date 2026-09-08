@@ -188,7 +188,7 @@ Protect this core flow above auxiliary features.
 | Phase | Tasks Complete | Status |
 |---|---|---|
 | P0 | 4 / 4 | Complete. Close review approved with zero residue. See [p0-close-round2.md](adversarial-review/p0-close-round2.md). |
-| P1 | 5 / 5 | Complete. Contracts frozen. See [PHASE-1-contracts.md](PHASE-1-contracts.md). |
+| P1 | 5 / 6 | Contracts frozen. T1.4a adds examples for the five T7.2c payloads. See [PHASE-1-contracts.md](PHASE-1-contracts.md). |
 | P2 | 8 / 8 | Complete. Loop orchestration approved with zero residue. See [t2.7-round2.md](adversarial-review/t2.7-round2.md). |
 | P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
 | P4 | 8 / 8 | Complete. Close review approved with zero residue. See [p4-close-round2.md](adversarial-review/p4-close-round2.md). |
