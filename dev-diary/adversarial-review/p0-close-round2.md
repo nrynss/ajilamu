@@ -28,7 +28,7 @@ We ran two independent git measurements.
 First, we searched all commits across master for the full password literal.
 
 ```bash
-$ git grep -I "OwVeVJFSxo_4e" $(git rev-list master)
+$ git grep -I "[REDACTED_OLD_PASSWORD]" $(git rev-list master)
 (exit code 1, zero matches)
 ```
 
@@ -37,7 +37,7 @@ The command returned zero matches across every commit in the master revision lis
 Second, we inspected HEAD directly for the literal.
 
 ```bash
-$ git grep -I "OwVeVJFSxo_4e" HEAD
+$ git grep -I "[REDACTED_OLD_PASSWORD]" HEAD
 (exit code 1, zero matches)
 ```
 
@@ -146,3 +146,19 @@ The git revision history contains no secrets.
 The fixture metrics schema contains no duplicate aliases.
 All test suites pass under race detection.
 We grant an APPROVE verdict for Phase 0 close.
+
+---
+
+## Audit Trail
+
+This record originally quoted the retired ClickHouse password literal inside the two
+verification commands above. Both now read `[REDACTED_OLD_PASSWORD]`, matching the redaction
+applied to `t0.1-round1.md` and `t0.2-round1.md` in P0 remediation round 1.
+
+The irony is the point. This document verified that the secret had been purged, and reintroduced
+it while doing so. A verification command is prose, not a shell script. Describe the check and
+redact the value.
+
+The password remains dead and rotated. It stays present in this file's earlier git history,
+which a history rewrite would be needed to excise. See the rules in
+[infrastructure.md](../infrastructure.md).
