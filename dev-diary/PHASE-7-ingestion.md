@@ -494,7 +494,7 @@ fixture-ok: yes
 size:       S · mid
 owns:       web/package.json, web/package-lock.json, web/src/app.html, .gitignore,
             cmd/ajilamu/main.go
-status:     claimed:FrontendHygiene
+status:     done
 ```
 Three live defects. Every page load logs a 404 because `web/src/app.html` declares no favicon.
 No `package-lock.json` exists and `web/package.json` pins no Node engine, so the version

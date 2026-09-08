@@ -15,6 +15,7 @@ vendor/
 node_modules/
 .svelte-kit/
 web/build/
+web/dist/
 
 # Media and temporary scratch
 assets/source/

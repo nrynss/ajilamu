@@ -251,14 +251,13 @@ func frontendRoot(cfg *config.Config) string {
 	return findFrontendRoot()
 }
 
+// findFrontendRoot returns the declared build output, web/build. The probe
+// refuses a stale web/dist, because nothing emits there and the adapter
+// writes only web/build.
 func findFrontendRoot() string {
-	for _, candidate := range []string{
-		filepath.Join("web", "build"),
-		filepath.Join("web", "dist"),
-	} {
-		if info, err := os.Stat(filepath.Join(candidate, "index.html")); err == nil && !info.IsDir() {
-			return candidate
-		}
+	const build = "web/build"
+	if info, err := os.Stat(filepath.Join(build, "index.html")); err == nil && !info.IsDir() {
+		return build
 	}
 	return ""
 }
