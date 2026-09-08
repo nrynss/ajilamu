@@ -161,7 +161,7 @@ fixture-ok: yes
 size:       S · light
 owns:       internal/api/index.go, internal/api/index_test.go, web/src/routes/+page.svelte,
             web/src/routes/config/+page.svelte
-status:     claimed:gpt-5-codex
+status:     done
 ```
 Implement `/` to list projects ordered by creation time. Implement `/config` to manage API keys and application settings.
 
@@ -220,15 +220,23 @@ T7.0 mounts the handler at `POST /api/dubs/new`.
 
 ### T7.4: Index and config routes
 
-`IndexHandler([]DubSummary)` copies its input, sorts by descending RFC 3339 creation time,
-and serves `DubIndex` JSON without caching. T7.0 mounts it at `GET /api/dubs`.
+`IndexHandlerFrom(func() []DubSummary)` queries a provider on each GET request. It copies the
+result, sorts by descending RFC 3339 creation time, and serves `DubIndex` JSON without caching.
+`IndexHandler([]DubSummary)` snapshots its input at construction and wraps `IndexHandlerFrom`.
+T7.0 mounts `IndexHandler` at `GET /api/dubs`. T7.0 must later pass a provider that includes
+uploads.
 
 `ConfigHandler(func(ConfigUpdate) error)` accepts only URL-encoded POST form fields named
-`voice_key` and `translation_key`. It accepts at most 16 KiB, ignores empty fields, and
-returns `204 No Content` after its callback succeeds.
+`voice_key` and `translation_key`. It accepts at most 16 KiB, treats an omitted field as
+an empty field, and returns `204 No Content` after its callback succeeds. Chunked bodies
+over 16 KiB return `413`.
 
-`ConfigUpdate` keeps both values unexported. `VoiceKey` and `TranslationKey` return each
-non-empty value with a presence flag. The handler sends no credential in any response and
-uses fixed error text. It returns `503` when no callback is installed.
+`ConfigUpdate` keeps both values unexported and implements `LogValue` and `String` to prevent
+credential logging. `VoiceKey` and `TranslationKey` return each non-empty value with a presence
+flag. The handler sends no credential in any response and uses fixed error text. It returns
+`503` when no callback is installed.
 
 T7.4a owns durable local credential storage and supplies the callback after T7.0 lands.
+
+Round 3 returned one L. The orchestrator added `TestConfigHandlerRejectsBothEmptyFields`
+and landed the task.
