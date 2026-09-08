@@ -11,6 +11,10 @@
   } from "$lib/fixture"
   import Boundary, { type BoundaryChange } from "$lib/edit/Boundary.svelte"
   import Speaker, { type SpeakerChange } from "$lib/edit/Speaker.svelte"
+  import Text, {
+    type TextRerenderReply,
+    type TextRerenderRequest
+  } from "$lib/edit/Text.svelte"
   import CommandBar, {
     type CommandIntent,
     type CommandParseFailure
@@ -24,7 +28,7 @@
   import { PanelState, ProcessingBanner, type PanelViewState, type ProcessingStep } from "$lib/states"
   import { createShortcutManager } from "$lib/shortcuts"
   import Timeline from "$lib/Timeline.svelte"
-  import type { Dub, ProgressEvent, Take } from "$lib/types"
+  import type { Charge, Dub, Fit, ProgressEvent, RepairKind, Take } from "$lib/types"
 
   type SelectionSource = "user" | "playhead"
 
@@ -40,6 +44,25 @@
     end_ms: number
     duration_ms: number
     speaker: string
+  }
+
+  interface RerenderTakePayload {
+    file: string
+    name: string
+    attempt: number
+    voice: string
+    repair: string
+    flagged: boolean
+    fit: Fit
+    charges: Charge[]
+  }
+
+  interface RerenderPayload {
+    segment_id: number
+    language: string
+    sentence: string
+    total_nanodollars: number
+    take: RerenderTakePayload
   }
 
   const loadingSentence = "We are loading this workspace from the offline project fixture."
@@ -234,6 +257,100 @@
         segment.id === change.segment.id ? change.segment : segment
       ))
     }
+  }
+
+  async function rerenderLine(request: TextRerenderRequest): Promise<TextRerenderReply> {
+    const currentDub = dub
+    if (!currentDub) return { error: "This workspace is not ready for a re-render." }
+    if (!request.language) return { error: "This project has no target language, so the line cannot re-render." }
+
+    try {
+      const response = await fetch(
+        `/api/dubs/${encodeURIComponent(projectID)}/lines/${request.segmentId}/rerender`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ language: request.language, text: request.text })
+        }
+      )
+      if (!response.ok) return { error: await rerenderFailureSentence(response) }
+      const payload: unknown = await response.json().catch(() => undefined)
+      if (!isRerenderPayload(payload)) {
+        return { error: "The re-render answer was incomplete. The take is unchanged." }
+      }
+      applyRerenderedTake(payload, request.text, request.language)
+      return {
+        sentence: payload.sentence || `Line ${payload.segment_id} re-rendered as ${payload.take.name}.`,
+        take: takeFromRerender(payload.take),
+        totalNanodollars: payload.total_nanodollars
+      }
+    } catch {
+      return { error: "We could not reach the server, so the line was not re-rendered." }
+    }
+  }
+
+  async function rerenderFailureSentence(response: Response): Promise<string> {
+    try {
+      const body = (await response.json()) as { error?: unknown }
+      if (typeof body.error === "string" && body.error.length > 0) return body.error
+    } catch {
+      // The failure body was not JSON, so the sentence below stands.
+    }
+    return `The line did not re-render (${response.status}).`
+  }
+
+  function applyRerenderedTake(payload: RerenderPayload, text: string, language: string): void {
+    const currentDub = dub
+    if (!currentDub) return
+    const take = takeFromRerender(payload.take)
+    dub = {
+      ...currentDub,
+      languages: currentDub.languages.map((track) => {
+        if (track.language !== language) return track
+        return {
+          ...track,
+          lines: track.lines.map((line) => (
+            line.segment_id === payload.segment_id
+              ? { ...line, text, flagged: payload.take.flagged, takes: [...line.takes, take] }
+              : line
+          ))
+        }
+      })
+    }
+  }
+
+  function takeFromRerender(take: RerenderTakePayload): Take {
+    return {
+      file: take.file,
+      voice: take.voice,
+      attempt: take.attempt,
+      repair: isRepairKind(take.repair) ? take.repair : "none",
+      fit: take.fit,
+      charges: take.charges
+    }
+  }
+
+  function isRepairKind(value: string): value is RepairKind {
+    return value === "none" || value === "atempo" || value === "rewrite" || value === "manual"
+  }
+
+  function isRerenderPayload(value: unknown): value is RerenderPayload {
+    if (typeof value !== "object" || value === null) return false
+    const payload = value as Partial<RerenderPayload>
+    const take = payload.take
+    if (typeof take !== "object" || take === null) return false
+    return typeof payload.segment_id === "number"
+      && typeof payload.sentence === "string"
+      && typeof payload.total_nanodollars === "number"
+      && typeof take.file === "string"
+      && typeof take.name === "string"
+      && typeof take.attempt === "number"
+      && typeof take.voice === "string"
+      && typeof take.repair === "string"
+      && typeof take.flagged === "boolean"
+      && typeof take.fit === "object"
+      && take.fit !== null
+      && Array.isArray(take.charges)
   }
 
   function showHelp(): void {
@@ -635,6 +752,13 @@
                 takes={selectedRow.line?.takes ?? []}
                 onchange={handleSpeakerChange}
               />
+              <Text
+                segment={selectedRow.segment}
+                line={selectedRow.line}
+                language={activeLanguage}
+                sourceLanguage={dub.source_language}
+                onrerender={rerenderLine}
+              />
             </div>
           {/if}
           <Timeline
@@ -844,6 +968,10 @@
     gap: 12px;
     grid-template-columns: minmax(0, 1fr) 300px;
     padding: 12px 16px;
+  }
+
+  .editor-panels :global(.text-editor) {
+    grid-column: 1 / -1;
   }
 
   dialog {

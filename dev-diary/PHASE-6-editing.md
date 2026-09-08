@@ -58,7 +58,7 @@ requires:   T5.5, T6.5a
 fixture-ok: yes
 size:       M · mid
 owns:       web/src/lib/edit/Text.svelte, web/src/routes/d/[id]/+page.svelte
-status:     not-started
+status:     done
 ```
 Support in-place text editing for transcribed source sentences and translated target lines.
 
@@ -136,6 +136,32 @@ only audible one.
 
 **Done when:** The timeline shows ghost take history, both takes play independently, and
 the estimate shows before the call runs.
+
+---
+
+### T6.5b: Source-text re-translation path ★
+```yaml
+requires:   T6.5a, T6.3
+fixture-ok: no
+size:       M · frontier
+owns:       internal/api/rerender.go, internal/api/rerender_test.go,
+            internal/api/server.go, cmd/ajilamu/main.go,
+            web/src/routes/d/[id]/+page.svelte
+status:     not-started
+```
+T6.3's contract change records the gap. The re-render route takes a target text only, so a
+corrected source line cannot be re-translated. Add an optional `source_text` to the route
+body. When it is present, set the segment text before the fit loop runs and run the
+translation model, because no authoritative target text exists yet. Save a new take beside
+the old ones. Record the take, its charges, one commit and one timeline snapshot under the
+`text_corrected` action with the `manual_ui` author.
+
+Wire the source confirm on the workspace page to that path, replacing the prompt that
+reports the gap today.
+
+**Done when:** A corrected source line re-translates and re-renders as a new take, the
+translation model runs on that path and zero times on the target-text path, and the page
+applies the response.
 
 ---
 
@@ -461,3 +487,56 @@ testdata/takes/seg_3_try1.wav` prints 5.720375 seconds. The new take measures
 5.320000 seconds, and `TestRerenderReadsTheLedgerTrackUnderTheCallerCode` pins it
 with `ffprobe`. `internal/api/rerender_test.go` keeps the route tests with a
 stand-in renderer.
+
+### T6.3 text correction
+
+`Text.svelte` edits the selected line's transcribed source sentence and translated
+target line in place. It composes into the editor section beside Boundary and
+Speaker. It occupies its own full-width row, so the two earlier panels keep their
+layout.
+
+The source element carries the project's source language when the project knows it.
+The target element carries the active target language. On the probe dub the source
+reads `lang="en"` and the target reads `lang="ml"`.
+
+Correcting the target text is authoritative. The field action opens a confirmation
+panel. The panel names the estimate from the newest billed take and states that no
+translation model runs. Confirm sends one request.
+
+```text
+POST /api/dubs/t63-real-dub/lines/3/rerender
+{"language":"ml","text":"ഹായ്, ഞാൻ സുനി വില്യംസ് ആണ്, തിരുത്തിയത്."}
+```
+
+The 201 answer names `seg_3_try2.wav`. The page appends that take to the active
+track line, sets the line text to the corrected text, and closes the panel. The
+Text panel's take list and the Speaker panel's take list both then read
+`seg_3_try1.wav,seg_3_stretched.wav,/tmp/t63/storage/t63-real-dub/work/ml-IN/seg_3_try2.wav`.
+The route returns that absolute path for the new take, which matches the Surprises
+paragraph. The estimate basis moves to the new take. Cancel sends nothing and keeps the
+draft.
+
+Zero translation calls hold for that path. A throwaway overlay test measured
+`fit.RepairLine` with `InitialText` set. The translator recorded zero calls and the
+synthesizer recorded one call. The same run with an empty `InitialText` recorded one
+translator call. `internal/fit/rewrite.go` takes the authoritative text on attempt
+one and skips `cfg.Translator.Translate`.
+
+Correcting the source text cannot re-translate yet. The landed re-render route
+accepts `language`, `text` and `speaker`. A supplied `text` is a target line. No
+handler writes a corrected source line. The source field action opens a prompt.
+Confirm reports the gap, sends nothing and calls no model. The record in [t6.3-contract-change.md](adversarial-review/t6.3-contract-change.md) names the missing path and its owner.
+
+Surprises. The page sends `language`, because the bundled fixture stores no
+language code to fall back to. The 201 take `file` is an absolute server path, so
+`fixtureTakeSource` cannot resolve it and `Play this take` does nothing for the new
+take. T6.5 owns the ghost take history and needs an asset URL for it. The draft
+reset effect ignores prop changes while a prompt or a call is open, so a slow
+re-render cannot clobber an open panel.
+
+Measured on 2026-09-09 against a stand-in API server that served the built bundle
+and the fixture payload under a non-fixture id. The stand-in logged the POST and
+answered the documented 201 shape. It makes no outbound call. The browser raised
+zero console messages and zero page errors. `npm --prefix web run check` reports
+183 files, 0 errors and 0 warnings. Neither changed file carries `export let`, `$:`
+or a store.
