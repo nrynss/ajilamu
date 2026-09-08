@@ -4,6 +4,7 @@ package fit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/nrynss/ajilamu/internal/api"
 	"github.com/nrynss/ajilamu/internal/cost"
 	"github.com/nrynss/ajilamu/internal/gemini"
+	"github.com/nrynss/ajilamu/internal/media"
 	"github.com/nrynss/ajilamu/internal/tts"
 	"github.com/nrynss/ajilamu/internal/types"
 )
@@ -163,6 +165,135 @@ func PipelineTakeName(segmentID, attempt int, stretched bool) string {
 		return fmt.Sprintf("seg_%d_try%d_stretched.wav", segmentID, attempt)
 	}
 	return fmt.Sprintf("seg_%d_try%d.wav", segmentID, attempt)
+}
+
+// segmentRecordName names the resume record the loop writes per segment.
+// The name never collides with a take or an assembled mix.
+func segmentRecordName(segmentID int) string {
+	return fmt.Sprintf("seg_%d_result.json", segmentID)
+}
+
+// segmentRecord holds the resume state of one finished dialogue line.
+type segmentRecord struct {
+	// Language names the run that wrote the record.
+	Language string `json:"language"`
+	// Result holds the finished line, including its chosen take.
+	Result LineResult `json:"result"`
+}
+
+// writeSegmentRecord stores the resume state of a finished line.
+// It writes a temporary file and renames it, so a reader sees the whole
+// record or no record at all.
+func writeSegmentRecord(workDir, language string, res LineResult) error {
+	data, err := json.Marshal(segmentRecord{Language: language, Result: res})
+	if err != nil {
+		return fmt.Errorf("encode result for line %d: %w", res.Segment.ID, err)
+	}
+	tmp, err := os.CreateTemp(workDir, ".result-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create result file for line %d: %w", res.Segment.ID, err)
+	}
+	name := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return fmt.Errorf("write result for line %d: %w", res.Segment.ID, err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return fmt.Errorf("close result for line %d: %w", res.Segment.ID, err)
+	}
+	if err := os.Rename(name, filepath.Join(workDir, segmentRecordName(res.Segment.ID))); err != nil {
+		os.Remove(name)
+		return fmt.Errorf("store result for line %d: %w", res.Segment.ID, err)
+	}
+	return nil
+}
+
+// takeFileUsable reports whether a recorded take holds audio the loop can measure.
+// An empty, missing, unreadable, or undecodable file is not completed work.
+func takeFileUsable(ctx context.Context, path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		return false
+	}
+	if _, err := media.Duration(ctx, path); err != nil {
+		return false
+	}
+	return true
+}
+
+// discardTakeFile removes a take that holds no audio.
+// The fresh render claims the same path, so a leftover file would block it.
+func discardTakeFile(path string) {
+	if path == "" {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+// readSegmentRecord loads the resume state of one line.
+//
+// It reports false when no record exists, when the record describes another
+// line or language, and when the record is unreadable. It also reports false
+// when the take it names holds audio the loop cannot measure.
+// A take that is missing, empty, or undecodable means the earlier pass left
+// nothing to resume. The function removes such a take, because the fresh
+// render claims the same path and the synthesizer refuses to overwrite it.
+// It removes nothing when the run context ended. The probe may have failed
+// on the context alone, and the take can still hold completed work.
+func readSegmentRecord(ctx context.Context, workDir, language string, seg types.Segment) (LineResult, bool) {
+	if workDir == "" {
+		return LineResult{}, false
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, segmentRecordName(seg.ID)))
+	if err != nil {
+		return LineResult{}, false
+	}
+	var rec segmentRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return LineResult{}, false
+	}
+	if rec.Language != language || rec.Result.Segment != seg {
+		return LineResult{}, false
+	}
+	if !takeFileUsable(ctx, rec.Result.ChosenTake.File) {
+		if ctx.Err() == nil {
+			discardTakeFile(rec.Result.ChosenTake.File)
+		}
+		return LineResult{}, false
+	}
+	return rec.Result, true
+}
+
+// reusableTake returns the recorded take when RepairLine can measure it, and
+// nil when the loop must replay the recorded result instead.
+//
+// RepairLine reads InitialTake on attempt one alone. It also refuses a
+// stretched initial take, because stretching a stretched file is not allowed.
+// A flagged line holds no take that fits its slot, so reusing one would start
+// fresh attempts and collide with the takes the earlier pass wrote. The loop
+// therefore reuses only a first attempt take that fit without a flag and that
+// carries no stretched marker.
+func reusableTake(res LineResult) *types.Take {
+	if res.Flagged || res.ChosenTake.Attempt != 1 || isStretchedTake(res.ChosenTake.File) {
+		return nil
+	}
+	take := res.ChosenTake
+	return &take
+}
+
+// recordedText returns the spoken text of the recorded chosen attempt.
+func recordedText(res LineResult) string {
+	for _, att := range res.Attempts {
+		if att.Attempt == res.ChosenTake.Attempt {
+			return att.Text
+		}
+	}
+	return ""
 }
 
 // PipelineConfig configures dubbing pipeline execution.
@@ -696,7 +827,7 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 			MaxAttempts: p.cfg.MaxAttempts,
 		}
 
-		res, err := RepairLine(ctx, seg, rewriteCfg)
+		res, err := p.repairSegment(ctx, seg, rewriteCfg)
 		if err != nil {
 			emitter.emit(api.ProgressEvent{
 				Type:      api.EventError,
@@ -758,4 +889,34 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 		TotalCost:       tracker.Total(),
 		Charges:         tracker.Charges(),
 	}, nil
+}
+
+// repairSegment resumes a finished line or renders it for the first time.
+//
+// A line resumes when the work directory holds its record and the recorded
+// take still holds audio the loop can measure. The loop hands a reusable take
+// to RepairLine as the initial take, so RepairLine measures it and skips the
+// synthesis that produced it. Every other recorded line replays its stored
+// result, because RepairLine cannot consume that take. A line without a record
+// renders as it always did.
+func (p *Pipeline) repairSegment(ctx context.Context, seg types.Segment, cfg RewriteConfig) (LineResult, error) {
+	if recorded, ok := readSegmentRecord(ctx, p.cfg.WorkDir, p.cfg.Language, seg); ok {
+		take := reusableTake(recorded)
+		if take == nil {
+			return recorded, nil
+		}
+		cfg.InitialTake = take
+		cfg.InitialText = recordedText(recorded)
+	}
+
+	res, err := RepairLine(ctx, seg, cfg)
+	if err != nil {
+		return LineResult{}, err
+	}
+	if p.cfg.WorkDir != "" {
+		if err := writeSegmentRecord(p.cfg.WorkDir, p.cfg.Language, res); err != nil {
+			return LineResult{}, err
+		}
+	}
+	return res, nil
 }

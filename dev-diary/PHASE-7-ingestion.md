@@ -344,7 +344,7 @@ requires:   T7.3
 fixture-ok: yes
 size:       M · mid
 owns:       internal/fit/loop.go, internal/fit/loop_test.go
-status:     claimed:orchestrator
+status:     done
 ```
 An interrupted run must resume without re-rendering completed takes.
 
@@ -731,3 +731,18 @@ other status, or network error shows a sentence and opens no stream.
 
 The review drove the built frontend through the real server, severed the stream, and measured the
 cost rise from $0.05 to $0.06 rather than a reset. Round 1 returned APPROVE with zero findings.
+
+### T7.3a: Resumable runs
+
+A line resumes when its work directory holds a completion record naming the same segment and
+language and the recorded take still holds measurable audio. The loop reuses that take through
+`RewriteConfig.InitialTake` when it is attempt one, unstretched, and unflagged. A stretched,
+flagged, or later-attempt line replays its recorded result without another synthesis.
+
+A recorded take that is missing, empty, or undecodable is discarded so the fresh render can claim
+the path, and nothing is discarded when the run context ended. Records are written with a
+temporary file and a rename.
+
+Rounds 1 to 3 each found one member of the same resume-corruption class. Round 4 found no code
+defect and one L, applied by the orchestrator under the exemption. Round 5 returned APPROVE with
+zero residue.
