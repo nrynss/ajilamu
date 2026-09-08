@@ -1,0 +1,39 @@
+{
+  "commit_id": "7daf5a8b-ce92-4f4b-ba8d-bc3e7b6a9dc5",
+  "language": "ml",
+  "segments": [
+    {
+      "segment_index": 1,
+      "start_ms": 5908,
+      "end_ms": 7728,
+      "speaker": "Suni Williams",
+      "emotion": "Warm",
+      "source_text": "Hi, I'm Suni Williams",
+      "text": "ഹായ്, ഞാൻ സുനി വില്യംസ് ആണ്.",
+      "take_id": "5c1d7a2e-9b4f-4e6a-8d3c-7f2b1a0e9c48",
+      "version_seq": 7
+    },
+    {
+      "segment_index": 3,
+      "start_ms": 13208,
+      "end_ms": 18528,
+      "speaker": "Suni Williams",
+      "emotion": "Explanatory",
+      "source_text": "An amazing research laboratory that's orbiting the Earth about 250 miles above us.",
+      "text": "ഭൂമിയെ ഏകദേശം 250 മൈൽ ഉയരത്തിൽ വലംവയ്ക്കുന്ന അത്ഭുതകരമായ ഒരു ഗവേഷണ ലബോറട്ടറി.",
+      "take_id": "8b2e5f1c-3d7a-4e9b-9c0f-2a6d4b8e1f73",
+      "version_seq": 7
+    },
+    {
+      "segment_index": 8,
+      "start_ms": 47381,
+      "end_ms": 54491,
+      "speaker": "Mark Vande Hei",
+      "emotion": "Explanatory",
+      "source_text": "Also, an object in motion tends to stay in motion unless acted on by an outside force.",
+      "text": "കൂടാതെ, പുറത്തുനിന്ന് ഒരു ബലം പ്രവർത്തിക്കുന്നില്ലെങ്കിൽ ചലനത്തിലുള്ള വസ്തു ചലനത്തിൽ തന്നെ തുടരും.",
+      "take_id": "2f4a6b8c-0d1e-4f2a-9b3c-5d7e9f1a2b46",
+      "version_seq": 7
+    }
+  ]
+}

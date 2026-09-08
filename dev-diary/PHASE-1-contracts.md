@@ -109,7 +109,7 @@ requires:   T7.2c
 fixture-ok: yes
 size:       XS · mid
 owns:       testdata/wire/, internal/api/wire_test.go
-status:     not-started
+status:     done
 ```
 T1.4's done condition says `testdata/` stores one example payload per structure. T7.2c added five
 wire types with no example, so the claim is false for `DubHistory`, `TimelineView`,
@@ -199,3 +199,20 @@ returned APPROVE with zero findings and zero residue.
 
 The five types still lack a `testdata/wire/` example, so the claim above holds only for the twelve
 T1.4 payloads. T1.4a lands the missing five.
+
+### T1.4a: Wire examples for the ledger read payloads
+
+`testdata/wire/` now holds one example per shared struct, 17 files for 17 structs in
+`internal/api/wire.go`. T1.4a added nine. The five ledger read payloads T7.2c introduced are
+`dub_history.json`, `timeline_view.json`, `timeline_entry.json`, `branch_comparison.json`, and
+`branch_summary.json`. The other four cover `DubSummary`, `Segment`, `LanguageTrack`, and `Line`,
+which had no payload of their own.
+
+`TestExamplesUnmarshal` decodes all 17 into their Go structs and re-marshals each. A new
+`TestExamplesMatchJSONTags` walks each payload against its Go type. It fails on a key that no JSON
+tag names or on a missing required key, because `encoding/json` ignores unknown keys. A new
+`TestEverySharedStructHasExample` fails when a mirrored struct lacks an example.
+
+Two mutations proved both pins. Renaming `duration_ms` in `segment.json` failed the tag walk with
+two findings. Commenting out one example entry failed the coverage check, which named
+`TimelineEntry`. `go test -count=1 ./internal/api` passes.

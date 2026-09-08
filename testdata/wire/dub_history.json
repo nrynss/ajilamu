@@ -1,0 +1,31 @@
+{
+  "commits": [
+    {
+      "commit_id": "1b4d9f2a-6e3c-4f8b-9a2d-5c7e1b0a3d6f",
+      "parent_commit_id": "",
+      "version_number": 1,
+      "created_at": "2026-09-07T18:00:12Z",
+      "action": "segment_created",
+      "author": "agent",
+      "instruction": ""
+    },
+    {
+      "commit_id": "2e5a0b3c-7f4d-4a9c-8b3e-6d8f2c1b4e70",
+      "parent_commit_id": "1b4d9f2a-6e3c-4f8b-9a2d-5c7e1b0a3d6f",
+      "version_number": 2,
+      "created_at": "2026-09-07T18:01:05Z",
+      "action": "boundary_nudged",
+      "author": "manual_ui",
+      "instruction": ""
+    },
+    {
+      "commit_id": "7daf5a8b-ce92-4f4b-ba8d-bc3e7b6a9dc5",
+      "parent_commit_id": "6c9e4f7a-bd81-4e3a-af7c-ab2d6a5f8cb4",
+      "version_number": 7,
+      "created_at": "2026-09-07T18:06:00Z",
+      "action": "user_command",
+      "author": "command_bar",
+      "instruction": "shift line 3 right by 200ms"
+    }
+  ]
+}

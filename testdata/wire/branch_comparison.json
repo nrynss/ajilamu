@@ -1,0 +1,16 @@
+{
+  "a": {
+    "commit_id": "7daf5a8b-ce92-4f4b-ba8d-bc3e7b6a9dc5",
+    "branch": "main",
+    "slot_ms": 41900,
+    "take_count": 10,
+    "attributed_cost_usd": "0.023414"
+  },
+  "b": {
+    "commit_id": "6c9e4f7a-bd81-4e3a-af7c-ab2d6a5f8cb4",
+    "branch": "shorter",
+    "slot_ms": 41200,
+    "take_count": 9,
+    "attributed_cost_usd": "0.019300"
+  }
+}

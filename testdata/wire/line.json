@@ -1,0 +1,51 @@
+{
+  "segment_id": 3,
+  "text": "ഭൂമിയെ ഏകദേശം 250 മൈൽ ഉയരത്തിൽ വലംവയ്ക്കുന്ന അത്ഭുതകരമായ ഒരു ഗവേഷണ ലബോറട്ടറി.",
+  "flagged": false,
+  "takes": [
+    {
+      "file": "seg_3_try1.wav",
+      "voice": "ml-IN-Chirp3-HD-Zephyr",
+      "attempt": 1,
+      "repair": "none",
+      "fit": {
+        "slot_ms": 5320,
+        "measured_ms": 5720,
+        "delta_ms": 400,
+        "state": "fits"
+      },
+      "charges": [
+        {
+          "kind": "translate",
+          "segment_id": 3,
+          "take_file": "seg_3_try1.wav",
+          "units": 82,
+          "unit_price_nanodollars": 100,
+          "total_nanodollars": 8200
+        },
+        {
+          "kind": "synthesize",
+          "segment_id": 3,
+          "take_file": "seg_3_try1.wav",
+          "units": 77,
+          "unit_price_nanodollars": 30000,
+          "total_nanodollars": 2310000
+        }
+      ]
+    },
+    {
+      "file": "seg_3_stretched.wav",
+      "voice": "ml-IN-Chirp3-HD-Zephyr",
+      "attempt": 2,
+      "repair": "atempo",
+      "stretch_factor_milli": 1075,
+      "fit": {
+        "slot_ms": 5320,
+        "measured_ms": 5338,
+        "delta_ms": 18,
+        "state": "fits"
+      },
+      "charges": []
+    }
+  ]
+}

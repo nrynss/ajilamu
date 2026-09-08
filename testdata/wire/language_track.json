@@ -1,0 +1,79 @@
+{
+  "language": "ml",
+  "lines": [
+    {
+      "segment_id": 1,
+      "text": "ഹായ്, ഞാൻ സുനി വില്യംസ് ആണ്.",
+      "flagged": false,
+      "takes": [
+        {
+          "file": "seg_1_try1.wav",
+          "voice": "ml-IN-Chirp3-HD-Zephyr",
+          "attempt": 1,
+          "repair": "none",
+          "fit": {
+            "slot_ms": 1820,
+            "measured_ms": 1680,
+            "delta_ms": -140,
+            "state": "fits"
+          },
+          "charges": [
+            {
+              "kind": "translate",
+              "segment_id": 1,
+              "take_file": "seg_1_try1.wav",
+              "units": 21,
+              "unit_price_nanodollars": 100,
+              "total_nanodollars": 2100
+            },
+            {
+              "kind": "synthesize",
+              "segment_id": 1,
+              "take_file": "seg_1_try1.wav",
+              "units": 28,
+              "unit_price_nanodollars": 30000,
+              "total_nanodollars": 840000
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "segment_id": 8,
+      "text": "കൂടാതെ, പുറത്തുനിന്ന് ഒരു ബലം പ്രവർത്തിക്കുന്നില്ലെങ്കിൽ ചലനത്തിലുള്ള വസ്തു ചലനത്തിൽ തന്നെ തുടരും.",
+      "flagged": true,
+      "takes": [
+        {
+          "file": "seg_8_try1.wav",
+          "voice": "ml-IN-Chirp3-HD-Zephyr",
+          "attempt": 1,
+          "repair": "none",
+          "fit": {
+            "slot_ms": 7110,
+            "measured_ms": 4200,
+            "delta_ms": -2910,
+            "state": "too_short"
+          },
+          "charges": [
+            {
+              "kind": "translate",
+              "segment_id": 8,
+              "take_file": "seg_8_try1.wav",
+              "units": 86,
+              "unit_price_nanodollars": 100,
+              "total_nanodollars": 8600
+            },
+            {
+              "kind": "synthesize",
+              "segment_id": 8,
+              "take_file": "seg_8_try1.wav",
+              "units": 98,
+              "unit_price_nanodollars": 30000,
+              "total_nanodollars": 2940000
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -50,22 +51,39 @@ func decodeExample(t *testing.T, name string, dst any) {
 	}
 }
 
+// wireExample pairs one example payload with the struct it decodes into.
+type wireExample struct {
+	// name is the example file name under testdata/wire.
+	name string
+	// decode returns a fresh pointer to the target struct.
+	decode func() any
+}
+
+// wireExamples lists every example payload and its target struct.
+// Each shared struct in wire.go appears here at least once.
+var wireExamples = []wireExample{
+	{"dub.json", func() any { return &Dub{} }},
+	{"dubs.json", func() any { return &DubIndex{} }},
+	{"dub_summary.json", func() any { return &DubSummary{} }},
+	{"segment.json", func() any { return &Segment{} }},
+	{"language_track.json", func() any { return &LanguageTrack{} }},
+	{"line.json", func() any { return &Line{} }},
+	{"take.json", func() any { return &Take{} }},
+	{"fit.json", func() any { return &Fit{} }},
+	{"charge.json", func() any { return &Charge{} }},
+	{"total.json", func() any { return &Total{} }},
+	{"commit.json", func() any { return &Commit{} }},
+	{"dub_history.json", func() any { return &DubHistory{} }},
+	{"timeline_view.json", func() any { return &TimelineView{} }},
+	{"timeline_entry.json", func() any { return &TimelineEntry{} }},
+	{"branch_comparison.json", func() any { return &BranchComparison{} }},
+	{"branch_summary.json", func() any { return &BranchSummary{} }},
+	{"progress.json", func() any { return &ProgressEvent{} }},
+}
+
 // TestExamplesUnmarshal proves every example payload parses into its struct.
 func TestExamplesUnmarshal(t *testing.T) {
-	samples := []struct {
-		name   string
-		decode func() any
-	}{
-		{"dub.json", func() any { return &Dub{} }},
-		{"dubs.json", func() any { return &DubIndex{} }},
-		{"fit.json", func() any { return &Fit{} }},
-		{"take.json", func() any { return &Take{} }},
-		{"charge.json", func() any { return &Charge{} }},
-		{"total.json", func() any { return &Total{} }},
-		{"commit.json", func() any { return &Commit{} }},
-		{"progress.json", func() any { return &ProgressEvent{} }},
-	}
-	for _, sample := range samples {
+	for _, sample := range wireExamples {
 		t.Run(sample.name, func(t *testing.T) {
 			dst := sample.decode()
 			decodeExample(t, sample.name, dst)
@@ -73,6 +91,88 @@ func TestExamplesUnmarshal(t *testing.T) {
 				t.Fatalf("marshal %s: %v", sample.name, err)
 			}
 		})
+	}
+}
+
+// TestExamplesMatchJSONTags proves every example key matches a Go JSON tag.
+// encoding/json ignores unknown keys, so a renamed key would decode silently.
+func TestExamplesMatchJSONTags(t *testing.T) {
+	for _, sample := range wireExamples {
+		t.Run(sample.name, func(t *testing.T) {
+			var raw any
+			if err := json.Unmarshal(readExample(t, sample.name), &raw); err != nil {
+				t.Fatalf("decode %s as generic JSON: %v", sample.name, err)
+			}
+			typ := reflect.TypeOf(sample.decode()).Elem()
+			checkJSONKeys(t, raw, typ, sample.name)
+		})
+	}
+}
+
+// checkJSONKeys walks a decoded example against its Go type.
+// It fails on a key that no tag names and on a missing required key.
+func checkJSONKeys(t *testing.T, raw any, typ reflect.Type, path string) {
+	t.Helper()
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	switch typ.Kind() {
+	case reflect.Slice, reflect.Array:
+		items, ok := raw.([]any)
+		if !ok {
+			t.Errorf("%s: want an array, got %T", path, raw)
+			return
+		}
+		for i, item := range items {
+			checkJSONKeys(t, item, typ.Elem(), fmt.Sprintf("%s[%d]", path, i))
+		}
+	case reflect.Struct:
+		object, ok := raw.(map[string]any)
+		if !ok {
+			t.Errorf("%s: want an object, got %T", path, raw)
+			return
+		}
+		fields := map[string]reflect.StructField{}
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			key := strings.Split(field.Tag.Get("json"), ",")[0]
+			if key == "" || key == "-" {
+				continue
+			}
+			fields[key] = field
+		}
+		for key := range object {
+			if _, ok := fields[key]; !ok {
+				t.Errorf("%s: key %q matches no Go JSON tag", path, key)
+			}
+		}
+		for key, field := range fields {
+			value, present := object[key]
+			if !present {
+				if !strings.Contains(field.Tag.Get("json"), "omitempty") {
+					t.Errorf("%s: required key %q is absent", path, key)
+				}
+				continue
+			}
+			if value == nil {
+				continue
+			}
+			checkJSONKeys(t, value, field.Type, path+"."+key)
+		}
+	}
+}
+
+// TestEverySharedStructHasExample proves each mirrored type has an example.
+func TestEverySharedStructHasExample(t *testing.T) {
+	covered := map[string]bool{}
+	for _, sample := range wireExamples {
+		covered[reflect.TypeOf(sample.decode()).Elem().Name()] = true
+	}
+	for _, sample := range mirroredTypes {
+		name := reflect.TypeOf(sample).Name()
+		if !covered[name] {
+			t.Errorf("shared struct %s has no example payload", name)
+		}
 	}
 }
 
@@ -96,6 +196,50 @@ var mirroredTypes = []any{
 	TimelineEntry{},
 	BranchComparison{},
 	BranchSummary{},
+}
+
+// parseWireStructs extracts every exported struct name from wire.go.
+// It follows parseTSInterfaces, which parses types.ts line by line.
+func parseWireStructs(t *testing.T, src string) []string {
+	t.Helper()
+	decl := regexp.MustCompile(`^type ([A-Z][A-Za-z0-9_]*) struct \{`)
+	var names []string
+	for _, line := range strings.Split(src, "\n") {
+		if m := decl.FindStringSubmatch(line); m != nil {
+			names = append(names, m[1])
+		}
+	}
+	if len(names) == 0 {
+		t.Fatal("wire.go declares no exported struct")
+	}
+	return names
+}
+
+// TestEveryWireStructIsRegistered derives the shared set from wire.go.
+// A new struct must reach mirroredTypes and wireExamples or this test fails.
+func TestEveryWireStructIsRegistered(t *testing.T) {
+	src, err := os.ReadFile("wire.go")
+	if err != nil {
+		t.Fatalf("read wire.go: %v", err)
+	}
+	names := parseWireStructs(t, string(src))
+
+	mirrored := map[string]bool{}
+	for _, sample := range mirroredTypes {
+		mirrored[reflect.TypeOf(sample).Name()] = true
+	}
+	covered := map[string]bool{}
+	for _, sample := range wireExamples {
+		covered[reflect.TypeOf(sample.decode()).Elem().Name()] = true
+	}
+	for _, name := range names {
+		if !mirrored[name] {
+			t.Errorf("wire.go struct %s is absent from mirroredTypes", name)
+		}
+		if !covered[name] {
+			t.Errorf("wire.go struct %s has no wireExamples entry", name)
+		}
+	}
 }
 
 // tsInterface holds the parsed properties of one TypeScript interface.
