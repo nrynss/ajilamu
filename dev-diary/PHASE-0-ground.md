@@ -46,11 +46,15 @@ The initial test script contained a fallback ClickHouse password.
 
 Rotate this database password first. Remove all fallback credentials from scripts and documentation.
 
-Build a Go configuration loader where every secret is required. The server must exit on startup if an environment variable is missing.
+Build a Go configuration loader that separates process settings from credentials. Process settings load at startup with sensible defaults.
 
-Non-secrets like `PORT`, `ENV`, and `GEMINI_MODEL` may define sensible defaults. The Go client must consume these values directly.
+Development and fixture mode defer credentials until the feature that needs them. A missing credential fails that request with an error naming its environment variable.
 
-**Done when:** The old password is dead, `git grep` finds zero credential literals, and the server fails immediately on missing variables.
+`ENV=production` validates ClickHouse and Google Cloud settings at boot. A deployed host never starts in degraded fixture mode.
+
+Non-secrets like `PORT`, `ENV`, and `GEMINI_MODEL` may define sensible defaults. `AJILAMU_DATA_DIR` names the application data directory. `AJILAMU_FRONTEND_DIR` names the frontend build root. The Go client must consume these values directly.
+
+**Done when:** The old password is dead, `git grep` finds zero credential literals, fixture mode starts with no credentials, and production fails on missing credentials.
 
 ---
 
@@ -126,4 +130,3 @@ Targeting `./testdata` directly runs the fixture test suite as expected.
 Phase P1 (Contracts and fixtures) is now unblocked.
 You can run all audio and ledger tests offline against `testdata/` without live API keys.
 When implementing P1 data contracts, bind `Take` structs to the measured millisecond durations and golden metrics in `testdata/expected/metrics.json`.
-

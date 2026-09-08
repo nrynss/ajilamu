@@ -9,7 +9,7 @@ import seg5 from "../../../testdata/takes/seg_5_try1.wav?url"
 import seg6 from "../../../testdata/takes/seg_6_try1.wav?url"
 import seg7 from "../../../testdata/takes/seg_7_try1.wav?url"
 import seg8 from "../../../testdata/takes/seg_8_try1.wav?url"
-import type { Dub, Line, Segment, Take } from "./types"
+import type { Dub, Line, Readiness, Segment, Take } from "./types"
 
 const takeSources: Readonly<Record<string, string>> = {
   "seg_1_try1.wav": seg1,
@@ -30,6 +30,31 @@ export interface FixtureLineRow {
   take: Take | undefined
 }
 
+export const FIXTURE_IDS = [
+  "fixture",
+  "d3bca364-9c8a-4107-8df9-c4faf909b008",
+  "6d9c2f1a-3b4e-4a8d-9c1e-7f2b5a3d8c40"
+] as const
+
+export function isFixtureID(id: string | undefined): boolean {
+  if (!id) return false
+  return FIXTURE_IDS.includes(id as typeof FIXTURE_IDS[number])
+}
+
+/** Chrome facts come from the same fixture payload the workspace renders. */
+export function fixtureChrome(projectID: string): { readiness: Readiness; total_nanodollars: number } | undefined {
+  try {
+    const dub = loadFixtureDub(projectID)
+    if (!dub) return undefined
+    return {
+      readiness: dub.readiness,
+      total_nanodollars: dub.total.total_nanodollars
+    }
+  } catch {
+    return undefined
+  }
+}
+
 function isFixtureDub(value: unknown): value is Dub {
   if (typeof value !== "object" || value === null) return false
 
@@ -46,16 +71,15 @@ function isFixtureDub(value: unknown): value is Dub {
 
 /**
  * Loads the frozen T1.5 payload used by the offline workspace.
- * The route id stays in the client boundary so a live client can replace
- * this helper without changing any workspace component contracts.
+ * Only the fixture alias and its real id may render completed fixture work.
  */
-export function loadFixtureDub(_projectID: string): Dub {
+export function loadFixtureDub(projectID: string): Dub | undefined {
   const value = JSON.parse(fixtureJSON) as unknown
   if (!isFixtureDub(value)) {
     throw new Error("The offline workspace fixture is not a complete project.")
   }
 
-  return value
+  return isFixtureID(projectID) || projectID === value.id ? value : undefined
 }
 
 /** The frozen fixture contains discrete takes rather than a pre-mixed language track. */

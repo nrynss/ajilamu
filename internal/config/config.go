@@ -11,8 +11,10 @@ import (
 // Config holds runtime configuration for the application.
 type Config struct {
 	// Server settings.
-	Port string
-	Env  string
+	Port        string
+	Env         string
+	DataDir     string
+	FrontendDir string
 
 	// Gemini and Google Cloud settings.
 	GeminiModel                  string
@@ -42,6 +44,7 @@ type LookupEnvFunc func(key string) (string, bool)
 const (
 	DefaultPort               = "8080"
 	DefaultEnv                = "development"
+	DefaultDataDir            = "data"
 	DefaultGeminiModel        = "gemini-3.8-flash"
 	DefaultClickHousePort     = 8443
 	DefaultClickHouseDatabase = "default"
@@ -49,8 +52,9 @@ const (
 	DefaultGoogleLocation     = "global"
 )
 
-// Load reads configuration from process environment variables.
-// It fails immediately when any required secret is missing or empty.
+// Load reads process settings from process environment variables. Development
+// and fixture mode defer credentials until a feature needs them. Production
+// validates all boot-time credentials before accepting traffic.
 func Load() (*Config, error) {
 	return LoadFromLookup(os.LookupEnv)
 }
@@ -70,26 +74,6 @@ func LoadFromLookup(lookup LookupEnvFunc) (*Config, error) {
 		return strings.TrimSpace(val)
 	}
 
-	chHost := get("CLICKHOUSE_HOST")
-	if chHost == "" {
-		return nil, errors.New("missing required environment variable: CLICKHOUSE_HOST")
-	}
-
-	chUser := get("CLICKHOUSE_USER")
-	if chUser == "" {
-		return nil, errors.New("missing required environment variable: CLICKHOUSE_USER")
-	}
-
-	chPassword := get("CLICKHOUSE_PASSWORD")
-	if chPassword == "" {
-		return nil, errors.New("missing required environment variable: CLICKHOUSE_PASSWORD")
-	}
-
-	project := get("GOOGLE_CLOUD_PROJECT")
-	if project == "" {
-		return nil, errors.New("missing required environment variable: GOOGLE_CLOUD_PROJECT")
-	}
-
 	port := get("PORT")
 	if port == "" {
 		port = DefaultPort
@@ -99,6 +83,14 @@ func LoadFromLookup(lookup LookupEnvFunc) (*Config, error) {
 	if env == "" {
 		env = DefaultEnv
 	}
+
+	dataDir := get("AJILAMU_DATA_DIR")
+	if dataDir == "" {
+		dataDir = DefaultDataDir
+	}
+
+	// An empty frontend directory leaves build discovery to the entrypoint.
+	frontendDir := get("AJILAMU_FRONTEND_DIR")
 
 	geminiModel := get("GEMINI_MODEL")
 	geminiModel = strings.TrimPrefix(geminiModel, "google/")
@@ -134,22 +126,72 @@ func LoadFromLookup(lookup LookupEnvFunc) (*Config, error) {
 		location = DefaultGoogleLocation
 	}
 
-	return &Config{
+	cfg := &Config{
 		Port:                         port,
 		Env:                          env,
+		DataDir:                      dataDir,
+		FrontendDir:                  frontendDir,
 		GeminiModel:                  geminiModel,
-		GoogleCloudProject:           project,
+		GoogleCloudProject:           get("GOOGLE_CLOUD_PROJECT"),
 		GoogleCloudLocation:          location,
 		GoogleApplicationCredentials: get("GOOGLE_APPLICATION_CREDENTIALS"),
-		ClickHouseHost:               chHost,
+		ClickHouseHost:               get("CLICKHOUSE_HOST"),
 		ClickHousePort:               chPort,
-		ClickHouseUser:               chUser,
-		ClickHousePassword:           chPassword,
+		ClickHouseUser:               get("CLICKHOUSE_USER"),
+		ClickHousePassword:           get("CLICKHOUSE_PASSWORD"),
 		ClickHouseDatabase:           chDatabase,
 		ClickHouseSecure:             chSecure,
 		ClickHouseKeyID:              get("CLICKHOUSE_KEY_ID"),
 		ClickHouseKeySecret:          get("CLICKHOUSE_KEY_SECRET"),
 		ClickHouseServiceID:          get("CLICKHOUSE_SERVICE_ID"),
 		ClickHouseOrgID:              get("CLICKHOUSE_ORG_ID"),
-	}, nil
+	}
+	if cfg.Env == "production" {
+		if err := cfg.RequireProductionCredentials(); err != nil {
+			return nil, err
+		}
+	}
+	return cfg, nil
+}
+
+// RequireClickHouse returns an error naming the first missing variable needed
+// to write the durable ledger. It does not affect fixture-only requests.
+func (c *Config) RequireClickHouse() error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	for _, requirement := range []struct {
+		name  string
+		value string
+	}{
+		{"CLICKHOUSE_HOST", c.ClickHouseHost},
+		{"CLICKHOUSE_USER", c.ClickHouseUser},
+		{"CLICKHOUSE_PASSWORD", c.ClickHousePassword},
+	} {
+		if strings.TrimSpace(requirement.value) == "" {
+			return fmt.Errorf("missing required environment variable: %s", requirement.name)
+		}
+	}
+	return nil
+}
+
+// RequireGoogleCloud returns an error naming the project required for Gemini
+// and Chirp calls. ADC itself remains the SDK's responsibility.
+func (c *Config) RequireGoogleCloud() error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	if strings.TrimSpace(c.GoogleCloudProject) == "" {
+		return errors.New("missing required environment variable: GOOGLE_CLOUD_PROJECT")
+	}
+	return nil
+}
+
+// RequireProductionCredentials validates every credential-bearing feature at
+// boot. Production never starts in degraded fixture mode.
+func (c *Config) RequireProductionCredentials() error {
+	if err := c.RequireClickHouse(); err != nil {
+		return err
+	}
+	return c.RequireGoogleCloud()
 }

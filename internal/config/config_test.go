@@ -15,13 +15,14 @@ func validBaseEnv() map[string]string {
 	}
 }
 
-// TestLoadMissingRequiredSecrets verifies that missing secrets cause failures.
-// It checks that the returned error names the missing variable.
-func TestLoadMissingRequiredSecrets(t *testing.T) {
+// TestDeferredCredentials verifies fixture mode loads process settings without
+// credentials, then names the missing setting at the feature boundary.
+func TestDeferredCredentials(t *testing.T) {
 	tests := []struct {
 		name        string
 		modifyEnv   func(env map[string]string)
 		expectedErr string
+		require     func(*Config) error
 	}{
 		{
 			name: "missing CLICKHOUSE_HOST",
@@ -29,6 +30,7 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 				delete(env, "CLICKHOUSE_HOST")
 			},
 			expectedErr: "CLICKHOUSE_HOST",
+			require:     (*Config).RequireClickHouse,
 		},
 		{
 			name: "empty CLICKHOUSE_HOST",
@@ -36,6 +38,7 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 				env["CLICKHOUSE_HOST"] = "   "
 			},
 			expectedErr: "CLICKHOUSE_HOST",
+			require:     (*Config).RequireClickHouse,
 		},
 		{
 			name: "missing CLICKHOUSE_USER",
@@ -43,6 +46,7 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 				delete(env, "CLICKHOUSE_USER")
 			},
 			expectedErr: "CLICKHOUSE_USER",
+			require:     (*Config).RequireClickHouse,
 		},
 		{
 			name: "empty CLICKHOUSE_USER",
@@ -50,6 +54,7 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 				env["CLICKHOUSE_USER"] = ""
 			},
 			expectedErr: "CLICKHOUSE_USER",
+			require:     (*Config).RequireClickHouse,
 		},
 		{
 			name: "missing CLICKHOUSE_PASSWORD",
@@ -57,6 +62,7 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 				delete(env, "CLICKHOUSE_PASSWORD")
 			},
 			expectedErr: "CLICKHOUSE_PASSWORD",
+			require:     (*Config).RequireClickHouse,
 		},
 		{
 			name: "empty CLICKHOUSE_PASSWORD",
@@ -64,6 +70,7 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 				env["CLICKHOUSE_PASSWORD"] = "   "
 			},
 			expectedErr: "CLICKHOUSE_PASSWORD",
+			require:     (*Config).RequireClickHouse,
 		},
 		{
 			name: "missing GOOGLE_CLOUD_PROJECT",
@@ -71,6 +78,7 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 				delete(env, "GOOGLE_CLOUD_PROJECT")
 			},
 			expectedErr: "GOOGLE_CLOUD_PROJECT",
+			require:     (*Config).RequireGoogleCloud,
 		},
 		{
 			name: "empty GOOGLE_CLOUD_PROJECT",
@@ -78,6 +86,7 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 				env["GOOGLE_CLOUD_PROJECT"] = " "
 			},
 			expectedErr: "GOOGLE_CLOUD_PROJECT",
+			require:     (*Config).RequireGoogleCloud,
 		},
 	}
 
@@ -87,11 +96,12 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 			tc.modifyEnv(env)
 
 			cfg, err := LoadFromMap(env)
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.expectedErr)
+			if err != nil {
+				t.Fatalf("fixture settings should load: %v", err)
 			}
-			if cfg != nil {
-				t.Fatalf("expected nil config on failure, got %+v", cfg)
+			err = tc.require(cfg)
+			if err == nil {
+				t.Fatalf("expected feature error containing %q, got nil", tc.expectedErr)
 			}
 			if !strings.Contains(err.Error(), tc.expectedErr) {
 				t.Fatalf("expected error containing %q, got %q", tc.expectedErr, err.Error())
@@ -100,9 +110,10 @@ func TestLoadMissingRequiredSecrets(t *testing.T) {
 	}
 }
 
-// TestGoogleProjectIsRequired verifies that alternate credential env vars do not replace the project.
-func TestGoogleProjectIsRequired(t *testing.T) {
-	t.Run("GOOGLE_APPLICATION_CREDENTIALS alone fails", func(t *testing.T) {
+// TestGoogleProjectRequirement verifies credential-file settings do not replace
+// the project identifier required by Google Cloud clients.
+func TestGoogleProjectRequirement(t *testing.T) {
+	t.Run("GOOGLE_APPLICATION_CREDENTIALS does not replace project", func(t *testing.T) {
 		env := map[string]string{
 			"CLICKHOUSE_HOST":                "ch.example.com",
 			"CLICKHOUSE_USER":                "default",
@@ -111,18 +122,19 @@ func TestGoogleProjectIsRequired(t *testing.T) {
 		}
 
 		cfg, err := LoadFromMap(env)
+		if err != nil {
+			t.Fatalf("fixture settings should load: %v", err)
+		}
+		err = cfg.RequireGoogleCloud()
 		if err == nil {
 			t.Fatal("expected error naming GOOGLE_CLOUD_PROJECT, got nil")
-		}
-		if cfg != nil {
-			t.Fatalf("expected nil config on failure, got %+v", cfg)
 		}
 		if !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
 			t.Fatalf("expected error containing GOOGLE_CLOUD_PROJECT, got %q", err.Error())
 		}
 	})
 
-	t.Run("GEMINI_API_KEY alone fails", func(t *testing.T) {
+	t.Run("GEMINI_API_KEY does not replace project", func(t *testing.T) {
 		env := map[string]string{
 			"CLICKHOUSE_HOST":     "ch.example.com",
 			"CLICKHOUSE_USER":     "default",
@@ -131,11 +143,12 @@ func TestGoogleProjectIsRequired(t *testing.T) {
 		}
 
 		cfg, err := LoadFromMap(env)
+		if err != nil {
+			t.Fatalf("fixture settings should load: %v", err)
+		}
+		err = cfg.RequireGoogleCloud()
 		if err == nil {
 			t.Fatal("expected error naming GOOGLE_CLOUD_PROJECT, got nil")
-		}
-		if cfg != nil {
-			t.Fatalf("expected nil config on failure, got %+v", cfg)
 		}
 		if !strings.Contains(err.Error(), "GOOGLE_CLOUD_PROJECT") {
 			t.Fatalf("expected error containing GOOGLE_CLOUD_PROJECT, got %q", err.Error())
@@ -158,6 +171,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Env != "development" {
 		t.Errorf("expected default Env 'development', got %q", cfg.Env)
 	}
+	if cfg.DataDir != DefaultDataDir {
+		t.Errorf("expected default DataDir %q, got %q", DefaultDataDir, cfg.DataDir)
+	}
+	if cfg.FrontendDir != "" {
+		t.Errorf("expected empty default FrontendDir, got %q", cfg.FrontendDir)
+	}
 	if cfg.GeminiModel != "gemini-3.8-flash" {
 		t.Errorf("expected default GeminiModel 'gemini-3.8-flash', got %q", cfg.GeminiModel)
 	}
@@ -175,6 +194,47 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.GoogleApplicationCredentials != "" {
 		t.Errorf("expected empty GoogleApplicationCredentials, got %q", cfg.GoogleApplicationCredentials)
+	}
+}
+
+// TestFixtureModeStartsWithoutCredentials pins the no-environment startup
+// contract used by the offline workspace.
+func TestFixtureModeStartsWithoutCredentials(t *testing.T) {
+	cfg, err := LoadFromMap(map[string]string{})
+	if err != nil {
+		t.Fatalf("LoadFromMap without credentials: %v", err)
+	}
+	if cfg.Port != DefaultPort || cfg.Env != DefaultEnv {
+		t.Fatalf("process defaults = port %q env %q", cfg.Port, cfg.Env)
+	}
+}
+
+// TestProductionRequiresCredentials keeps deployed hosts from silently
+// falling back to fixture mode.
+func TestProductionRequiresCredentials(t *testing.T) {
+	tests := []struct {
+		name  string
+		unset string
+		want  string
+	}{
+		{"ClickHouse host", "CLICKHOUSE_HOST", "CLICKHOUSE_HOST"},
+		{"ClickHouse user", "CLICKHOUSE_USER", "CLICKHOUSE_USER"},
+		{"ClickHouse password", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_PASSWORD"},
+		{"Google Cloud project", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_PROJECT"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := validBaseEnv()
+			env["ENV"] = "production"
+			delete(env, tc.unset)
+			cfg, err := LoadFromMap(env)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadFromMap error = %v, want name %q", err, tc.want)
+			}
+			if cfg != nil {
+				t.Fatalf("production config = %+v, want nil", cfg)
+			}
+		})
 	}
 }
 
@@ -197,6 +257,8 @@ func TestLoadValidCustomConfiguration(t *testing.T) {
 	env := map[string]string{
 		"PORT":                           "9090",
 		"ENV":                            "production",
+		"AJILAMU_DATA_DIR":               "/var/lib/ajilamu",
+		"AJILAMU_FRONTEND_DIR":           "/srv/ajilamu/web",
 		"GEMINI_MODEL":                   "gemini-2.0-flash",
 		"GEMINI_API_KEY":                 "my-gemini-key",
 		"GOOGLE_CLOUD_PROJECT":           "prod-project",
@@ -225,6 +287,12 @@ func TestLoadValidCustomConfiguration(t *testing.T) {
 	}
 	if cfg.Env != "production" {
 		t.Errorf("expected Env 'production', got %q", cfg.Env)
+	}
+	if cfg.DataDir != "/var/lib/ajilamu" {
+		t.Errorf("expected DataDir '/var/lib/ajilamu', got %q", cfg.DataDir)
+	}
+	if cfg.FrontendDir != "/srv/ajilamu/web" {
+		t.Errorf("expected FrontendDir '/srv/ajilamu/web', got %q", cfg.FrontendDir)
 	}
 	if cfg.GeminiModel != "gemini-2.0-flash" {
 		t.Errorf("expected GeminiModel 'gemini-2.0-flash', got %q", cfg.GeminiModel)
@@ -300,6 +368,7 @@ func TestLoadInvalidSecure(t *testing.T) {
 
 // TestLoadWithOsEnv verifies Load reads directly from process environment variables.
 func TestLoadWithOsEnv(t *testing.T) {
+	t.Setenv("ENV", DefaultEnv)
 	t.Setenv("CLICKHOUSE_HOST", "env-ch.example.com")
 	t.Setenv("CLICKHOUSE_USER", "env-user")
 	t.Setenv("CLICKHOUSE_PASSWORD", "env-pass")
