@@ -140,7 +140,7 @@ requires:   T4.2
 fixture-ok: no
 size:       M · mid
 owns:       internal/ledger/priors.go, internal/ledger/priors_test.go
-status:     claimed:gpt-5.6-luna
+status:     done
 ```
 Query historical take metrics to predict speaker duration tendencies across languages.
 
@@ -233,6 +233,5 @@ characters-per-second estimate.
 New creators receive the population rate. Creator evidence gains the weight `n/(n+10)` after
 `n` personal rows, so a small library cannot overturn the shared history.
 
-T4.7 owns no test path. `go test ./internal/ledger` and `go vet ./internal/ledger` compile the
-new API. A reviewer needs an HTTP capture regression that pins bound query parameters, counts,
-and the cold-start and blended-rate responses.
+`internal/ledger/priors_test.go` pins bound query parameters, sample counts, cold-start fallback,
+creator weighting, malformed responses, and upstream errors through an HTTP capture.
