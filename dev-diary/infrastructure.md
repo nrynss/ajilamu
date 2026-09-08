@@ -56,16 +56,25 @@ A bucket in `us-central1` archives raw uploads and final renders. Traffic betwee
 
 ## Service Layout
 
-1. **GCE Host (`e2-standard-2`):** Runs the Go web server, ADK agent, and Caddy reverse proxy.
+1. **GCE Host (`e2-standard-2`):** Runs the Go web server with the in-process editor agent, the mcp-clickhouse container, and Caddy as reverse proxy.
 2. **ClickHouse Cloud:** Stores the commit DAG, take ledger, and pre-computed waveform peak arrays.
 3. **Vertex AI (`global`):** Runs Gemini 3.8 Flash for segmentation and translation.
 4. **Cloud Text-to-Speech:** Generates Chirp 3 HD voices in Malayalam, German, and Spanish.
+
+mcp-clickhouse runs only for editor-agent reads. It listens on localhost and never reaches
+Caddy. It connects to the ClickHouse Cloud service with a dedicated read-only user.
 
 ## Credentials
 
 The GCE host runs under an attached service account with the Vertex AI User role.
 The metadata server supplies the token. No key file reaches the virtual machine.
 No credential reaches an image layer.
+
+ClickHouse holds two database users. The writer user in `CLICKHOUSE_USER` serves the
+durable ledger client in `internal/ledger`. The read-only user `mcp_readonly` serves
+mcp-clickhouse with SELECT grants only. The backend passes a static bearer token to
+mcp-clickhouse over localhost. No OAuth flow runs on the host, because Cloud-managed MCP
+requires interactive user login and a backend cannot complete it.
 
 A developer machine authenticates with `gcloud auth application-default login`.
 It may instead point `GOOGLE_APPLICATION_CREDENTIALS` at a key file it already holds.

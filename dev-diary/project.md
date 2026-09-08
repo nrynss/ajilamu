@@ -135,15 +135,20 @@ The filesystem stores the raw discrete WAV takes and video files. ClickHouse sto
 | Video and Audio Understanding | Gemini 3.8 Flash (Vertex AI global) |
 | Translation | Gemini 3.8 Flash, duration-constrained |
 | Speech Synthesis | Google Cloud Chirp 3 HD Voices |
-| Agent Framework | google/adk-go with tool/mcptoolset |
+| Agent Framework | google.golang.org/adk/v2 with tool/mcptoolset |
 | Gemini SDK | google.golang.org/genai |
-| Provenance Ledger | ClickHouse Cloud via mcp-clickhouse |
+| Provenance Ledger | ClickHouse Cloud, read by self-hosted mcp-clickhouse |
 | Audio Assembly | ffmpeg |
 | Frontend | Svelte 5 with runes, Vite |
 | Cloud Host | Google Compute Engine (e2-standard-2 in us-central1) |
 
 All AI services use Google Cloud. Gemini calls go through `google.golang.org/genai` on Vertex AI.
 The SDK authenticates with Application Default Credentials. Production passes no API key.
+
+The editor agent lives in `internal/agent` on `google.golang.org/adk/v2`. Its
+`tool/mcptoolset` package reads the ledger through a self-hosted mcp-clickhouse server
+running beside the backend on the GCE host. The agent reads only. Ledger writes stay on
+the durable client in `internal/ledger`, the single writer. The agent is not built yet.
 
 ---
 

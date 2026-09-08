@@ -53,7 +53,8 @@ owns:       deploy/, Caddyfile, systemd/
 status:     not-started
 ```
 Provision the machine described in [infrastructure.md](infrastructure.md). Run the Go server,
-Caddy as reverse proxy, a 50 GB SSD at `/data/storage`, and the archive bucket.
+the mcp-clickhouse container for agent reads, Caddy as reverse proxy, a 50 GB SSD at
+`/data/storage`, and the archive bucket.
 
 Serve video over HTTP range requests so scrubbing stays instant.
 
