@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,7 +27,14 @@ const (
 	fixtureChild    = "c2"
 	fixtureFork     = "c3"
 	fixtureAbsent   = "c9"
+	fixtureTieRoot  = "n1"
+	fixtureTieMid   = "n2"
+	fixtureTieHead  = "n3"
 )
+
+// clickHouseDefaultRecursiveCTEDepth is the server default the client must raise.
+// A live 26.8.2.7 returned rows at 1000 ancestors and Code 306 at 1001.
+const clickHouseDefaultRecursiveCTEDepth = 1000
 
 // Hard-coded timeline_at_commit JSONEachRow stand-ins. These are not produced by ReplayAt.
 const viewAtRoot = `{"segment_index":1,"start_ms":1000,"end_ms":2000,"speaker":"Ada","emotion":"calm","source_text":"hello","text":"hello","take_id":"t1","state_version_seq":1}
@@ -41,6 +50,13 @@ const viewAtChild = `{"segment_index":1,"start_ms":1100,"end_ms":2000,"speaker":
 const viewAtFork = `{"segment_index":1,"start_ms":1000,"end_ms":2000,"speaker":"Ada","emotion":"calm","source_text":"hello","text":"hello","take_id":"t1","state_version_seq":1}
 {"segment_index":2,"start_ms":3000,"end_ms":4500,"speaker":"Ben","emotion":"warm","source_text":"world","text":"rewritten","take_id":"t2-alt","state_version_seq":2}
 {"segment_index":3,"start_ms":5000,"end_ms":6000,"speaker":"Ada","emotion":"calm","source_text":"stay","text":"stay","take_id":"t3","state_version_seq":1}
+`
+
+// viewAtChildQuoted is viewAtChild as a live server returns it with
+// output_format_json_quote_64bit_integers at 1. These bytes came off ClickHouse 26.8.2.7.
+const viewAtChildQuoted = `{"segment_index":1,"start_ms":"1100","end_ms":"2000","speaker":"Ada","emotion":"calm","source_text":"hello","text":"hello","take_id":"t1","state_version_seq":"2"}
+{"segment_index":2,"start_ms":"3000","end_ms":"4500","speaker":"Ben","emotion":"warm","source_text":"world","text":"world","take_id":"t2","state_version_seq":"1"}
+{"segment_index":3,"start_ms":"5000","end_ms":"6000","speaker":"Ada","emotion":"calm","source_text":"stay","text":"stay","take_id":"t3","state_version_seq":"1"}
 `
 
 type capturedHistoryRequest struct {
@@ -476,6 +492,170 @@ func TestCompareBranchesToleratesPendingHead(t *testing.T) {
 	}
 }
 
+func TestHistoryQueriesPinServerSettings(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu       sync.Mutex
+		requests []capturedHistoryRequest
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captureHistoryQuery(t, &requests, &mu, w, r)
+		payload := viewAtChild
+		if strings.Contains(r.URL.Query().Get("query"), "FROM charges") {
+			payload = `{"branch":"main","cost_usd":"0.03"}` + "\n"
+		}
+		if _, err := w.Write([]byte(payload)); err != nil {
+			t.Errorf("write payload: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := newHistoryTestClient(t, server.URL)
+	defer client.Close()
+
+	if _, err := client.CompareBranches(context.Background(), fixtureDub, fixtureLanguage, fixtureChild, fixtureChild); err != nil {
+		t.Fatalf("CompareBranches: %v", err)
+	}
+
+	mu.Lock()
+	captured := append([]capturedHistoryRequest(nil), requests...)
+	mu.Unlock()
+	if len(captured) != 4 {
+		t.Fatalf("request count = %d, want 2 timeline and 2 cost", len(captured))
+	}
+	for _, request := range captured {
+		assertPinnedQuerySettings(t, request)
+	}
+}
+
+func TestTimelineAtRaisesTheRecursiveCTEDepth(t *testing.T) {
+	t.Parallel()
+
+	// A live server raises Code 306 once the ancestry passes the ceiling. This handler
+	// stands in for that behaviour, so the test fails if the client stops raising it.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		depth, err := strconv.Atoi(r.URL.Query().Get("max_recursive_cte_evaluation_depth"))
+		if err != nil || depth <= clickHouseDefaultRecursiveCTEDepth {
+			w.WriteHeader(http.StatusInternalServerError)
+			if _, err := w.Write([]byte("Code: 306. DB::Exception: Maximum recursive CTE evaluation depth exceeded")); err != nil {
+				t.Errorf("write depth error: %v", err)
+			}
+			return
+		}
+		if _, err := w.Write([]byte(viewAtChild)); err != nil {
+			t.Errorf("write view payload: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := newHistoryTestClient(t, server.URL)
+	defer client.Close()
+
+	got, err := client.TimelineAt(context.Background(), fixtureDub, fixtureLanguage, fixtureChild)
+	if err != nil {
+		t.Fatalf("TimelineAt against a ceiling above the ClickHouse default: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("TimelineAt returned %d segments, want 3", len(got))
+	}
+}
+
+func TestTimelineAtPinsUnquotedIntegers(t *testing.T) {
+	t.Parallel()
+
+	// A live server quotes start_ms, end_ms and state_version_seq when
+	// output_format_json_quote_64bit_integers is 1. timelineAtRow cannot decode that shape.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload := viewAtChildQuoted
+		if r.URL.Query().Get("output_format_json_quote_64bit_integers") == "0" {
+			payload = viewAtChild
+		}
+		if _, err := w.Write([]byte(payload)); err != nil {
+			t.Errorf("write view payload: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := newHistoryTestClient(t, server.URL)
+	defer client.Close()
+
+	got, err := client.TimelineAt(context.Background(), fixtureDub, fixtureLanguage, fixtureChild)
+	if err != nil {
+		t.Fatalf("TimelineAt against a server that quotes 64-bit integers by default: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("TimelineAt returned %d segments, want 3", len(got))
+	}
+	if got[0].StartMs != 1100 || got[0].VersionSeq != 2 {
+		t.Errorf("decoded segment 1 = %+v, want start 1100 at version 2", got[0])
+	}
+
+	// The quoted shape is the failure the pin avoids, so pin the failure too.
+	if _, err := decodeJSONEachRow[timelineAtRow](strings.NewReader(viewAtChildQuoted)); err == nil {
+		t.Error("timelineAtRow decoded quoted 64-bit integers, so the pinned setting guards nothing")
+	}
+}
+
+func TestSelectBranchCostWalksAncestryOnce(t *testing.T) {
+	t.Parallel()
+
+	// ClickHouse re-runs a recursive CTE for every reference. Two references measured
+	// 15.2 seconds at 1000 ancestors against a 30 second client budget. One measured 1.8.
+	if reads := strings.Count(selectBranchCost, "FROM ancestry"); reads != 1 {
+		t.Errorf("branch cost reads the ancestry CTE %d times, want 1: %s", reads, selectBranchCost)
+	}
+	if !strings.Contains(selectBranchCost, "INNER JOIN ancestry AS a ON c.commit_id = a.parent_commit_id") {
+		t.Errorf("branch cost lost the recursive parent walk: %s", selectBranchCost)
+	}
+	if strings.Contains(selectBranchCost, "IN (SELECT commit_id FROM ancestry)") {
+		t.Errorf("branch cost kept the second ancestry scan for charges: %s", selectBranchCost)
+	}
+	if !strings.Contains(selectBranchCost, "FROM charges") || strings.Contains(selectBranchCost, "charges_raw") {
+		t.Errorf("branch cost must sum the deduplicated charges view: %s", selectBranchCost)
+	}
+	assertBranchLabelToleratesEmptyAncestry(t, selectBranchCost)
+	assertNoAncestryShortcuts(t, selectBranchCost)
+}
+
+func TestReplayAtBreaksVersionTiesByCommitID(t *testing.T) {
+	t.Parallel()
+
+	// timeline_at_commit runs argMax over (version_seq, commit_id). version_seq alone left
+	// the winner unspecified, and a merge flipped a live server from text-n3 to text-n1 over
+	// unchanged rows. ReplayAt must pick the same row the tuple picks.
+	commits, snapshots := tiedHistoryFixture()
+	got, err := ReplayAt(commits, snapshots, fixtureDub, fixtureLanguage, fixtureTieHead)
+	if err != nil {
+		t.Fatalf("ReplayAt on tied version_seq: %v", err)
+	}
+	want := []TimelineSegment{queriedSegment(1, 1000, 2000, "Ada", "calm", "s", "text-n3", "tk3", 1)}
+	assertSegmentsEqual(t, "tied ancestry", got, want)
+
+	// Snapshot order must not decide the winner. The live view does not see it at all.
+	slices.Reverse(snapshots)
+	reversed, err := ReplayAt(commits, snapshots, fixtureDub, fixtureLanguage, fixtureTieHead)
+	if err != nil {
+		t.Fatalf("ReplayAt on reversed tied snapshots: %v", err)
+	}
+	assertSegmentsEqual(t, "tied ancestry reversed", reversed, want)
+
+	// version_seq still leads the tuple, so a higher version beats a higher commit id.
+	raised := append([]TimelineSegment(nil), snapshots...)
+	for i := range raised {
+		if raised[i].CommitID == fixtureTieRoot {
+			raised[i].VersionSeq = 2
+			raised[i].Text = "text-n1-raised"
+		}
+	}
+	ranked, err := ReplayAt(commits, raised, fixtureDub, fixtureLanguage, fixtureTieHead)
+	if err != nil {
+		t.Fatalf("ReplayAt on a raised version_seq: %v", err)
+	}
+	assertSegmentsEqual(t, "raised version_seq", ranked,
+		[]TimelineSegment{queriedSegment(1, 1000, 2000, "Ada", "calm", "s", "text-n1-raised", "tk1", 2)})
+}
+
 func TestRecordSegmentStateReplaysFailedDelivery(t *testing.T) {
 	t.Parallel()
 
@@ -594,6 +774,33 @@ func historyFixture() ([]Commit, []TimelineSegment) {
 	return commits, snapshots
 }
 
+// tiedHistoryFixture is a three-commit chain whose snapshots all carry version_seq 1.
+// The commits still rise, because validateCommitParent requires that. Nothing requires a
+// snapshot's version_seq to match its commit row, so this shape is reachable. The snapshots
+// arrive out of commit order, the order a live server received them.
+func tiedHistoryFixture() ([]Commit, []TimelineSegment) {
+	commits := []Commit{
+		{
+			CommitID: fixtureTieRoot, ProjectID: "project", DubID: fixtureDub, OwnerID: "owner",
+			Branch: "main", Language: fixtureLanguage, VersionSeq: 1, Message: "root",
+		},
+		{
+			CommitID: fixtureTieMid, ParentCommitID: fixtureTieRoot, ProjectID: "project", DubID: fixtureDub, OwnerID: "owner",
+			Branch: "main", Language: fixtureLanguage, VersionSeq: 2, Message: "second",
+		},
+		{
+			CommitID: fixtureTieHead, ParentCommitID: fixtureTieMid, ProjectID: "project", DubID: fixtureDub, OwnerID: "owner",
+			Branch: "main", Language: fixtureLanguage, VersionSeq: 3, Message: "third",
+		},
+	}
+	snapshots := []TimelineSegment{
+		snapshotForTest(fixtureTieHead, 1, 1, 1000, 2000, "Ada", "calm", "s", "text-n3", "tk3"),
+		snapshotForTest(fixtureTieRoot, 1, 1, 1000, 2000, "Ada", "calm", "s", "text-n1", "tk1"),
+		snapshotForTest(fixtureTieMid, 1, 1, 1000, 2000, "Ada", "calm", "s", "text-n2", "tk2"),
+	}
+	return commits, snapshots
+}
+
 func expectedReplay(head string) []TimelineSegment {
 	root1 := queriedSegment(1, 1000, 2000, "Ada", "calm", "hello", "hello", "t1", 1)
 	root2 := queriedSegment(2, 3000, 4500, "Ben", "warm", "world", "world", "t2", 1)
@@ -680,6 +887,27 @@ func assertTimelineAtQuery(t *testing.T, request capturedHistoryRequest, commitI
 		t.Errorf("query interpolated bound values: %s", statement)
 	}
 	assertNoAncestryShortcuts(t, statement)
+	assertPinnedQuerySettings(t, request)
+}
+
+// assertPinnedQuerySettings pins the two server settings the read path must not inherit.
+// A profile owns both defaults, so an unpinned request ships a feature the server can break.
+func assertPinnedQuerySettings(t *testing.T, request capturedHistoryRequest) {
+	t.Helper()
+	depth := request.params.Get("max_recursive_cte_evaluation_depth")
+	if depth != maxRecursiveCTEDepth {
+		t.Errorf("max_recursive_cte_evaluation_depth = %q, want %s", depth, maxRecursiveCTEDepth)
+	}
+	ceiling, err := strconv.Atoi(depth)
+	if err != nil {
+		t.Errorf("pinned recursive CTE depth %q is not a number", depth)
+	} else if ceiling <= clickHouseDefaultRecursiveCTEDepth {
+		t.Errorf("pinned recursive CTE depth %d does not raise the ClickHouse default of %d",
+			ceiling, clickHouseDefaultRecursiveCTEDepth)
+	}
+	if quoted := request.params.Get("output_format_json_quote_64bit_integers"); quoted != "0" {
+		t.Errorf("output_format_json_quote_64bit_integers = %q, want 0", quoted)
+	}
 }
 
 func assertNoAncestryShortcuts(t *testing.T, statement string) {

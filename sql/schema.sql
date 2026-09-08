@@ -859,6 +859,17 @@ CREATE OR REPLACE VIEW take_rates AS
 --
 -- The view exists so no reader has to rebuild this walk by hand. Filtering on version_seq
 -- or on branch instead returns the wrong ancestor set. See the commits_raw comment.
+--
+-- argMax orders on the tuple (version_seq, commit_id), not on version_seq alone. Two
+-- snapshots in one ancestry may tie on version_seq for one segment, because nothing forces
+-- a snapshot's version_seq to match its commit row. version_seq alone leaves the winner
+-- unspecified, and a background merge can change it under an unchanged table. commit_id is
+-- unique per dub, so the pair is a total order and the winner never moves. ReplayAt in
+-- internal/ledger/history.go breaks the same tie the same way.
+--
+-- state_version_seq stays max(version_seq), a plain number. internal/ledger maps it onto
+-- TimelineSegment.VersionSeq, and replay and query agree on that field only while it holds
+-- the version and not the tuple.
 CREATE OR REPLACE VIEW timeline_at_commit AS
     WITH RECURSIVE ancestry AS
     (
@@ -873,14 +884,14 @@ CREATE OR REPLACE VIEW timeline_at_commit AS
     )
     SELECT
         segment_index,
-        argMax(start_ms, version_seq)    AS start_ms,
-        argMax(end_ms, version_seq)      AS end_ms,
-        argMax(speaker, version_seq)     AS speaker,
-        argMax(emotion, version_seq)     AS emotion,
-        argMax(source_text, version_seq) AS source_text,
-        argMax(text, version_seq)        AS text,
-        argMax(take_id, version_seq)     AS take_id,
-        max(version_seq)                 AS state_version_seq
+        argMax(start_ms, (version_seq, commit_id))    AS start_ms,
+        argMax(end_ms, (version_seq, commit_id))      AS end_ms,
+        argMax(speaker, (version_seq, commit_id))     AS speaker,
+        argMax(emotion, (version_seq, commit_id))     AS emotion,
+        argMax(source_text, (version_seq, commit_id)) AS source_text,
+        argMax(text, (version_seq, commit_id))        AS text,
+        argMax(take_id, (version_seq, commit_id))     AS take_id,
+        max(version_seq)                              AS state_version_seq
     FROM timeline_state_raw FINAL
     WHERE dub_id = {dub_id:String}
       AND language = {language:String}

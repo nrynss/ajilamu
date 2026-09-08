@@ -269,16 +269,68 @@ walk `parent_commit_id` in Go. A `version_seq` range would pull sibling commits 
 branches reuse a number. A `branch` filter would drop the history a fork inherited.
 
 `ReplayAt` is a pure function over an in-memory DAG and snapshot log. It uses the same
-ancestry plus newest `version_seq` per segment rule as the view. Tests hard-code the view's
-JSONEachRow payload for root, child, and fork. They never call `ReplayAt` inside the mock.
-`TimelineAt` on that stand-in must equal `ReplayAt` field for field.
+ancestry rule as the view. Tests hard-code the view's JSONEachRow payload for root, child,
+and fork. They never call `ReplayAt` inside the mock. `TimelineAt` on that stand-in must
+equal `ReplayAt` field for field.
 
 `CompareBranches` reconstructs both heads, sums slot lengths, counts takes, and sums
 `charges.cost_usd` over each ancestry. It does not filter history by branch label. The
 label is display only.
 
-A live ClickHouse probe of the real view is not in this task's owns list. HTTP capture pins
-the query shape. A later b-track can hit a real server.
+#### Total ordering rule
+
+Both programs rank snapshots on the pair `(version_seq, commit_id)`, not on `version_seq`
+alone. Nothing forces a snapshot's `version_seq` to match its commit row, so two snapshots in
+one ancestry can tie for one segment. A tie left the winner unspecified. A forced merge on a
+real server flipped an unchanged three-row fixture from the newest commit to the oldest.
+`commit_id` is unique per dub, so the pair always separates them. ClickHouse compares
+`String` by bytes and so does Go, so the view and `ReplayAt` pick the same row.
+
+`state_version_seq` stays `max(version_seq)`, a plain number. `timelineFromView` maps it onto
+`TimelineSegment.VersionSeq`. Let the tuple reach that field and replay and query disagree.
+
+#### Settings the client pins
+
+`postClickHouse` sets two settings on every read request, beside `database` and the three
+bound parameters.
+
+`max_recursive_cte_evaluation_depth` is pinned to 5000. ClickHouse defaults it to 1000, and a
+head past 1000 ancestors then fails with Code 306 that the caller sees as a wrapped HTTP 500.
+The default belongs to the server, so a settings profile can shorten a shipped feature with no
+code change. 5000 is the measured trade. The walk costs about 2 milliseconds per ancestor on
+ClickHouse 26.8.2.7, so the deepest allowed head cost about 10 seconds against the 30 second
+client timeout in `client.go`. A higher ceiling spends that budget instead of raising an
+error, and 10000 ancestors measured 22 and 25 seconds for the two statements. Past the ceiling
+the caller gets Code 306, which names the setting, rather than an opaque timeout.
+
+`output_format_json_quote_64bit_integers` is pinned to 0. At 1 the view returns `start_ms`,
+`end_ms` and `state_version_seq` as quoted strings, and `timelineAtRow` fails to decode them.
+The runtime default is 0, but the setting's own description says integers are quoted by
+default, so the client does not inherit it.
+
+#### The view changed and must be redeployed
+
+`sql/schema.sql` now defines `timeline_at_commit` with `argMax(..., (version_seq, commit_id))`.
+A live database still holds the old definition until someone runs the file against it. Run
+`sql/schema.sql` into the target database before trusting the tie-break there. The file uses
+`CREATE OR REPLACE VIEW`, so a rerun is safe and keeps every row.
+
+#### What rests on a test and what rests on a measurement
+
+Tests pin the pure Go and the request shape. `TestReplayAtBreaksVersionTiesByCommitID` pins
+the tie-break. `TestHistoryQueriesPinServerSettings` and `assertPinnedQuerySettings` pin both
+settings on the wire. `TestTimelineAtRaisesTheRecursiveCTEDepth` and
+`TestTimelineAtPinsUnquotedIntegers` stand a mock in for the two server behaviours. Only a
+live server proves the view's ordering, the Code 306 boundary and the query timings. Those
+numbers came off a local ClickHouse 26.8.2.7, and ClickHouse Cloud runs its own profile,
+storage tier and merge schedule.
+
+`selectBranchCost` walks the ancestry once. The earlier shape named the CTE from two scalar
+subqueries and ClickHouse re-ran the walk for each. It also reads `commits_raw FINAL` rather
+than the `commits` view, which is what the view itself already does and which returns the same
+rows. Together those took the statement from 15.2 seconds to 1.8 at 1000 ancestors. The
+`any(branch)` guard from commit 3c1035e stays, so a head still sitting in the write queue
+returns an empty label rather than Code 125.
 
 The package now has a snapshot writer, a view query, a replay pin, branch compare, and 503
 replay. The view names the ranked version `state_version_seq`, not `version_seq`. Decode

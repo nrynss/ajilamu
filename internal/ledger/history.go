@@ -17,7 +17,36 @@ const insertTimelineState = "INSERT INTO timeline_state_raw (commit_id, project_
 
 const selectTimelineAt = "SELECT * FROM timeline_at_commit(dub_id = {dub_id:String}, language = {language:String}, commit_id = {commit_id:String}) FORMAT JSONEachRow"
 
-const selectBranchCost = "WITH RECURSIVE ancestry AS (SELECT commit_id, parent_commit_id, branch FROM commits WHERE dub_id = {dub_id:String} AND commit_id = {commit_id:String} UNION ALL SELECT c.commit_id, c.parent_commit_id, c.branch FROM commits AS c INNER JOIN ancestry AS a ON c.commit_id = a.parent_commit_id WHERE c.dub_id = {dub_id:String}) SELECT (SELECT any(branch) FROM ancestry WHERE commit_id = {commit_id:String}) AS branch, coalesce((SELECT sum(cost_usd) FROM charges WHERE dub_id = {dub_id:String} AND language = {language:String} AND commit_id IN (SELECT commit_id FROM ancestry)), 0) AS cost_usd FORMAT JSONEachRow"
+// selectBranchCost walks the ancestry once and reads both answers off that one walk.
+//
+// The earlier shape named the ancestry CTE from two scalar subqueries, one for the branch
+// label and one for the charge sum. ClickHouse re-ran the recursive walk for each, so the
+// statement cost two walks. Joining the charges onto the ancestry rows instead lets one
+// GROUP BY produce the label and the sum together.
+//
+// It reads commits_raw FINAL rather than the commits view, which is what timeline_at_commit
+// already does. The commits view is SELECT *, ingested_at FROM commits_raw FINAL, so the row
+// set is identical, but naming the table keeps the recursion from materialising every column
+// at every step.
+//
+// any(branch) stays. A bare scalar subquery over an empty ancestry raises Code 125, so a head
+// still sitting in the write queue would fail the whole compare. See commit 3c1035e. The
+// aggregate returns an empty label and a zero cost for that head instead.
+const selectBranchCost = "WITH RECURSIVE ancestry AS (SELECT commit_id, parent_commit_id, branch FROM commits_raw FINAL WHERE dub_id = {dub_id:String} AND commit_id = {commit_id:String} UNION ALL SELECT c.commit_id, c.parent_commit_id, c.branch FROM commits_raw AS c FINAL INNER JOIN ancestry AS a ON c.commit_id = a.parent_commit_id WHERE c.dub_id = {dub_id:String}) SELECT ifNull(any(branch), '') AS branch, coalesce(sum(cost_usd), 0) AS cost_usd FROM (SELECT if(a.commit_id = {commit_id:String}, a.branch, NULL) AS branch, ch.cost_usd AS cost_usd FROM ancestry AS a LEFT JOIN (SELECT commit_id, cost_usd FROM charges WHERE dub_id = {dub_id:String} AND language = {language:String}) AS ch ON ch.commit_id = a.commit_id) FORMAT JSONEachRow"
+
+// maxRecursiveCTEDepth caps the ancestry walk in selectTimelineAt and selectBranchCost.
+//
+// ClickHouse defaults max_recursive_cte_evaluation_depth to 1000. A head past 1000 ancestors
+// then fails with Code 306 and the caller sees a wrapped HTTP 500. The default also belongs
+// to the server, so a settings profile can lower it under a shipped feature with no warning.
+// Pinning it per request takes that decision back from the profile.
+//
+// 5000 is the measured trade. On ClickHouse 26.8.2.7 the walk runs about 2 milliseconds per
+// ancestor, so the deepest allowed head costs roughly 10 seconds against the 30 second client
+// budget in client.go. A larger ceiling spends that budget instead of raising an error: at
+// 10000 ancestors the same two statements measured 22 and 25 seconds. Past the ceiling the
+// caller gets Code 306, which names the setting, rather than an opaque client timeout.
+const maxRecursiveCTEDepth = "5000"
 
 // TimelineSegment is one full segment snapshot at one commit.
 // Writers copy every field forward. Readers never merge two rows.
@@ -104,8 +133,17 @@ func (c *Client) TimelineAt(ctx context.Context, dubID, language, commitID strin
 }
 
 // ReplayAt reconstructs timeline state at commitID from an in-memory DAG and snapshot log.
-// It walks parent_commit_id then keeps the newest version_seq per segment, matching timeline_at_commit.
+// It walks parent_commit_id then keeps the highest (version_seq, commit_id) per segment.
 // Production time travel queries the view. This function exists to pin replay against that query.
+//
+// ReplayAt and timeline_at_commit return the same rows on an acyclic ancestry of at most
+// maxRecursiveCTEDepth commits whose snapshots this DAG and this database both hold. Both
+// order on the same tuple, so a tie in version_seq no longer splits them.
+//
+// They part on three inputs the view cannot serve. An ancestry longer than the ceiling raises
+// Code 306 through the view and replays here. A cycle in commits_raw does the same, because
+// commitAncestry breaks on a repeat and the database does not. A snapshot the caller never
+// wrote to timeline_state_raw is invisible to the view and visible here.
 func ReplayAt(commits []Commit, snapshots []TimelineSegment, dubID, language, commitID string) ([]TimelineSegment, error) {
 	if err := validateHistoryQuery(dubID, language, commitID); err != nil {
 		return nil, err
@@ -120,7 +158,7 @@ func ReplayAt(commits []Commit, snapshots []TimelineSegment, dubID, language, co
 			continue
 		}
 		prev, ok := best[snap.SegmentIndex]
-		if !ok || snap.VersionSeq >= prev.VersionSeq {
+		if !ok || newerSnapshot(snap, prev) {
 			best[snap.SegmentIndex] = snap
 		}
 	}
@@ -202,6 +240,13 @@ func (c *Client) postClickHouse(ctx context.Context, statement, dubID, language,
 	query.Set("param_dub_id", dubID)
 	query.Set("param_language", language)
 	query.Set("param_commit_id", commitID)
+	// See maxRecursiveCTEDepth. Both read statements walk a recursive CTE.
+	query.Set("max_recursive_cte_evaluation_depth", maxRecursiveCTEDepth)
+	// timelineAtRow decodes start_ms, end_ms and state_version_seq as int64 and uint64. At 1
+	// this setting returns those three as quoted strings and the decode fails. The runtime
+	// default is 0, but the setting's own description says integers are quoted by default, so
+	// a server profile may turn it on. Pin it rather than inherit it.
+	query.Set("output_format_json_quote_64bit_integers", "0")
 	requestURL.RawQuery = query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL.String(), bytes.NewReader(nil))
 	if err != nil {
@@ -291,6 +336,21 @@ func commitAncestry(commits []Commit, dubID, commitID string) map[string]struct{
 		current = commit.ParentCommitID
 	}
 	return seen
+}
+
+// newerSnapshot reports whether a outranks b under the ordering timeline_at_commit uses.
+//
+// The view runs argMax over the tuple (version_seq, commit_id). version_seq alone is not a
+// total order, because nothing forces a snapshot's version_seq to match its commit row, and
+// two snapshots in one ancestry can carry the same number for one segment. commit_id is
+// unique per dub, so the pair always separates them.
+//
+// ClickHouse compares String by bytes and so does Go, so both sides pick the same row.
+func newerSnapshot(a, b TimelineSegment) bool {
+	if a.VersionSeq != b.VersionSeq {
+		return a.VersionSeq > b.VersionSeq
+	}
+	return a.CommitID > b.CommitID
 }
 
 func cmpTimelineSegment(a, b TimelineSegment) int {
