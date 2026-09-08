@@ -1,3 +1,124 @@
+<script lang="ts">
+  const nanodollarsPerDollar = 1_000_000_000;
+
+  // This reference is the completed P2 fixture ledger, not a made-up pipeline model.
+  // testdata/wire/total.json records $0.023414 for its 75.008267-second NASA clip.
+  // P2 records every segmentation, translation, and voice-rendering charge once.
+  // The completed ledger remains the final cost after the job runs.
+  const p2ReferenceDurationSeconds = 75.008267;
+  const p2ReferenceNanodollars = 23_414_000;
+  const projectedNanodollarsPerSecond = p2ReferenceNanodollars / p2ReferenceDurationSeconds;
+
+  let videoFile = $state<File | null>(null);
+  let musicFile = $state<File | null>(null);
+  let durationSeconds = $state<number | null>(null);
+  let estimateError = $state("");
+  let submitError = $state("");
+  let uploading = $state(false);
+  let videoDragging = $state(false);
+  let musicDragging = $state(false);
+  let videoSelection = $state(0);
+
+  let projectedFee = $derived(durationSeconds === null ? null : projectFee(durationSeconds));
+  let formattedFee = $derived(projectedFee === null ? "" : formatCurrency(projectedFee));
+  let formattedDuration = $derived(durationSeconds === null ? "" : formatDuration(durationSeconds));
+
+  function projectFee(seconds: number): number {
+    return Math.round(seconds * projectedNanodollarsPerSecond) / nanodollarsPerDollar;
+  }
+
+  function formatCurrency(value: number): string {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(value);
+  }
+
+  function formatDuration(seconds: number): string {
+    const rounded = Math.round(seconds);
+    return `${Math.floor(rounded / 60)}m ${rounded % 60}s`;
+  }
+
+  async function chooseVideo(file: File | undefined): Promise<void> {
+    if (!file) return;
+    const selection = ++videoSelection;
+    videoFile = file;
+    durationSeconds = null;
+    estimateError = "";
+    submitError = "";
+    const url = URL.createObjectURL(file);
+    const probe = document.createElement("video");
+    probe.preload = "metadata";
+    probe.src = url;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        probe.onloadedmetadata = () => resolve();
+        probe.onerror = () => reject(new Error("metadata unavailable"));
+      });
+      if (!Number.isFinite(probe.duration) || probe.duration <= 0) {
+        throw new Error("invalid duration");
+      }
+      if (selection === videoSelection) durationSeconds = probe.duration;
+    } catch {
+      if (selection === videoSelection) {
+        estimateError = "We could not read this video’s duration. Choose a playable video to see its projected fee.";
+      }
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  function chooseMusic(file: File | undefined): void {
+    if (!file) return;
+    musicFile = file;
+    submitError = "";
+  }
+
+  function videoInput(event: Event): void {
+    chooseVideo((event.currentTarget as HTMLInputElement).files?.[0]);
+  }
+
+  function musicInput(event: Event): void {
+    chooseMusic((event.currentTarget as HTMLInputElement).files?.[0]);
+  }
+
+  function videoDrop(event: DragEvent): void {
+    event.preventDefault();
+    videoDragging = false;
+    chooseVideo(event.dataTransfer?.files[0]);
+  }
+
+  function musicDrop(event: DragEvent): void {
+    event.preventDefault();
+    musicDragging = false;
+    chooseMusic(event.dataTransfer?.files[0]);
+  }
+
+  async function submit(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (!videoFile || durationSeconds === null || uploading) return;
+    uploading = true;
+    submitError = "";
+    const body = new FormData();
+    body.append("video", videoFile);
+    if (musicFile) body.append("music", musicFile);
+    body.append("language", "ml");
+
+    try {
+      const response = await fetch("/api/dubs/new", { method: "POST", body });
+      if (!response.ok) throw new Error(await response.text());
+      const uploaded = (await response.json()) as { id?: string };
+      if (!uploaded.id) throw new Error("The upload did not return a project id.");
+      window.location.assign(`/d/${encodeURIComponent(uploaded.id)}`);
+    } catch (error) {
+      submitError = error instanceof Error && error.message ? error.message : "The upload did not finish. Try again.";
+      uploading = false;
+    }
+  }
+</script>
+
 <svelte:head>
   <title>Ajilamu · Create a dub</title>
 </svelte:head>
@@ -5,73 +126,81 @@
 <section class="page-shell">
   <p class="label">New dub</p>
   <h1>Start with the picture.</h1>
-  <p class="intro">Add your video, choose where it will play, then review the cost before any work begins.</p>
+  <p class="intro">Add your video, choose where it will play, then review its fee before any work begins.</p>
 
-  <form class="create-form">
-    <label class="drop-zone" for="video">
-      <span class="drop-title">Drop a video here</span>
-      <span class="drop-copy">or choose a video file from your computer</span>
-      <input id="video" name="video" type="file" accept="video/*" />
+  <form class="create-form" onsubmit={submit}>
+    <label
+      class:dragging={videoDragging}
+      class="drop-zone"
+      for="video"
+      ondragover={(event) => event.preventDefault()}
+      ondragenter={() => (videoDragging = true)}
+      ondragleave={() => (videoDragging = false)}
+      ondrop={videoDrop}
+    >
+      <span class="drop-title">{videoFile ? videoFile.name : "Drop a video here"}</span>
+      <span class="drop-copy">{videoFile ? "Choose another video" : "or choose a video file from your computer"}</span>
+      <input id="video" class="file-picker" name="video" type="file" accept="video/*" onchange={videoInput} />
     </label>
 
-    <label class="music-option" for="music">
-      <span>Add your music track</span>
-      <span class="optional">Optional</span>
-      <input id="music" name="music" type="file" accept="audio/*" />
+    <label
+      class:dragging={musicDragging}
+      class="music-option"
+      for="music"
+      ondragover={(event) => event.preventDefault()}
+      ondragenter={() => (musicDragging = true)}
+      ondragleave={() => (musicDragging = false)}
+      ondrop={musicDrop}
+    >
+      <span class="drop-title">{musicFile ? musicFile.name : "Add your music track"}</span>
+      <span class="optional">{musicFile ? "It will play cleanly beneath the dub." : "Optional"}</span>
+      <input id="music" class="file-picker" name="music" type="file" accept="audio/*" onchange={musicInput} />
     </label>
 
-    <label class="field-label" for="languages">Languages</label>
-    <select id="languages" name="languages">
+    <label class="field-label" for="language">Language</label>
+    <select id="language" name="language">
       <option value="ml">Malayalam</option>
     </select>
 
-    <div class="cost-note">
-      <span class="label">Projected cost</span>
-      <strong class="numeric">$0.02</strong>
-      <p>This covers one segmenting pass, translations, and voice renders for this sample clip.</p>
+    <div class="cost-note" aria-live="polite">
+      <span class="label">Projected fee</span>
+      {#if formattedFee}
+        <strong class="numeric">{formattedFee}</strong>
+        <p>Estimated from this video’s {formattedDuration} runtime. It includes one analysis pass, translation, and voice rendering.</p>
+      {:else}
+        <strong>Choose a video to estimate its fee.</strong>
+        <p>The estimate uses the video runtime and a completed project’s measured cost.</p>
+      {/if}
+      {#if estimateError}<p class="error">{estimateError}</p>{/if}
     </div>
+
+    {#if submitError}<p class="error" role="alert">{submitError}</p>{/if}
 
     <div class="actions">
       <a href="/d/fixture" class="sample-link">Try sample video, a NASA 75-second clip</a>
-      <button class="start" type="submit">Start dubbing</button>
+      <button class="start" type="submit" disabled={!videoFile || durationSeconds === null || uploading}>
+        {uploading ? "Uploading…" : "Start dubbing"}
+      </button>
     </div>
   </form>
 </section>
 
 <style>
-  .page-shell {
-    margin: 0 auto;
-    max-width: 660px;
-    padding: 48px 24px;
-  }
+  .page-shell { margin: 0 auto; max-width: 660px; padding: 48px 24px; }
+  h1, p { margin: 0; }
+  h1 { font-size: 20px; letter-spacing: -0.02em; margin: 4px 0 6px; }
+  .intro { color: var(--dim); max-width: 570px; }
+  .create-form { display: grid; gap: 14px; margin-top: 28px; }
 
-  h1,
-  p {
-    margin: 0;
-  }
-
-  h1 {
-    font-size: 20px;
-    letter-spacing: -0.02em;
-    margin: 4px 0 6px;
-  }
-
-  .intro {
-    color: var(--dim);
-    max-width: 570px;
-  }
-
-  .create-form {
-    display: grid;
-    gap: 14px;
-    margin-top: 28px;
+  .drop-zone, .music-option {
+    background: var(--surface);
+    border: 1px dashed var(--line);
+    border-radius: var(--radius-container);
+    cursor: pointer;
   }
 
   .drop-zone {
     align-items: center;
-    background: var(--surface);
-    border: 1px dashed var(--line);
-    border-radius: var(--radius-container);
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -81,81 +210,34 @@
     text-align: center;
   }
 
-  .drop-title {
-    font-size: 14px;
-    font-weight: 650;
-  }
-
-  .drop-copy,
-  .optional,
-  .cost-note p {
-    color: var(--dim);
-    font-size: 11.5px;
-  }
-
-  input[type="file"] {
-    color: var(--dim);
-    margin-top: 8px;
-    max-width: 100%;
-  }
-
   .music-option {
     align-items: center;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-panel);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 11px;
-  }
-
-  .music-option input {
-    margin: 3px 0 0;
-    width: 100%;
-  }
-
-  .field-label {
-    color: var(--dim);
-    font-size: 11.5px;
-    margin-bottom: -8px;
-  }
-
-  select {
-    background: var(--surface);
-    border: 1px solid var(--line);
-    color: var(--text);
-    padding: 8px;
-  }
-
-  .cost-note {
-    background: var(--accent-q);
-    border-radius: var(--radius-panel);
+    border-style: solid;
+    display: grid;
+    gap: 4px 12px;
+    grid-template-columns: 1fr auto;
     padding: 13px;
   }
 
-  .cost-note strong {
-    display: block;
-    font-size: 16px;
-    margin: 2px 0;
-  }
+  .dragging { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-q); }
+  .drop-title { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+  .drop-copy, .optional, .cost-note p { color: var(--dim); font-size: 11.5px; }
+  .file-picker { color: var(--dim); font-size: 11.5px; margin-top: 8px; max-width: 100%; }
+  .music-option .file-picker { grid-column: 1 / -1; margin-top: 2px; }
+  .field-label { color: var(--dim); font-size: 11.5px; margin-bottom: -8px; }
+  select { background: var(--surface); border: 1px solid var(--line); color: var(--text); padding: 8px; }
+  .cost-note { background: var(--accent-q); border-radius: var(--radius-panel); padding: 13px; }
+  .cost-note strong { display: block; font-size: 16px; margin: 2px 0; }
+  .error { color: #7a271a !important; margin-top: 8px !important; }
+  :global(:root[data-theme="dark"]) .error { color: #ffd3ce !important; }
+  .actions { align-items: center; display: flex; gap: 14px; justify-content: space-between; }
+  .sample-link { color: var(--accent); font-size: 11.5px; }
+  .start { background: var(--accent); border-color: var(--accent); color: var(--surface); padding: 7px 10px; }
+  .start:disabled { cursor: not-allowed; opacity: 0.55; }
 
-  .actions {
-    align-items: center;
-    display: flex;
-    gap: 14px;
-    justify-content: space-between;
-  }
-
-  .sample-link {
-    color: var(--accent);
-    font-size: 11.5px;
-  }
-
-  .start {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--surface);
-    padding: 7px 10px;
+  @media (max-width: 480px) {
+    .page-shell { padding: 32px 16px; }
+    .actions { align-items: stretch; flex-direction: column; }
+    .start { width: 100%; }
   }
 </style>
