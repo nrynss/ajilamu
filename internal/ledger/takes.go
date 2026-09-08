@@ -87,22 +87,36 @@ type chargeRow struct {
 	UnitPriceUSD string `json:"unit_price_usd"`
 }
 
-// RecordTake persists one take attempt followed by the individual calls that paid for it.
-// A failed send remains in the durable queue and returns ErrPending through EnqueueJSON.
+// RecordTake persists one take attempt and the individual calls that paid for it.
+// It journals the take and every charge row before the first Flush.
+// A failed send remains in the durable queue and returns ErrPending.
 func (c *Client) RecordTake(ctx context.Context, attempt TakeAttempt) error {
 	take, charges, err := attempt.rows()
 	if err != nil {
 		return err
 	}
-	if err := c.EnqueueJSON(ctx, takeInsert, take); err != nil {
+	if err := c.journalJSON(takeInsert, take); err != nil {
 		return fmt.Errorf("enqueue take row: %w", err)
 	}
 	for _, charge := range charges {
-		if err := c.EnqueueJSON(ctx, chargeInsert, charge); err != nil {
+		if err := c.journalJSON(chargeInsert, charge); err != nil {
 			return fmt.Errorf("enqueue take charge: %w", err)
 		}
 	}
-	return nil
+	return c.Flush(ctx)
+}
+
+// journalJSON stores one JSONEachRow payload without flushing.
+func (c *Client) journalJSON(insert string, row any) error {
+	if err := validateInsert(insert); err != nil {
+		return err
+	}
+	body, err := json.Marshal(row)
+	if err != nil {
+		return fmt.Errorf("encode ledger row: %w", err)
+	}
+	body = append(body, '\n')
+	return c.queue.Enqueue(Entry{Query: insert, Body: body})
 }
 
 func (a TakeAttempt) rows() (takeRow, []chargeRow, error) {

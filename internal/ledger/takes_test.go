@@ -3,12 +3,14 @@ package ledger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -182,6 +184,181 @@ func TestRecordTakeFixtureCapture(t *testing.T) {
 			t.Errorf("retry charge identity changed: %#v", row)
 		}
 	}
+}
+
+func TestRecordTakeJournalsChargesBeforeFailedFlush(t *testing.T) {
+	t.Parallel()
+
+	type capturedDrop struct {
+		status int
+		query  string
+		body   []byte
+		rows   []map[string]any
+	}
+	var (
+		mu       sync.Mutex
+		requests []capturedDrop
+		okOnce   sync.Once
+	)
+	recovery := make(chan struct{})
+	delivered := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read insert body: %v", err)
+			http.Error(w, "read body", http.StatusInternalServerError)
+			return
+		}
+		var rows []map[string]any
+		for _, line := range splitJSONRows(t, body) {
+			var row map[string]any
+			if err := json.Unmarshal(line, &row); err != nil {
+				t.Errorf("decode JSONEachRow payload: %v", err)
+				http.Error(w, "decode row", http.StatusBadRequest)
+				return
+			}
+			rows = append(rows, row)
+		}
+		status := http.StatusServiceUnavailable
+		select {
+		case <-recovery:
+			status = http.StatusOK
+			okOnce.Do(func() { close(delivered) })
+		default:
+		}
+		mu.Lock()
+		requests = append(requests, capturedDrop{status: status, query: r.URL.Query().Get("query"), body: body, rows: rows})
+		mu.Unlock()
+		w.WriteHeader(status)
+	}))
+	defer server.Close()
+
+	client := fixtureLedgerClient(t, server.URL)
+	defer client.Close()
+
+	segment := fixtureSegmentByID(t, 8)
+	attempt := fixtureTakeAttempt(segment, 1, 4200, types.RepairNone)
+	attempt.CommitID = "commit-drop"
+	_, charges, err := attempt.rows()
+	if err != nil {
+		t.Fatalf("take rows: %v", err)
+	}
+	if len(charges) == 0 {
+		t.Fatal("fixture take has no charge rows")
+	}
+	wantPending := 1 + len(charges)
+
+	if err := client.RecordTake(context.Background(), attempt); !errors.Is(err, ErrPending) {
+		t.Fatalf("RecordTake drop error = %v, want ErrPending", err)
+	}
+	if pending, err := client.Pending(); err != nil || pending != wantPending {
+		t.Fatalf("Pending after failed delivery = %d, %v, want %d, nil", pending, err, wantPending)
+	}
+
+	journalTakes, journalCharges := decodeDurableTakeJournal(t, client.queue.dir)
+	if len(journalTakes) != 1 {
+		t.Fatalf("durable takes_raw files = %d, want 1", len(journalTakes))
+	}
+	if len(journalCharges) != len(charges) {
+		t.Fatalf("durable charges_raw files = %d, want %d", len(journalCharges), len(charges))
+	}
+	if journalTakes[0]["take_id"] != "take-8-1" || journalTakes[0]["commit_id"] != "commit-drop" {
+		t.Fatalf("durable take identity = take_id=%v commit_id=%v, want take-8-1 commit-drop", journalTakes[0]["take_id"], journalTakes[0]["commit_id"])
+	}
+	for i, row := range journalCharges {
+		if row["take_id"] != "take-8-1" || row["commit_id"] != "commit-drop" {
+			t.Errorf("durable charge %d identity = take_id=%v commit_id=%v, want take-8-1 commit-drop", i, row["take_id"], row["commit_id"])
+		}
+	}
+
+	close(recovery)
+	if err := client.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush replay: %v", err)
+	}
+	select {
+	case <-delivered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("replay did not deliver the recovered take")
+	}
+	if pending, err := client.Pending(); err != nil || pending != 0 {
+		t.Fatalf("Pending after replay = %d, %v, want 0, nil", pending, err)
+	}
+
+	mu.Lock()
+	got := append([]capturedDrop(nil), requests...)
+	mu.Unlock()
+	var recoveredTakes, recoveredCharges []map[string]any
+	for _, insert := range got {
+		if insert.status != http.StatusOK {
+			continue
+		}
+		switch insert.query {
+		case takeInsert:
+			for _, row := range insert.rows {
+				if row["commit_id"] == "commit-drop" && row["take_id"] == "take-8-1" {
+					recoveredTakes = append(recoveredTakes, row)
+				}
+			}
+		case chargeInsert:
+			for _, row := range insert.rows {
+				if row["commit_id"] == "commit-drop" && row["take_id"] == "take-8-1" {
+					recoveredCharges = append(recoveredCharges, row)
+				}
+			}
+		}
+	}
+	if len(recoveredTakes) == 0 {
+		t.Fatal("recovered HTTP has no takes_raw body for take-8-1 commit-drop")
+	}
+	if len(recoveredCharges) != len(charges) {
+		t.Fatalf("recovered HTTP charges_raw rows for commit-drop = %d, want %d", len(recoveredCharges), len(charges))
+	}
+}
+
+func fixtureSegmentByID(t *testing.T, id int) types.Segment {
+	t.Helper()
+	for _, segment := range readFixtureSegments(t) {
+		if segment.ID == id {
+			return segment
+		}
+	}
+	t.Fatalf("fixture missing segment %d", id)
+	return types.Segment{}
+}
+
+func decodeDurableTakeJournal(t *testing.T, dir string) ([]map[string]any, []map[string]any) {
+	t.Helper()
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read durable queue: %v", err)
+	}
+	var takes, charges []map[string]any
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
+			continue
+		}
+		payload, err := os.ReadFile(filepath.Join(dir, file.Name()))
+		if err != nil {
+			t.Fatalf("read journal %s: %v", file.Name(), err)
+		}
+		var entry Entry
+		if err := json.Unmarshal(payload, &entry); err != nil {
+			t.Fatalf("decode journal %s: %v", file.Name(), err)
+		}
+		var row map[string]any
+		if err := json.Unmarshal(entry.Body, &row); err != nil {
+			t.Fatalf("decode journal body %s: %v", file.Name(), err)
+		}
+		switch entry.Query {
+		case takeInsert:
+			takes = append(takes, row)
+		case chargeInsert:
+			charges = append(charges, row)
+		default:
+			t.Errorf("unexpected journal query in %s: %q", file.Name(), entry.Query)
+		}
+	}
+	return takes, charges
 }
 
 func equalJSONPeaks(got any, want []uint8) bool {
