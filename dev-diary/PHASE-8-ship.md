@@ -56,6 +56,12 @@ Provision the machine described in [infrastructure.md](infrastructure.md). Run t
 the mcp-clickhouse container for agent reads, Caddy as reverse proxy, a 50 GB SSD at
 `/data/storage`, and the archive bucket.
 
+Provision configuration the way "Configuration and Secrets" in that document describes. Create
+each Secret Manager secret, grant `roles/secretmanager.secretAccessor` on the individual secret
+rather than the project, and put the non-secret settings in the systemd unit. The `ExecStartPre`
+step fetches secrets to `/run/ajilamu/env` on tmpfs at mode `0600`. No `.env` file ships to the
+host, and `GOOGLE_APPLICATION_CREDENTIALS` stays unset so ADC reads the metadata server.
+
 Serve video over HTTP range requests so scrubbing stays instant.
 
 Keep the box reproducible from the repository. If the instance dies, the scripts rebuild it.
