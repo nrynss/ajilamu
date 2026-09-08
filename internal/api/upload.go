@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -157,6 +158,10 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "a target language is required", http.StatusBadRequest)
 		return
 	}
+	if err := writeUploadRecord(staging, upload); err != nil {
+		http.Error(w, "finalize upload", http.StatusInternalServerError)
+		return
+	}
 
 	projectDir := filepath.Join(h.StorageDir, id)
 	if err := os.Rename(staging, projectDir); err != nil {
@@ -236,6 +241,65 @@ func safeExtension(filename string) string {
 		}
 	}
 	return extension
+}
+
+const uploadRecordName = "project.json"
+
+type uploadRecord struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Language  string `json:"language"`
+	CreatedAt string `json:"created_at"`
+}
+
+func writeUploadRecord(dir string, upload Upload) error {
+	record := uploadRecord{
+		ID:        upload.ID,
+		Title:     upload.Video.Name,
+		Language:  upload.Language,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, uploadRecordName), payload, 0o600)
+}
+
+// ListUploadSummaries reads persisted upload records from StorageDir.
+// It skips staging directories and unreadable entries so a partial write
+// cannot hide the rest of the index.
+func ListUploadSummaries(storageDir string) []DubSummary {
+	if storageDir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(storageDir)
+	if err != nil {
+		return nil
+	}
+	summaries := make([]DubSummary, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		payload, err := os.ReadFile(filepath.Join(storageDir, entry.Name(), uploadRecordName))
+		if err != nil {
+			continue
+		}
+		var record uploadRecord
+		if err := json.Unmarshal(payload, &record); err != nil || record.ID == "" {
+			continue
+		}
+		summaries = append(summaries, DubSummary{
+			ID:        record.ID,
+			Title:     record.Title,
+			Languages: []string{record.Language},
+			Readiness: ReadinessPending,
+			CreatedAt: record.CreatedAt,
+			UpdatedAt: record.CreatedAt,
+		})
+	}
+	return summaries
 }
 
 func uploadID() (string, error) {

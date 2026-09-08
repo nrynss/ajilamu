@@ -129,6 +129,9 @@ func TestServerMountsUploadHandlerOnPersistentStorage(t *testing.T) {
 	server, err := api.NewServer(cfg, api.ServerOptions{
 		FrontendRoot: testFrontend(t),
 		Upload:       api.NewUploadHandler(storage),
+		Index: api.IndexHandlerFrom(func() []api.DubSummary {
+			return api.ListUploadSummaries(storage)
+		}),
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -174,6 +177,22 @@ func TestServerMountsUploadHandlerOnPersistentStorage(t *testing.T) {
 	}
 	if string(stored) != "fixture video" {
 		t.Fatalf("persisted video = %q, want fixture content", stored)
+	}
+
+	indexResponse, err := http.Get(httpServer.URL + "/api/dubs")
+	if err != nil {
+		t.Fatalf("get index: %v", err)
+	}
+	defer indexResponse.Body.Close()
+	if indexResponse.StatusCode != http.StatusOK {
+		t.Fatalf("index status = %d, want %d", indexResponse.StatusCode, http.StatusOK)
+	}
+	var index api.DubIndex
+	if err := json.NewDecoder(indexResponse.Body).Decode(&index); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	if len(index.Dubs) != 1 || index.Dubs[0].ID != upload.ID {
+		t.Fatalf("index dubs = %+v, want uploaded project %q", index.Dubs, upload.ID)
 	}
 }
 

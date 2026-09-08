@@ -56,19 +56,23 @@ func run() error {
 		ledgerFlusher = eventLedger
 	}
 
+	uploadDir := filepath.Join(cfg.DataDir, "uploads")
+	fixtureSummary := api.DubSummary{
+		ID:               dub.ID,
+		Title:            dub.Title,
+		Languages:        languageCodes(dub),
+		Readiness:        dub.Readiness,
+		TotalNanodollars: dub.Total.TotalNanodollars,
+		CreatedAt:        dub.CreatedAt,
+		UpdatedAt:        dub.UpdatedAt,
+	}
 	server, err := api.NewServer(cfg, api.ServerOptions{
 		FrontendRoot: frontendRoot(cfg),
 		Ledger:       ledgerFlusher,
-		Upload:       api.NewUploadHandler(filepath.Join(cfg.DataDir, "uploads")),
-		Index: api.IndexHandler([]api.DubSummary{{
-			ID:               dub.ID,
-			Title:            dub.Title,
-			Languages:        languageCodes(dub),
-			Readiness:        dub.Readiness,
-			TotalNanodollars: dub.Total.TotalNanodollars,
-			CreatedAt:        dub.CreatedAt,
-			UpdatedAt:        dub.UpdatedAt,
-		}}),
+		Upload:       api.NewUploadHandler(uploadDir),
+		Index: api.IndexHandlerFrom(func() []api.DubSummary {
+			return append([]api.DubSummary{fixtureSummary}, api.ListUploadSummaries(uploadDir)...)
+		}),
 		// T7.4a lands persistence. Until then the handler answers 503.
 		Config: api.ConfigHandler(nil),
 	})

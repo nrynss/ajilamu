@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestUploadHandlerStoresCompleteProject(t *testing.T) {
@@ -54,6 +55,26 @@ func TestUploadHandlerStoresCompleteProject(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != upload.ID {
 		t.Fatalf("storage entries = %#v, want only %q", entries, upload.ID)
+	}
+
+	summaries := ListUploadSummaries(storage)
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %d, want 1", len(summaries))
+	}
+	if summaries[0].ID != upload.ID {
+		t.Fatalf("summary id = %q, want %q", summaries[0].ID, upload.ID)
+	}
+	if summaries[0].Title != "launch.MP4" {
+		t.Fatalf("summary title = %q, want launch.MP4", summaries[0].Title)
+	}
+	if got := strings.Join(summaries[0].Languages, ","); got != "ml" {
+		t.Fatalf("summary languages = %q, want ml", got)
+	}
+	if summaries[0].Readiness != ReadinessPending {
+		t.Fatalf("summary readiness = %q, want %s", summaries[0].Readiness, ReadinessPending)
+	}
+	if _, err := time.Parse(time.RFC3339, summaries[0].CreatedAt); err != nil {
+		t.Fatalf("summary created_at = %q, want RFC 3339: %v", summaries[0].CreatedAt, err)
 	}
 }
 

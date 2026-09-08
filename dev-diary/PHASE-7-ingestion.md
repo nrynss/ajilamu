@@ -223,8 +223,8 @@ interface genuinely nil.
 names the static root. `/api/ledger/ready` pings ClickHouse. Config stays unwired
 (`ConfigHandler(nil)` returns 503) until T7.4a.
 
-T7.4 added `IndexHandlerFrom`. This land still mounts the snapshot constructor with the
-fixture project. A later change should pass a provider that includes uploads.
+The index provider returns the fixture summary plus `ListUploadSummaries` of the
+upload directory. A new upload appears on `GET /api/dubs` on the next request.
 
 Round 4 review returned APPROVE with zero residue.
 
@@ -245,8 +245,8 @@ T7.0 mounts the handler at `POST /api/dubs/new`.
 `IndexHandlerFrom(func() []DubSummary)` queries a provider on each GET request. It copies the
 result, sorts by descending RFC 3339 creation time, and serves `DubIndex` JSON without caching.
 `IndexHandler([]DubSummary)` snapshots its input at construction and wraps `IndexHandlerFrom`.
-T7.0 mounts `IndexHandler` at `GET /api/dubs`. T7.0 must later pass a provider that includes
-uploads.
+T7.0 mounts `IndexHandlerFrom` at `GET /api/dubs`. The provider returns the fixture
+project and every persisted upload record.
 
 `ConfigHandler(func(ConfigUpdate) error)` accepts only URL-encoded POST form fields named
 `voice_key` and `translation_key`. It accepts at most 16 KiB, treats an omitted field as
