@@ -41,8 +41,8 @@ Apply system typography for UI elements and monospace tabular numbers for timeco
 requires:   T5.1
 fixture-ok: yes
 size:       M · mid
-owns:       web/src/lib/Preview.svelte, web/src/lib/LanguageStrip.svelte
-status:     not-started
+owns:       web/src/lib/Preview.svelte, web/src/lib/LanguageStrip.svelte, web/static/clip.mp4
+status:     done
 ```
 Render the 16:9 video preview top-left with playback controls. Place the language strip directly beneath to switch active playback tracks. Pressing Space toggles play and pause.
 
@@ -58,7 +58,7 @@ requires:   T5.1
 fixture-ok: yes
 size:       L · frontier
 owns:       web/src/lib/Timeline.svelte, web/src/lib/Ruler.svelte, web/src/lib/Track.svelte
-status:     not-started
+status:     done
 ```
 Build a resizable timeline with a 156px minimum height. Keep the header and time ruler pinned while audio tracks scroll.
 
@@ -76,7 +76,7 @@ requires:   T5.1, T1.1
 fixture-ok: yes
 size:       L · frontier
 owns:       web/src/lib/LengthBar.svelte
-status:     not-started
+status:     claimed:gpt-5-codex-t5.4
 ```
 Render the length bar instrument on HTML canvas. Repaint automatically upon window resize or theme toggle.
 
@@ -123,6 +123,23 @@ Implement keyboard shortcuts: `?` for help, `/` for command bar, Space for playb
 Use natural sentences for all messaging. For example, write "We could not reach the voice service, so nothing was charged."
 
 **Done when:** Panels display all four states from fixture data, and keyboard navigation operates without pointer input.
+
+---
+
+### T5.7: Workspace composition
+```yaml
+requires:   T5.2, T5.3, T5.4, T5.5, T5.6
+fixture-ok: yes
+size:       M · frontier
+owns:       web/src/routes/d/[id]/+page.svelte, web/src/lib/fixture.ts
+status:     not-started
+```
+Compose the reviewed workspace components into the `/d/{id}` route. Load the T1.5 offline
+fixture through one typed client helper. Connect shared selection, playback, theme repaint, and
+keyboard state without changing component-owned files.
+
+**Done when:** The full workspace renders from the fixture. Preview, timeline, length bars,
+rail, states, and shortcuts interact as one route.
 
 ---
 
