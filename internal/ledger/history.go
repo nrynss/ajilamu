@@ -17,7 +17,7 @@ const insertTimelineState = "INSERT INTO timeline_state_raw (commit_id, project_
 
 const selectTimelineAt = "SELECT * FROM timeline_at_commit(dub_id = {dub_id:String}, language = {language:String}, commit_id = {commit_id:String}) FORMAT JSONEachRow"
 
-const selectBranchCost = "WITH RECURSIVE ancestry AS (SELECT commit_id, parent_commit_id, branch FROM commits WHERE dub_id = {dub_id:String} AND commit_id = {commit_id:String} UNION ALL SELECT c.commit_id, c.parent_commit_id, c.branch FROM commits AS c INNER JOIN ancestry AS a ON c.commit_id = a.parent_commit_id WHERE c.dub_id = {dub_id:String}) SELECT (SELECT branch FROM ancestry WHERE commit_id = {commit_id:String}) AS branch, coalesce((SELECT sum(cost_usd) FROM charges WHERE dub_id = {dub_id:String} AND language = {language:String} AND commit_id IN (SELECT commit_id FROM ancestry)), 0) AS cost_usd FORMAT JSONEachRow"
+const selectBranchCost = "WITH RECURSIVE ancestry AS (SELECT commit_id, parent_commit_id, branch FROM commits WHERE dub_id = {dub_id:String} AND commit_id = {commit_id:String} UNION ALL SELECT c.commit_id, c.parent_commit_id, c.branch FROM commits AS c INNER JOIN ancestry AS a ON c.commit_id = a.parent_commit_id WHERE c.dub_id = {dub_id:String}) SELECT (SELECT any(branch) FROM ancestry WHERE commit_id = {commit_id:String}) AS branch, coalesce((SELECT sum(cost_usd) FROM charges WHERE dub_id = {dub_id:String} AND language = {language:String} AND commit_id IN (SELECT commit_id FROM ancestry)), 0) AS cost_usd FORMAT JSONEachRow"
 
 // TimelineSegment is one full segment snapshot at one commit.
 // Writers copy every field forward. Readers never merge two rows.

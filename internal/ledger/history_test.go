@@ -24,6 +24,7 @@ const (
 	fixtureRoot     = "c1"
 	fixtureChild    = "c2"
 	fixtureFork     = "c3"
+	fixtureAbsent   = "c9"
 )
 
 // Hard-coded timeline_at_commit JSONEachRow stand-ins. These are not produced by ReplayAt.
@@ -382,6 +383,99 @@ func TestCompareBranchesUsesAncestryAndSumsCharges(t *testing.T) {
 	}
 }
 
+func TestCompareBranchesToleratesPendingHead(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu       sync.Mutex
+		requests []capturedHistoryRequest
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captureHistoryQuery(t, &requests, &mu, w, r)
+		statement := r.URL.Query().Get("query")
+		commitID := r.URL.Query().Get("param_commit_id")
+		var payload string
+		switch {
+		case strings.Contains(statement, "timeline_at_commit"):
+			switch commitID {
+			case fixtureChild:
+				payload = viewAtChild
+			case fixtureAbsent:
+				payload = ""
+			default:
+				t.Errorf("unexpected timeline commit %q", commitID)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+		case strings.Contains(statement, "FROM charges"):
+			switch commitID {
+			case fixtureChild:
+				payload = `{"branch":"main","cost_usd":"0.03"}` + "\n"
+			case fixtureAbsent:
+				payload = `{"branch":"","cost_usd":0}` + "\n"
+			default:
+				t.Errorf("unexpected cost commit %q", commitID)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+		default:
+			t.Errorf("unexpected query %q", statement)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if _, err := w.Write([]byte(payload)); err != nil {
+			t.Errorf("write compare payload: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := newHistoryTestClient(t, server.URL)
+	defer client.Close()
+
+	got, err := client.CompareBranches(context.Background(), fixtureDub, fixtureLanguage, fixtureChild, fixtureAbsent)
+	if err != nil {
+		t.Fatalf("CompareBranches with a head still pending in the queue: %v", err)
+	}
+	if got.A.Branch != "main" || got.A.CostUSD != "0.03" || got.A.SlotMs != 3400 {
+		t.Errorf("settled head = %+v, want branch main, cost 0.03, slot 3400", got.A)
+	}
+	if got.B.CommitID != fixtureAbsent {
+		t.Errorf("pending head commit = %q, want %s", got.B.CommitID, fixtureAbsent)
+	}
+	if got.B.Branch != "" {
+		t.Errorf("pending head branch = %q, want an empty label", got.B.Branch)
+	}
+	if got.B.CostUSD != "0" {
+		t.Errorf("pending head cost = %q, want 0", got.B.CostUSD)
+	}
+	if got.B.SlotMs != 0 || got.B.TakeCount != 0 {
+		t.Errorf("pending head slot and takes = %d, %d, want 0 and 0", got.B.SlotMs, got.B.TakeCount)
+	}
+	if len(got.B.Segments) != 0 {
+		t.Errorf("pending head returned %d segments, want none", len(got.B.Segments))
+	}
+
+	mu.Lock()
+	captured := append([]capturedHistoryRequest(nil), requests...)
+	mu.Unlock()
+	if len(captured) != 4 {
+		t.Fatalf("compare request count = %d, want 2 timeline and 2 cost", len(captured))
+	}
+	var costQueries int
+	for _, request := range captured {
+		assertNoAncestryShortcuts(t, request.query)
+		if strings.Contains(request.query, "timeline_at_commit") {
+			assertTimelineAtQuery(t, request, request.params.Get("param_commit_id"))
+			continue
+		}
+		costQueries++
+		assertBranchLabelToleratesEmptyAncestry(t, request.query)
+	}
+	if costQueries != 2 {
+		t.Errorf("cost queries = %d, want 2", costQueries)
+	}
+}
+
 func TestRecordSegmentStateReplaysFailedDelivery(t *testing.T) {
 	t.Parallel()
 
@@ -596,6 +690,19 @@ func assertNoAncestryShortcuts(t *testing.T, statement string) {
 	}
 	if strings.Contains(compact, "branch=") || strings.Contains(compact, "WHEREbranch") || strings.Contains(compact, "ANDbranch=") {
 		t.Errorf("query filters branch to select ancestry: %s", statement)
+	}
+}
+
+// assertBranchLabelToleratesEmptyAncestry pins the branch label to an aggregate.
+// A bare scalar subquery over an empty ancestry makes ClickHouse raise error 125.
+func assertBranchLabelToleratesEmptyAncestry(t *testing.T, statement string) {
+	t.Helper()
+	if !strings.Contains(statement, "any(branch)") {
+		t.Errorf("cost query reads the branch label without an aggregate: %s", statement)
+	}
+	compact := strings.Join(strings.Fields(statement), " ")
+	if strings.Contains(compact, "SELECT branch FROM ancestry") {
+		t.Errorf("cost query keeps the unguarded scalar branch subquery: %s", statement)
 	}
 }
 
