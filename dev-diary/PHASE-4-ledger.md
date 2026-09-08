@@ -421,6 +421,13 @@ first: both build a `cost.Charge` with no `CommitID`, while `internal/ledger/tak
 a charge whose `CommitID` is empty. Whether an unattributed charge can reach `charges_raw`
 today is unresolved, and it decides which of the two fixes is right.
 
+**Resolved by T7.2c1 on 2026-09-08.** `BranchView.CostUSD` is now `AttributedCostUSD`. No shipped
+writer can produce an unattributed charge. `charges_raw` has one writer path, `chargeInsert` in
+`internal/ledger/takes.go`, reached only from `RecordTake`. It rejects an empty `CommitID` and
+stamps every charge row with it. So the ancestry sum is complete for shipped data, and the field
+now names what it counts. The decision and its measurement are in
+`adversarial-review/t7.2c1-round2.md`.
+
 The package now has a snapshot writer, a view query, a replay pin, branch compare, and 503
 replay. The view names the ranked version `state_version_seq`, not `version_seq`. Decode
 that name or replay and query disagree on version. The next agent must not treat a snapshot

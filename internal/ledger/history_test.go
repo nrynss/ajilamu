@@ -319,10 +319,10 @@ func TestCompareBranchesUsesAncestryAndSumsCharges(t *testing.T) {
 	if got.A.Branch != "main" || got.B.Branch != "alt" {
 		t.Errorf("branch labels = %q, %q, want main and alt", got.A.Branch, got.B.Branch)
 	}
-	if got.A.CostUSD != "0.03" || got.B.CostUSD != "0.04" {
-		t.Errorf("costs = %q, %q, want summed 0.03 and 0.04, not a running total", got.A.CostUSD, got.B.CostUSD)
+	if got.A.AttributedCostUSD != "0.03" || got.B.AttributedCostUSD != "0.04" {
+		t.Errorf("costs = %q, %q, want summed 0.03 and 0.04, not a running total", got.A.AttributedCostUSD, got.B.AttributedCostUSD)
 	}
-	if got.A.CostUSD == got.B.CostUSD {
+	if got.A.AttributedCostUSD == got.B.AttributedCostUSD {
 		t.Error("branch costs match, want independent ancestry sums")
 	}
 	if got.A.SlotMs != 3400 || got.B.SlotMs != 3500 {
@@ -452,7 +452,7 @@ func TestCompareBranchesToleratesPendingHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompareBranches with a head still pending in the queue: %v", err)
 	}
-	if got.A.Branch != "main" || got.A.CostUSD != "0.03" || got.A.SlotMs != 3400 {
+	if got.A.Branch != "main" || got.A.AttributedCostUSD != "0.03" || got.A.SlotMs != 3400 {
 		t.Errorf("settled head = %+v, want branch main, cost 0.03, slot 3400", got.A)
 	}
 	if got.B.CommitID != fixtureAbsent {
@@ -461,8 +461,8 @@ func TestCompareBranchesToleratesPendingHead(t *testing.T) {
 	if got.B.Branch != "" {
 		t.Errorf("pending head branch = %q, want an empty label", got.B.Branch)
 	}
-	if got.B.CostUSD != "0" {
-		t.Errorf("pending head cost = %q, want 0", got.B.CostUSD)
+	if got.B.AttributedCostUSD != "0" {
+		t.Errorf("pending head cost = %q, want 0", got.B.AttributedCostUSD)
 	}
 	if got.B.SlotMs != 0 || got.B.TakeCount != 0 {
 		t.Errorf("pending head slot and takes = %d, %d, want 0 and 0", got.B.SlotMs, got.B.TakeCount)
@@ -1041,6 +1041,8 @@ func TestClickHouseReadersSurviveQuotedIntegers(t *testing.T) {
 		quotedPrior       = `{"population_samples":"30","population_chars_per_sec":2,"creator_samples":"0","creator_chars_per_sec":0}` + "\n"
 		plainPrior        = `{"population_samples":30,"population_chars_per_sec":2,"creator_samples":0,"creator_chars_per_sec":0}` + "\n"
 		branchCostPayload = `{"branch":"main","cost_usd":"0.03"}` + "\n"
+		quotedHistory     = `{"commit_id":"c1","parent_commit_id":"","version_seq":"7","created_at_ms":"1788825600000","has_action":1,"action_type":"user_command","author":"command_bar","prompt":"tighten line 3","action_created_at_ms":"1788825600000","event_key":"k1"}` + "\n"
+		plainHistory      = `{"commit_id":"c1","parent_commit_id":"","version_seq":7,"created_at_ms":1788825600000,"has_action":1,"action_type":"user_command","author":"command_bar","prompt":"tighten line 3","action_created_at_ms":1788825600000,"event_key":"k1"}` + "\n"
 	)
 
 	var (
@@ -1073,6 +1075,11 @@ func TestClickHouseReadersSurviveQuotedIntegers(t *testing.T) {
 		case selectBranchCost:
 			// branchCostRow holds a json.Number, which accepts a quoted cost either way.
 			payload = branchCostPayload
+		case selectCommitHistory:
+			payload = quotedHistory
+			if pinned {
+				payload = plainHistory
+			}
 		default:
 			t.Errorf("unexpected query %q", params.Get("query"))
 			w.WriteHeader(http.StatusBadRequest)
@@ -1103,8 +1110,8 @@ func TestClickHouseReadersSurviveQuotedIntegers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompareBranches: %v", err)
 	}
-	if compare.A.Branch != "main" || compare.A.CostUSD != "0.03" {
-		t.Errorf("branch cost = branch %q cost %q, want main and 0.03", compare.A.Branch, compare.A.CostUSD)
+	if compare.A.Branch != "main" || compare.A.AttributedCostUSD != "0.03" {
+		t.Errorf("branch cost = branch %q cost %q, want main and 0.03", compare.A.Branch, compare.A.AttributedCostUSD)
 	}
 	if len(compare.A.Segments) != 1 || compare.A.Segments[0].StartMs != 1100 {
 		t.Errorf("branch segments = %+v, want one segment starting at 1100", compare.A.Segments)
@@ -1126,18 +1133,27 @@ func TestClickHouseReadersSurviveQuotedIntegers(t *testing.T) {
 		t.Errorf("duration prior = %+v, want 30 population samples and rate 2", prior)
 	}
 
+	history, err := client.ListCommits(ctx, fixtureDub)
+	if err != nil {
+		t.Fatalf("ListCommits: %v", err)
+	}
+	if len(history) != 1 || history[0].VersionSeq != 7 ||
+		history[0].Action != "user_command" || history[0].Instruction != "tighten line 3" {
+		t.Errorf("commit history = %+v, want one commit at version 7 with the command-bar action", history)
+	}
+
 	mu.Lock()
 	captured := append([]capturedHistoryRequest(nil), requests...)
 	mu.Unlock()
-	if len(captured) != 7 {
-		t.Fatalf("request count = %d, want 2 timeline, 2 cost, 1 commit, 1 prior, 1 direct timeline", len(captured))
+	if len(captured) != 8 {
+		t.Fatalf("request count = %d, want 2 timeline, 2 cost, 1 commit, 1 history, 1 prior, 1 direct timeline", len(captured))
 	}
 	seen := make(map[string]bool)
 	for _, request := range captured {
 		seen[request.query] = true
 		assertPinnedQuerySettings(t, request)
 	}
-	for _, statement := range []string{selectTimelineAt, selectCommit, selectDurationPrior, selectBranchCost} {
+	for _, statement := range []string{selectTimelineAt, selectCommit, selectDurationPrior, selectBranchCost, selectCommitHistory} {
 		if !seen[statement] {
 			t.Errorf("no request carried statement %s", statement)
 		}
@@ -1149,6 +1165,9 @@ func TestClickHouseReadersSurviveQuotedIntegers(t *testing.T) {
 	}
 	if _, err := decodeJSONEachRow[storedCommit](strings.NewReader(quotedCommit)); err == nil {
 		t.Errorf("storedCommit decoded quoted integers %q, so the pinned setting guards nothing", quotedCommit)
+	}
+	if _, err := decodeJSONEachRow[commitActionRow](strings.NewReader(quotedHistory)); err == nil {
+		t.Errorf("commitActionRow decoded quoted integers %q, so the pinned setting guards nothing", quotedHistory)
 	}
 	if _, err := decodeJSONEachRow[durationPriorStats](strings.NewReader(quotedPrior)); err == nil {
 		t.Errorf("durationPriorStats decoded quoted integers %q, so the pinned setting guards nothing", quotedPrior)

@@ -207,13 +207,54 @@ credentials are absent.
 
 ---
 
+### T7.2c1: Ledger commit DAG read
+```yaml
+requires:   T4.3, T4.4, T7.2a
+fixture-ok: yes
+size:       S · frontier
+owns:       internal/ledger/commits.go, internal/ledger/commits_test.go,
+            internal/ledger/history.go, internal/ledger/history_test.go
+status:     done
+```
+Serve the commit DAG the History tab needs, and make the branch cost field honest.
+
+**Why this task exists.** T7.2c serves timeline state, the commit DAG, and branch comparison.
+`TimelineAt` and `CompareBranches` already exist. Nothing reads commits: `internal/ledger` has no
+method that lists a dub's commits or joins their action provenance, so no caller can build the DAG
+the wire `Commit` describes. T7.2c does not own `internal/ledger`, so the read lands here first.
+
+**The read.** Add one exported method that returns every commit of one dub with its action
+provenance, ordered oldest first by `version_seq` then `commit_id`. Route it through
+`queryClickHouse` so both pinned settings apply. `commits` and `actions` are views over their
+`_raw` tables. A commit may carry zero, one, or several action rows, and the wire `Commit`
+carries one action, one author, and one instruction. Choose a deterministic collapse rule,
+document it, and pin it with a test that gives one commit two actions.
+
+**The branch cost decision.** The P4 Handoff Log records that `BranchView.CostUSD` sums
+`charges.cost_usd` over an ancestry of commit ids, so it drops every charge row carrying the
+default empty `commit_id`. The first caller inherits that gap. Settle it here: either make the
+ancestry sum complete or rename the field to say it counts attributed charges only. Measure
+whether any shipped writer can produce an unattributed charge, because `charges_raw.commit_id`
+defaults to empty while `internal/ledger/takes.go` requires a non-empty commit id on a take.
+Record the measurement and the decision in the handoff.
+
+**Done when:** One method returns a dub's commits with action provenance, ordered and
+deterministic, and a stand-in test proves the decode. The branch cost field's name matches what
+it counts, and the review file records the measurement that decided it.
+`go test -count=1 ./internal/ledger` passes.
+
+---
+
 ### T7.2c: Ledger read routes
 ```yaml
-requires:   T7.0, T7.2a, T4.5, T5.5
+requires:   T7.0, T7.2a, T7.2c1, T4.5, T5.5
 fixture-ok: yes
-size:       M · frontier
+size:       L · frontier
 owns:       internal/api/history.go, internal/api/history_test.go,
-            internal/api/server.go, web/src/lib/tabs/HistoryTab.svelte
+            internal/api/server.go, internal/api/server_test.go,
+            internal/api/wire.go, cmd/ajilamu/main.go,
+            web/src/lib/types.ts, web/src/lib/Rail.svelte,
+            web/src/lib/tabs/HistoryTab.svelte
 status:     not-started
 ```
 Serve timeline state, the commit DAG, and branch comparison over HTTP.
@@ -229,15 +270,21 @@ Work nobody owns never gets built.
 T7.0 mounts handlers and owns nothing inside them, so this task writes the handler and T7.0's
 mux gains a line.
 
-**This task settles the branch cost question.** The P4 Handoff Log records that
-`BranchView.CostUSD` sums charges over an ancestry of commit ids, so it drops every whole pass
-charge carrying the default empty `commit_id`. A measured 0.75 whole pass charge left a 0.7508
-dub reporting 0.0003 and 0.0006 per branch. The number matches the stated contract and the field
-name does not. As the first caller, this task either attributes a whole pass charge to a commit
-at write time or renames the field to say it counts attributed charges only. Read that finding
-before choosing. Check whether an unattributed charge can reach `charges_raw` at all, because
-`internal/gemini/segment.go` and `internal/tts/chirp.go` build a `cost.Charge` with no
-`CommitID` while `internal/ledger/takes.go` rejects an empty one.
+**T7.2c1 settles the branch cost question** before this task serves it. Serve the field name that
+task chooses.
+
+**Routes.** The History tab fetches its own data by project id, so the workspace page needs no
+change. Add three read routes and mount them in T7.0's mux. `GET /api/dubs/{id}/history` returns
+the commit DAG. `GET /api/dubs/{id}/timeline?language=..&commit=..` returns that commit's
+timeline. `GET /api/dubs/{id}/branches?language=..&a=..&b=..` returns both heads with their slot
+duration, take count, and attributed cost. Every response is JSON. A missing credential answers
+503 and the tab falls back to the fixture commits it already receives, so a clone with no
+credentials still renders the tab.
+
+**Wiring.** `ServerOptions` gains a read interface, and `cmd/ajilamu/main.go` supplies the ledger
+client it already builds for the flush. Without credentials that field stays nil and every route
+answers 503, which is what the fixture fallback needs. Add the mount assertions to
+`internal/api/server_test.go`.
 
 **Done when:** The History tab renders a real commit DAG from ClickHouse rather than fixture
 JSON. Time travel to a commit returns that commit's timeline. Branch comparison returns a cost
@@ -299,6 +346,29 @@ inventing a second location.
 
 **Done when:** A submitted credential survives a process restart, cannot be read through any
 HTTP response, is absent from logs, and has restrictive on-disk permissions.
+
+
+### T7.5: Workspace payload route
+```yaml
+requires:   T7.2c
+fixture-ok: yes
+size:       L · frontier
+owns:       internal/api/workspace.go, internal/api/workspace_test.go,
+            web/src/routes/d/[id]/+page.svelte
+status:     not-started
+```
+Serve the `Dub` payload the workspace renders, so a real project stops showing the pending
+sentence.
+
+**Why this task exists.** The wire contract defines `Dub` for the whole workspace, and
+`web/src/lib/fixture.ts` is its only producer. The workspace page loads the fixture for a fixture
+id and shows an empty pending state for every other id. T7.2c gives the History tab its own
+routes, so a real dub still has no segments, lines, takes, charges, or total. Found on 2026-09-08
+while scoping T7.2c. It is the same cause T7.0 names. Work nobody owns never gets built.
+
+**Done when:** `GET /api/dubs/{id}` returns a `Dub` assembled from the ledger for a real project,
+the workspace page renders it for a non-fixture id, and a clone with no credentials still renders
+the fixture project.
 
 ---
 
@@ -429,3 +499,20 @@ T7.2b owns `internal/api/ready_internal_test.go` for the package variables, beca
 
 Round 1 returned one M and two L. Remediation fixed all three, and the orchestrator added the
 post-connect refinement. Round 2 returned APPROVE with zero residue.
+
+### T7.2c1: Ledger commit DAG read
+
+`ListCommits(ctx, dubID)` returns one `CommitHistoryRow` per commit with its action provenance,
+ordered by `version_seq` then `commit_id`. It binds `dub_id` and routes through `queryClickHouse`,
+so both T7.2a pins apply. `created_at` crosses the wire as RFC 3339, converted from epoch
+milliseconds in Go.
+
+A commit may carry several action rows. A row with a prompt outranks one without, then the newest
+action wins, then the greatest `event_key`. A commit with no action row keeps empty provenance.
+
+`BranchView.CostUSD` is now `AttributedCostUSD`. No shipped writer can produce an unattributed
+charge: `charges_raw` has one writer, `RecordTake`, which stamps the attempt commit and rejects
+an empty one. The rename makes the field name match the ancestry sum.
+
+Round 1 returned one L, applied by the orchestrator under the L exemption. Round 2 returned
+APPROVE with zero residue.

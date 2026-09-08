@@ -65,14 +65,16 @@ type TimelineSegment struct {
 	TakeID       string `json:"take_id"`
 }
 
-// BranchView is duration and cost for one head of a language track.
+// BranchView is duration and attributed cost for one head of a language track.
 type BranchView struct {
 	CommitID  string
 	Branch    string
 	Segments  []TimelineSegment
 	SlotMs    int64
 	TakeCount int
-	CostUSD   string
+	// AttributedCostUSD sums charges.cost_usd over the head's ancestry.
+	// A charge row with an empty commit_id is outside that set and is excluded.
+	AttributedCostUSD string
 }
 
 // BranchCompare holds metrics for two heads of one language track.
@@ -180,8 +182,9 @@ func ReplayAt(commits []Commit, snapshots []TimelineSegment, dubID, language, co
 	return out, nil
 }
 
-// CompareBranches reports duration and cost for two heads of one language track.
-// Duration comes from reconstructed slots. Cost sums the charges view over each head's ancestry.
+// CompareBranches reports duration and attributed cost for two heads of one language track.
+// Duration comes from reconstructed slots. AttributedCostUSD sums the charges view over each
+// head's ancestry, so a charge row with an empty commit_id is excluded.
 func (c *Client) CompareBranches(ctx context.Context, dubID, language, commitA, commitB string) (BranchCompare, error) {
 	if err := validateHistoryQuery(dubID, language, commitA); err != nil {
 		return BranchCompare{}, err
@@ -259,13 +262,13 @@ func timelineFromView(dubID, language string, row timelineAtRow) TimelineSegment
 
 func newBranchView(commitID string, segments []TimelineSegment, cost branchCostRow) BranchView {
 	view := BranchView{
-		CommitID: commitID,
-		Branch:   cost.Branch,
-		Segments: segments,
-		CostUSD:  cost.CostUSD.String(),
+		CommitID:          commitID,
+		Branch:            cost.Branch,
+		Segments:          segments,
+		AttributedCostUSD: cost.CostUSD.String(),
 	}
-	if view.CostUSD == "" {
-		view.CostUSD = "0"
+	if view.AttributedCostUSD == "" {
+		view.AttributedCostUSD = "0"
 	}
 	for _, segment := range segments {
 		view.SlotMs += segment.EndMs - segment.StartMs
