@@ -1,9 +1,13 @@
 package media
 
 import (
+	"context"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func findFixture(t *testing.T, rel string) string {
@@ -23,7 +27,7 @@ func findFixture(t *testing.T, rel string) string {
 
 func TestDurationSeg3Try1(t *testing.T) {
 	path := findFixture(t, "scratch/takes/seg_3_try1.wav")
-	dur, err := Duration(path)
+	dur, err := Duration(t.Context(), path)
 	if err != nil {
 		t.Fatalf("Duration(%s) failed: %v", path, err)
 	}
@@ -35,7 +39,7 @@ func TestDurationSeg3Try1(t *testing.T) {
 
 func TestDurationSeg3Stretched(t *testing.T) {
 	path := findFixture(t, "scratch/takes/seg_3_stretched.wav")
-	dur, err := Duration(path)
+	dur, err := Duration(t.Context(), path)
 	if err != nil {
 		t.Fatalf("Duration(%s) failed: %v", path, err)
 	}
@@ -47,7 +51,7 @@ func TestDurationSeg3Stretched(t *testing.T) {
 
 func TestAtempoSlowDownSeg8(t *testing.T) {
 	in := findFixture(t, "scratch/takes/seg_8_try1.wav")
-	origDur, err := Duration(in)
+	origDur, err := Duration(t.Context(), in)
 	if err != nil {
 		t.Fatalf("Duration(%s) failed: %v", in, err)
 	}
@@ -55,11 +59,11 @@ func TestAtempoSlowDownSeg8(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "seg_8_slow.wav")
 	// Apply ratio below 1.0 to slow down the take.
 	const ratio = 0.8
-	if err := Atempo(in, out, ratio); err != nil {
+	if err := Atempo(t.Context(), in, out, ratio); err != nil {
 		t.Fatalf("Atempo failed: %v", err)
 	}
 
-	slowDur, err := Duration(out)
+	slowDur, err := Duration(t.Context(), out)
 	if err != nil {
 		t.Fatalf("Duration(%s) failed: %v", out, err)
 	}
@@ -88,7 +92,7 @@ func TestAtempoRatioLimits(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			out := filepath.Join(tmpDir, tc.name+".wav")
-			err := Atempo(in, out, tc.ratio)
+			err := Atempo(t.Context(), in, out, tc.ratio)
 			if tc.wantErr && err == nil {
 				t.Errorf("Atempo(ratio=%v) expected error, got nil", tc.ratio)
 			}
@@ -102,7 +106,7 @@ func TestAtempoRatioLimits(t *testing.T) {
 func TestAudioFormat(t *testing.T) {
 	t.Run("wav_take", func(t *testing.T) {
 		path := findFixture(t, "scratch/takes/seg_3_try1.wav")
-		format, err := AudioFormat(path)
+		format, err := AudioFormat(t.Context(), path)
 		if err != nil {
 			t.Fatalf("AudioFormat(%s) failed: %v", path, err)
 		}
@@ -125,7 +129,7 @@ func TestAudioFormat(t *testing.T) {
 
 	t.Run("source_clip", func(t *testing.T) {
 		path := findFixture(t, "assets/source/clip.mp4")
-		format, err := AudioFormat(path)
+		format, err := AudioFormat(t.Context(), path)
 		if err != nil {
 			t.Fatalf("AudioFormat(%s) failed: %v", path, err)
 		}
@@ -151,11 +155,11 @@ func TestDemux(t *testing.T) {
 	videoPath := findFixture(t, "assets/source/clip.mp4")
 	outWav := filepath.Join(t.TempDir(), "extracted.wav")
 
-	if err := Demux(videoPath, outWav); err != nil {
+	if err := Demux(t.Context(), videoPath, outWav); err != nil {
 		t.Fatalf("Demux failed: %v", err)
 	}
 
-	format, err := AudioFormat(outWav)
+	format, err := AudioFormat(t.Context(), outWav)
 	if err != nil {
 		t.Fatalf("AudioFormat on demuxed audio failed: %v", err)
 	}
@@ -170,7 +174,7 @@ func TestDemux(t *testing.T) {
 		t.Errorf("Channels = %d, want 1", format.Channels)
 	}
 
-	dur, err := Duration(outWav)
+	dur, err := Duration(t.Context(), outWav)
 	if err != nil {
 		t.Fatalf("Duration on demuxed audio failed: %v", err)
 	}
@@ -180,8 +184,99 @@ func TestDemux(t *testing.T) {
 }
 
 func TestRunError(t *testing.T) {
-	err := Run("-invalid_option_unknown_flag")
+	err := Run(t.Context(), "-invalid_option_unknown_flag")
 	if err == nil {
 		t.Fatal("expected error on invalid ffmpeg options, got nil")
 	}
+}
+
+// blockingProbeInput listens on a random loopback port and never writes.
+// It returns a probe URL and a wait function for the incoming connection.
+func blockingProbeInput(t *testing.T) (string, func() net.Conn) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	wait := func() net.Conn {
+		t.Helper()
+		select {
+		case conn := <-accepted:
+			return conn
+		case <-time.After(10 * time.Second):
+			t.Fatal("ffprobe did not connect to the blocking input")
+			return nil
+		}
+	}
+	return "tcp://" + listener.Addr().String(), wait
+}
+
+func waitProbeResult(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("Duration did not return after the context ended")
+		return nil
+	}
+}
+
+func assertPeerGone(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("ffprobe connection stayed open after the context ended")
+	}
+}
+
+func TestDurationCancelsRunningProbe(t *testing.T) {
+	url, wait := blockingProbeInput(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := Duration(ctx, url)
+		done <- err
+	}()
+	conn := wait()
+	defer conn.Close()
+	start := time.Now()
+	cancel()
+	err := waitProbeResult(t, done)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Duration error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("Duration waited %v after cancellation", elapsed)
+	}
+	assertPeerGone(t, conn)
+}
+
+func TestDurationHonoursDeadline(t *testing.T) {
+	url, wait := blockingProbeInput(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := Duration(ctx, url)
+		done <- err
+	}()
+	conn := wait()
+	defer conn.Close()
+	err := waitProbeResult(t, done)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Duration error = %v, want context.DeadlineExceeded", err)
+	}
+	assertPeerGone(t, conn)
 }

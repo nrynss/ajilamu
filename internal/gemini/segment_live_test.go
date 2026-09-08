@@ -61,7 +61,7 @@ func TestSegmentLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode fixture: %v", err)
 	}
-	clipDur, err := media.Duration(clipPath)
+	clipDur, err := media.Duration(t.Context(), clipPath)
 	if err != nil {
 		t.Fatalf("probe clip duration: %v", err)
 	}

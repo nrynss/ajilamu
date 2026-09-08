@@ -76,7 +76,7 @@ func audioRMS(samples []float32) float64 {
 func TestBedPreservesFixture(t *testing.T) {
 	source := "../../testdata/clip.mp4"
 	output := filepath.Join(t.TempDir(), "bed.wav")
-	bed, err := BuildBed(source, "", output)
+	bed, err := BuildBed(t.Context(), source, "", output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestBedPreservesFixture(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			input := filepath.Join("../../testdata/takes", name)
 			converted := filepath.Join(t.TempDir(), name)
-			if err := bed.PrepareTake(input, converted); err != nil {
+			if err := bed.PrepareTake(t.Context(), input, converted); err != nil {
 				t.Fatal(err)
 			}
 			probeBed(t, converted, "44100", "stereo", 2)
@@ -134,7 +134,7 @@ func TestSeparateMusicAndNativeFormat(t *testing.T) {
 		"aevalsrc=0.1|0.2|0.3|0.4|0.5|0.6:s=48000:d=2:c=5.1", "-c:a", "pcm_f32le", source)
 	runAudioTool(t, "ffmpeg", "-v", "error", "-f", "lavfi", "-i",
 		"aevalsrc=0.06|0.05|0.04|0.03|0.02|0.01:s=48000:d=1:c=5.1", "-c:a", "pcm_f32le", music)
-	bed, err := BuildBed(source, music, output)
+	bed, err := BuildBed(t.Context(), source, music, output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestSeparateMusicAndNativeFormat(t *testing.T) {
 		}
 	}
 	// Swapping the inputs exercises trimming without mixing the source soundtrack.
-	if _, err := BuildBed(music, source, output); err != nil {
+	if _, err := BuildBed(t.Context(), music, source, output); err != nil {
 		t.Fatal(err)
 	}
 	want, got = decodedAudio(t, source), decodedAudio(t, output)
@@ -185,7 +185,7 @@ func TestBedPreservesSourceTimestamps(t *testing.T) {
 				"color=black:s=32x32:r=10:d=4", "-f", "lavfi", "-i",
 				"sine=frequency=440:sample_rate=44100:duration=2", "-af", tc.filter,
 				"-map", "0:v", "-map", "1:a", "-ac", "2", "-c:v", "ffv1", "-c:a", "pcm_s16le", source)
-			if _, err := BuildBed(source, "", output); err != nil {
+			if _, err := BuildBed(t.Context(), source, "", output); err != nil {
 				t.Fatal(err)
 			}
 			probeBed(t, output, "44100", "stereo", 2)
@@ -236,7 +236,7 @@ func TestBedPreservesShortSourceTimestampGap(t *testing.T) {
 		timing.Packets[99].Duration != "0.010000" || timing.Packets[100].PTS != "1.050000" {
 		t.Fatalf("source packets do not establish the 50 ms gap: %s", packets)
 	}
-	if _, err := BuildBed(source, "", output); err != nil {
+	if _, err := BuildBed(t.Context(), source, "", output); err != nil {
 		t.Fatal(err)
 	}
 	probeBed(t, output, "48000", "stereo", 2)
@@ -274,7 +274,7 @@ func TestSeparateMonoMusicPreservesLevel(t *testing.T) {
 		"anullsrc=r=44100:cl=stereo", "-t", "2", source)
 	runAudioTool(t, "ffmpeg", "-v", "error", "-f", "lavfi", "-i",
 		"sine=frequency=440:sample_rate=16000:duration=2", "-c:a", "pcm_s16le", music)
-	if _, err := BuildBed(source, music, output); err != nil {
+	if _, err := BuildBed(t.Context(), source, music, output); err != nil {
 		t.Fatal(err)
 	}
 	probeBed(t, output, "44100", "stereo", 2)
@@ -298,7 +298,7 @@ func TestBedRejectsInvalidInputsAndPreservesOutputs(t *testing.T) {
 	dir := t.TempDir()
 	source := "../../testdata/clip.mp4"
 	output := filepath.Join(dir, "bed.wav")
-	if _, err := BuildBed(source, "", source); err == nil {
+	if _, err := BuildBed(t.Context(), source, "", source); err == nil {
 		t.Fatal("allowed overwriting source")
 	}
 	// A hard link cannot cross a filesystem boundary. t.TempDir often sits on a
@@ -317,13 +317,13 @@ func TestBedRejectsInvalidInputsAndPreservesOutputs(t *testing.T) {
 	if err := os.Link(localSource, alias); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BuildBed(localSource, "", alias); err == nil {
+	if _, err := BuildBed(t.Context(), localSource, "", alias); err == nil {
 		t.Fatal("allowed overwriting source alias")
 	}
 	if err := os.WriteFile(output, []byte("previous render"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BuildBed(source, filepath.Join(dir, "missing.wav"), output); err == nil {
+	if _, err := BuildBed(t.Context(), source, filepath.Join(dir, "missing.wav"), output); err == nil {
 		t.Fatal("accepted missing music")
 	}
 	data, err := os.ReadFile(output)
@@ -334,7 +334,7 @@ func TestBedRejectsInvalidInputsAndPreservesOutputs(t *testing.T) {
 	if err != nil || len(entries) != 0 {
 		t.Fatal("failed rendering leaked temporary files")
 	}
-	if err := (Bed{}).PrepareTake(source, output); err == nil {
+	if err := (Bed{}).PrepareTake(t.Context(), source, output); err == nil {
 		t.Fatal("accepted uninitialized bed")
 	}
 }

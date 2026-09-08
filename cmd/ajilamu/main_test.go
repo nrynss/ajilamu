@@ -1,0 +1,614 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/nrynss/ajilamu/internal/api"
+	"github.com/nrynss/ajilamu/internal/config"
+	"github.com/nrynss/ajilamu/internal/cost"
+	"github.com/nrynss/ajilamu/internal/fit"
+	"github.com/nrynss/ajilamu/internal/ledger"
+	"github.com/nrynss/ajilamu/internal/tts"
+	"github.com/nrynss/ajilamu/internal/types"
+)
+
+// A nil client must stay a nil interface, because a typed nil inside
+// api.HistoryReader would answer 500 instead of the 503 the tab expects.
+func TestNewHistoryReaderReturnsNilForNilClient(t *testing.T) {
+	if reader := newHistoryReader(nil); reader != nil {
+		t.Fatalf("newHistoryReader(nil) = %T, want nil interface", reader)
+	}
+	client := &ledger.Client{}
+	reader := newHistoryReader(client)
+	if reader == nil {
+		t.Fatal("newHistoryReader(client) = nil, want adapter")
+	}
+	adapter, ok := reader.(*historyReader)
+	if !ok {
+		t.Fatalf("newHistoryReader(client) = %T, want *historyReader", reader)
+	}
+	if adapter.client != client {
+		t.Fatal("adapter did not keep the client it was given")
+	}
+}
+
+func TestCommitHistoryMapsLedgerRows(t *testing.T) {
+	rows := []ledger.CommitHistoryRow{
+		{
+			CommitID:       "commit-2",
+			ParentCommitID: "commit-1",
+			VersionSeq:     2,
+			CreatedAt:      "2026-09-08T10:00:00Z",
+			Action:         api.ActionTakeRendered,
+			Author:         api.AuthorAgent,
+			Instruction:    "render line 3",
+		},
+		{
+			CommitID:       "commit-1",
+			ParentCommitID: "",
+			VersionSeq:     1,
+			CreatedAt:      "2026-09-08T09:00:00Z",
+		},
+	}
+
+	commits := commitHistory(rows)
+	want := []api.Commit{
+		{
+			CommitID:       "commit-2",
+			ParentCommitID: "commit-1",
+			VersionNumber:  2,
+			CreatedAt:      "2026-09-08T10:00:00Z",
+			Action:         api.ActionTakeRendered,
+			Author:         api.AuthorAgent,
+			Instruction:    "render line 3",
+		},
+		{
+			CommitID:       "commit-1",
+			ParentCommitID: "",
+			VersionNumber:  1,
+			CreatedAt:      "2026-09-08T09:00:00Z",
+		},
+	}
+	if len(commits) != len(want) {
+		t.Fatalf("commit count = %d, want %d", len(commits), len(want))
+	}
+	for i := range want {
+		if commits[i] != want[i] {
+			t.Errorf("commit %d = %+v, want %+v", i, commits[i], want[i])
+		}
+	}
+}
+
+func TestTimelineEntriesMapLedgerSegments(t *testing.T) {
+	segments := []ledger.TimelineSegment{
+		{
+			VersionSeq:   7,
+			SegmentIndex: 3,
+			StartMs:      1000,
+			EndMs:        2500,
+			Speaker:      "Narrator",
+			Emotion:      "calm",
+			SourceText:   "hello there",
+			Text:         "namaskaram",
+			TakeID:       "take-3",
+		},
+	}
+
+	entries := timelineEntries(segments)
+	want := []api.TimelineEntry{
+		{
+			SegmentIndex: 3,
+			StartMs:      1000,
+			EndMs:        2500,
+			Speaker:      "Narrator",
+			Emotion:      "calm",
+			SourceText:   "hello there",
+			Text:         "namaskaram",
+			TakeID:       "take-3",
+			VersionSeq:   7,
+		},
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("entry count = %d, want %d", len(entries), len(want))
+	}
+	for i := range want {
+		if entries[i] != want[i] {
+			t.Errorf("entry %d = %+v, want %+v", i, entries[i], want[i])
+		}
+	}
+}
+
+func TestBranchComparisonMapsLedgerHeads(t *testing.T) {
+	compare := ledger.BranchCompare{
+		A: ledger.BranchView{
+			CommitID:          "commit-a",
+			Branch:            "main",
+			SlotMs:            4200,
+			TakeCount:         2,
+			AttributedCostUSD: "1.230000",
+		},
+		B: ledger.BranchView{
+			CommitID:          "commit-b",
+			Branch:            "shorter",
+			SlotMs:            4100,
+			TakeCount:         3,
+			AttributedCostUSD: "0.750000",
+		},
+	}
+
+	got := branchComparison(compare)
+	want := api.BranchComparison{
+		A: api.BranchSummary{
+			CommitID:          "commit-a",
+			Branch:            "main",
+			SlotMs:            4200,
+			TakeCount:         2,
+			AttributedCostUSD: "1.230000",
+		},
+		B: api.BranchSummary{
+			CommitID:          "commit-b",
+			Branch:            "shorter",
+			SlotMs:            4100,
+			TakeCount:         3,
+			AttributedCostUSD: "0.750000",
+		},
+	}
+	if got != want {
+		t.Errorf("comparison = %+v, want %+v", got, want)
+	}
+}
+
+// A nil client must stay a nil interface, because a typed nil inside
+// api.RunRecorder would answer 500 instead of the 503 the route expects.
+func TestNewRunRecorderReturnsNilForNilClient(t *testing.T) {
+	if recorder := newRunRecorder(nil, "gemini-3.8-flash", nil); recorder != nil {
+		t.Fatalf("newRunRecorder(nil) = %T, want nil interface", recorder)
+	}
+	client := &ledger.Client{}
+	recorder := newRunRecorder(client, "gemini-3.8-flash", nil)
+	if recorder == nil {
+		t.Fatal("newRunRecorder(client) = nil, want adapter")
+	}
+	adapter, ok := recorder.(*runRecorder)
+	if !ok {
+		t.Fatalf("newRunRecorder(client) = %T, want *runRecorder", recorder)
+	}
+	if adapter.client != client {
+		t.Fatal("adapter did not keep the client it was given")
+	}
+}
+
+// A runner without its Google Cloud dependency must stay a nil interface,
+// because a typed nil would answer 500 instead of the 503 the routes expect.
+func TestNewPipelineRunnerReturnsNilWithoutDependencies(t *testing.T) {
+	runner, err := newPipelineRunner(nil, cost.DefaultRateCard())
+	if err != nil || runner != nil {
+		t.Fatalf("newPipelineRunner(nil) = %T, %v, want nil and no error", runner, err)
+	}
+	runner, err = newPipelineRunner(&config.Config{}, cost.DefaultRateCard())
+	if err != nil || runner != nil {
+		t.Fatalf("newPipelineRunner(no project) = %T, %v, want nil and no error", runner, err)
+	}
+}
+
+// TestPipelineRunResultMapsLines proves the adapter maps takes, voices,
+// repairs, charges, flagged lines, and timeline snapshots.
+func TestPipelineRunResultMapsLines(t *testing.T) {
+	first := types.Segment{ID: 1, StartMs: 0, EndMs: 2000, Text: "hello", Speaker: types.Speaker{Name: "Narrator"}, Emotion: "calm"}
+	second := types.Segment{ID: 2, StartMs: 2500, EndMs: 5000, Text: "world", Speaker: types.Speaker{Name: "Narrator"}, Emotion: "warm"}
+	firstFit := types.NewFit(2*time.Second, 2*time.Second)
+	secondFit := types.NewFit(2500*time.Millisecond, 2600*time.Millisecond)
+
+	result := &fit.PipelineResult{
+		Segments: []types.Segment{first, second},
+		Lines: []fit.LineResult{
+			{
+				Segment:    first,
+				ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: "seg_1_stretched.wav", Duration: 2 * time.Second, Fit: firstFit},
+				Attempts: []fit.LineAttempt{
+					{Attempt: 1, Text: "നമസ്കാരം", Repair: types.RepairAtempo, RepairDetail: "atempo 1.075", Fit: firstFit},
+				},
+			},
+			{
+				Segment:    second,
+				Flagged:    true,
+				ChosenTake: types.Take{SegmentID: 2, Attempt: 2, File: "seg_2_try2.wav", Duration: 2600 * time.Millisecond, Fit: secondFit},
+				Attempts: []fit.LineAttempt{
+					{Attempt: 1, Text: "ലോകം", Repair: types.RepairNone},
+					{Attempt: 2, Text: "ലോകം വിശാലം", Repair: types.RepairRewrite, RepairDetail: "shorter line", Fit: secondFit},
+				},
+			},
+		},
+		FlaggedSegments: []int{2},
+		Voices:          map[string]tts.Voice{"Narrator": {Name: "ml-IN-Chirp3-HD-Achernar"}},
+		TotalCost:       1234,
+		Charges: []cost.Charge{
+			{Kind: cost.ChargeTranslate, TakeID: 1, PromptTokens: 10, CandidateTokens: 5, PromptUnitPrice: 150, CandidateUnitPrice: 600},
+			{Kind: cost.ChargeSynthesize, TakeID: 1, Units: 20, UnitPrice: 30_000},
+			{Kind: cost.ChargeTranslate, TakeID: 2, PromptTokens: 11, CandidateTokens: 6, PromptUnitPrice: 150, CandidateUnitPrice: 600},
+			{Kind: cost.ChargeSynthesize, TakeID: 2, Units: 21, UnitPrice: 30_000},
+			{Kind: cost.ChargeSegment, TakeID: 0, PromptTokens: 100, CandidateTokens: 50, PromptUnitPrice: 150, CandidateUnitPrice: 600},
+		},
+	}
+	peaks := peakReader(func(_ context.Context, path string) ([]uint8, error) {
+		return []uint8{uint8(len(path))}, nil
+	})
+
+	got, err := pipelineRunResult(context.Background(), result, peaks)
+	if err != nil {
+		t.Fatalf("pipelineRunResult: %v", err)
+	}
+	if len(got.Takes) != 2 || len(got.Timeline) != 2 {
+		t.Fatalf("mapped %d takes and %d snapshots, want 2 and 2", len(got.Takes), len(got.Timeline))
+	}
+	if got.TotalCost != 1234 {
+		t.Errorf("total cost = %d, want 1234", got.TotalCost)
+	}
+	if len(got.FlaggedSegments) != 1 || got.FlaggedSegments[0] != 2 {
+		t.Errorf("flagged segments = %v, want [2]", got.FlaggedSegments)
+	}
+	if got.Takes[0].Voice != "ml-IN-Chirp3-HD-Achernar" {
+		t.Errorf("first voice = %q", got.Takes[0].Voice)
+	}
+	if got.Takes[0].Repair != types.RepairAtempo || got.Takes[0].RepairDetail != "atempo 1.075" {
+		t.Errorf("first repair = %v %q", got.Takes[0].Repair, got.Takes[0].RepairDetail)
+	}
+	if len(got.Takes[0].Charges) != 2 {
+		t.Errorf("first take charges = %d, want 2", len(got.Takes[0].Charges))
+	}
+	if got.Takes[1].Repair != types.RepairRewrite {
+		t.Errorf("second repair = %v, want rewrite", got.Takes[1].Repair)
+	}
+	if len(got.Takes[1].Peaks) != 1 {
+		t.Errorf("second take peaks = %v, want the stub sketch", got.Takes[1].Peaks)
+	}
+	if len(got.WholePassCharges) != 1 || got.WholePassCharges[0].Kind != cost.ChargeSegment {
+		t.Errorf("whole-pass charges = %+v, want one segment charge", got.WholePassCharges)
+	}
+	if got.Timeline[1].Text != "ലോകം വിശാലം" {
+		t.Errorf("second timeline text = %q", got.Timeline[1].Text)
+	}
+	if got.Timeline[0].TakeID != "" {
+		t.Errorf("timeline take id = %q, want the api package to mint it", got.Timeline[0].TakeID)
+	}
+}
+
+// TestPipelineRunResultReportsPeakFailure proves a failed sketch fails the run.
+func TestPipelineRunResultReportsPeakFailure(t *testing.T) {
+	segment := types.Segment{ID: 1, StartMs: 0, EndMs: 2000, Text: "hello", Speaker: types.Speaker{Name: "Narrator"}}
+	fitValue := types.NewFit(2*time.Second, 2*time.Second)
+	result := &fit.PipelineResult{
+		Lines: []fit.LineResult{{
+			Segment:    segment,
+			ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: "seg_1.wav", Duration: 2 * time.Second, Fit: fitValue},
+			Attempts:   []fit.LineAttempt{{Attempt: 1, Text: "നമസ്കാരം"}},
+		}},
+	}
+	peaks := peakReader(func(context.Context, string) ([]uint8, error) {
+		return nil, errors.New("probe failed")
+	})
+	if _, err := pipelineRunResult(context.Background(), result, peaks); err == nil {
+		t.Fatal("pipelineRunResult ignored a failed peak sketch")
+	}
+}
+
+// TestRunRecorderPersistWritesFreshRun proves Persist writes the commit, action,
+// take, charges, and snapshot for a first run in ledger order.
+func TestRunRecorderPersistWritesFreshRun(t *testing.T) {
+	client, captured := standInClickHouse(t, "")
+	defer client.Close()
+	recorder := newRunRecorder(client, "gemini-3.8-flash", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	request, result := persistFixture()
+	if err := recorder.Persist(context.Background(), request, result); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	commit := firstInsert(t, captured(), "commits_raw")
+	assertField(t, commit, "commit_id", result.CommitID)
+	assertField(t, commit, "parent_commit_id", "")
+	assertField(t, commit, "version_seq", float64(1))
+	assertField(t, commit, "dub_id", request.DubID)
+	assertField(t, commit, "language", request.Language)
+	if message, _ := commit["message"].(string); !strings.Contains(message, "Rendered 1 lines") {
+		t.Errorf("commit message = %q", message)
+	}
+
+	action := firstInsert(t, captured(), "actions_raw")
+	assertField(t, action, "commit_id", result.CommitID)
+	assertField(t, action, "action_type", api.ActionTakeRendered)
+	assertField(t, action, "author", api.AuthorAgent)
+	assertField(t, action, "segment_index", float64(-1))
+
+	take := firstInsert(t, captured(), "takes_raw")
+	assertField(t, take, "take_id", result.Takes[0].TakeID)
+	assertField(t, take, "commit_id", result.CommitID)
+
+	charges := insertRows(t, captured(), "charges_raw")
+	if len(charges) != 5 {
+		t.Fatalf("charge rows = %d, want 5 itemized rows", len(charges))
+	}
+	wholePass := 0
+	for _, charge := range charges {
+		assertField(t, charge, "commit_id", result.CommitID)
+		if charge["kind"] == cost.ChargeSegment.String() {
+			wholePass++
+			assertField(t, charge, "segment_index", float64(result.Takes[0].Segment.ID))
+		}
+	}
+	if wholePass != 2 {
+		t.Fatalf("whole-pass charge rows = %d, want 2", wholePass)
+	}
+
+	snapshot := firstInsert(t, captured(), "timeline_state_raw")
+	assertField(t, snapshot, "commit_id", result.CommitID)
+	assertField(t, snapshot, "version_seq", float64(1))
+	assertField(t, snapshot, "take_id", result.Takes[0].TakeID)
+
+	historyIndex := requestIndex(t, captured(), http.MethodPost, "has_action")
+	commitIndex := insertIndex(t, captured(), "commits_raw")
+	if historyIndex < 0 {
+		t.Fatal("Persist never read the dub head before appending the commit")
+	}
+	if commitIndex < 0 || commitIndex < historyIndex {
+		t.Fatalf("commit insert at %d, head read at %d, want the head read first", commitIndex, historyIndex)
+	}
+}
+
+// TestRunRecorderPersistContinuesFromHead proves Persist names the head as the
+// parent and advances the version sequence.
+func TestRunRecorderPersistContinuesFromHead(t *testing.T) {
+	const head = `{"commit_id":"c1","parent_commit_id":"","version_seq":1,"created_at_ms":1,"has_action":0,"action_type":"","author":"","prompt":"","action_created_at_ms":0,"event_key":""}`
+	client, captured := standInClickHouse(t, head)
+	defer client.Close()
+	recorder := newRunRecorder(client, "gemini-3.8-flash", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	request, result := persistFixture()
+	if err := recorder.Persist(context.Background(), request, result); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	commit := firstInsert(t, captured(), "commits_raw")
+	assertField(t, commit, "parent_commit_id", "c1")
+	assertField(t, commit, "version_seq", float64(2))
+	snapshot := firstInsert(t, captured(), "timeline_state_raw")
+	assertField(t, snapshot, "version_seq", float64(2))
+}
+
+// persistFixture builds one valid run for the recorder tests.
+func persistFixture() (api.RunRequest, api.RunResult) {
+	segment := types.Segment{ID: 1, StartMs: 0, EndMs: 2000, Text: "hello", Speaker: types.Speaker{Name: "Narrator"}, Emotion: "calm"}
+	fitValue := types.NewFit(2*time.Second, 2*time.Second)
+	peaks := make([]uint8, 64)
+	for i := range peaks {
+		peaks[i] = uint8(i * 4)
+	}
+	request := api.RunRequest{DubID: "dub-fresh", Language: "ml", Source: "/source.mp4", WorkDir: "/work"}
+	result := api.RunResult{
+		CommitID:  "run-commit-1",
+		ProjectID: "dub-fresh",
+		OwnerID:   "local",
+		Takes: []api.RunTake{{
+			TakeID:  "take-1",
+			Segment: segment,
+			Take:    types.Take{SegmentID: 1, Attempt: 1, File: "/work/seg_1.wav", Duration: 2 * time.Second, Fit: fitValue},
+			Voice:   "ml-IN-Chirp3-HD-Achernar",
+			Repair:  types.RepairAtempo,
+			Charges: []cost.Charge{
+				{Kind: cost.ChargeTranslate, TakeID: 1, PromptTokens: 10, CandidateTokens: 5, PromptUnitPrice: 150, CandidateUnitPrice: 600},
+				{Kind: cost.ChargeSynthesize, TakeID: 1, Units: 20, UnitPrice: 30_000},
+			},
+			Peaks: peaks,
+		}},
+		Timeline: []api.RunSegmentState{{
+			SegmentIndex: 1,
+			StartMs:      0,
+			EndMs:        2000,
+			Speaker:      "Narrator",
+			Emotion:      "calm",
+			SourceText:   "hello",
+			Text:         "നമസ്കാരം",
+			TakeID:       "take-1",
+		}},
+		TotalCost: 900,
+		WholePassCharges: []cost.Charge{
+			{Kind: cost.ChargeSegment, TakeID: 0, PromptTokens: 100, CandidateTokens: 50, PromptUnitPrice: 150, CandidateUnitPrice: 600},
+		},
+	}
+	return request, result
+}
+
+// capturedRequest is one HTTP request the stand-in ClickHouse received.
+// Reads and inserts both arrive as POST, so insert marks the insert statements.
+type capturedRequest struct {
+	method string
+	query  string
+	insert bool
+	rows   []map[string]any
+}
+
+// standInClickHouse serves the queries Persist issues. head, when non-empty,
+// answers the commit history read and the parent lookup for commit c1.
+func standInClickHouse(t *testing.T, head string) (*ledger.Client, func() []capturedRequest) {
+	t.Helper()
+	var mu sync.Mutex
+	var captured []capturedRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("query")
+		record := capturedRequest{method: r.Method, query: query, insert: strings.HasPrefix(strings.TrimSpace(query), "INSERT ")}
+		if r.Method == http.MethodPost {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read insert body: %v", err)
+				http.Error(w, "read body", http.StatusInternalServerError)
+				return
+			}
+			for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+				if line == "" {
+					continue
+				}
+				var row map[string]any
+				if err := json.Unmarshal([]byte(line), &row); err != nil {
+					t.Errorf("decode row %q: %v", line, err)
+					http.Error(w, "decode row", http.StatusBadRequest)
+					return
+				}
+				record.rows = append(record.rows, row)
+			}
+		}
+		mu.Lock()
+		captured = append(captured, record)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		switch {
+		case head == "":
+		case strings.Contains(query, "has_action"):
+			_, _ = io.WriteString(w, head+"\n")
+		case strings.Contains(query, "FROM commits_raw FINAL WHERE") &&
+			r.URL.Query().Get("param_commit_id") == "c1":
+			_, _ = io.WriteString(w, head+"\n")
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := ledger.New(&config.Config{
+		ClickHouseHost:     "fixture.invalid",
+		ClickHousePort:     8443,
+		ClickHouseUser:     "fixture",
+		ClickHousePassword: "fixture",
+		ClickHouseDatabase: "fixture",
+	}, t.TempDir(), ledger.WithEndpoint(server.URL))
+	if err != nil {
+		t.Fatalf("new ledger client: %v", err)
+	}
+	return client, func() []capturedRequest {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]capturedRequest(nil), captured...)
+	}
+}
+
+// insertRows returns every row written to one table.
+func insertRows(t *testing.T, requests []capturedRequest, table string) []map[string]any {
+	t.Helper()
+	var rows []map[string]any
+	for _, request := range requests {
+		if request.insert && strings.Contains(request.query, table) {
+			rows = append(rows, request.rows...)
+		}
+	}
+	return rows
+}
+
+// firstInsert returns the first row written to one table.
+func firstInsert(t *testing.T, requests []capturedRequest, table string) map[string]any {
+	t.Helper()
+	rows := insertRows(t, requests, table)
+	if len(rows) == 0 {
+		t.Fatalf("no row written to %s", table)
+	}
+	return rows[0]
+}
+
+// requestIndex returns the first request index matching a method and query fragment.
+func requestIndex(t *testing.T, requests []capturedRequest, method, fragment string) int {
+	t.Helper()
+	for i, request := range requests {
+		if request.method == method && strings.Contains(request.query, fragment) {
+			return i
+		}
+	}
+	return -1
+}
+
+// insertIndex returns the first insert request index for one table.
+func insertIndex(t *testing.T, requests []capturedRequest, table string) int {
+	t.Helper()
+	for i, request := range requests {
+		if request.insert && strings.Contains(request.query, table) {
+			return i
+		}
+	}
+	return -1
+}
+
+// assertField compares one decoded JSON field.
+func assertField(t *testing.T, row map[string]any, name string, want any) {
+	t.Helper()
+	if got := row[name]; got != want {
+		t.Errorf("row field %s = %#v, want %#v", name, got, want)
+	}
+}
+
+// synthAssemblyFilm renders a short film with one video and one audio stream.
+func synthAssemblyFilm(t *testing.T, path string) {
+	t.Helper()
+	cmd := exec.Command("ffmpeg", "-v", "error",
+		"-f", "lavfi", "-i", "color=black:s=64x64:r=30:d=2",
+		"-f", "lavfi", "-i", "sine=frequency=220:sample_rate=44100:duration=2",
+		"-map", "0:v", "-map", "1:a", "-ac", "2", "-ar", "44100",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("render assembly film: %v: %s", err, out)
+	}
+}
+
+// synthAssemblyTake renders one short voiced take.
+func synthAssemblyTake(t *testing.T, path string) {
+	t.Helper()
+	cmd := exec.Command("ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+		"sine=frequency=440:sample_rate=44100:duration=1", "-c:a", "pcm_s16le", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("render assembly take: %v: %s", err, out)
+	}
+}
+
+// TestAssembleEventsCarryRunCost proves every assembly and export event carries
+// the cumulative run cost, so a reconnect during assembly resumes at that cost.
+func TestAssembleEventsCarryRunCost(t *testing.T) {
+	workDir := t.TempDir()
+	source := filepath.Join(workDir, "source.mp4")
+	synthAssemblyFilm(t, source)
+	take := filepath.Join(workDir, "take.wav")
+	synthAssemblyTake(t, take)
+
+	request := api.RunRequest{DubID: "dub-cost", Language: "ml", Source: source, WorkDir: workDir}
+	result := &fit.PipelineResult{
+		Lines: []fit.LineResult{{
+			Segment:    types.Segment{ID: 1, StartMs: 0, EndMs: 1000},
+			ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: take, Duration: time.Second},
+		}},
+		TotalCost: 900,
+	}
+
+	var events []api.ProgressEvent
+	if err := assembleRun(context.Background(), request, result, func(event api.ProgressEvent) {
+		events = append(events, event)
+	}); err != nil {
+		t.Fatalf("assembleRun: %v", err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("assembly events = %d, want 4", len(events))
+	}
+	for i, event := range events {
+		if event.TotalNanodollars != 900 {
+			t.Errorf("event %d %q cost = %d, want 900", i, event.Sentence, event.TotalNanodollars)
+		}
+	}
+	last := events[len(events)-1]
+	if last.Stage != api.StageExporting || last.Sentence != "Exporting the dubbed film." {
+		t.Errorf("last event = %q %q, want the export step", last.Stage, last.Sentence)
+	}
+}

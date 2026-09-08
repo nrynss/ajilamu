@@ -1,6 +1,9 @@
 package assemble
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // Duck compressor settings key the bed on the speech layer.
 // threshold 0.016 sits near -36 dB. Digital silence stays under it.
@@ -40,7 +43,7 @@ func duckFilter() string {
 
 // Duck mixes speech over the bed and dips the bed under voiced speech.
 // Creator-supplied music skips the compressor and overlays at unity.
-func (b Bed) Duck(speech, output string) error {
+func (b Bed) Duck(ctx context.Context, speech, output string) error {
 	if err := validateBedFormat(b.Format); err != nil {
 		return err
 	}
@@ -48,10 +51,10 @@ func (b Bed) Duck(speech, output string) error {
 		return fmt.Errorf("duck needs a bed and a speech layer")
 	}
 	if b.SeparateMusic {
-		return b.Overlay(speech, output)
+		return b.Overlay(ctx, speech, output)
 	}
 	if err := distinctOutput(output, b.File, speech); err != nil {
 		return err
 	}
-	return renderMix([]string{b.File, speech}, output, b.Format, duckFilter())
+	return renderMix(ctx, []string{b.File, speech}, output, b.Format, duckFilter())
 }

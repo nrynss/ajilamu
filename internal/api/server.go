@@ -2,12 +2,14 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"sync/atomic"
 	"time"
 
 	"github.com/nrynss/ajilamu/internal/config"
@@ -20,14 +22,29 @@ type LedgerFlusher interface {
 	Pending() (int, error)
 }
 
+// HistoryReader reads ledger history for the workspace routes.
+// It names api wire types only, so this package never imports internal/ledger.
+type HistoryReader interface {
+	// ListCommits returns every commit of one dub, oldest first.
+	ListCommits(ctx context.Context, dubID string) ([]Commit, error)
+	// TimelineAt returns the timeline snapshot at one commit.
+	TimelineAt(ctx context.Context, dubID, language, commitID string) ([]TimelineEntry, error)
+	// CompareBranches returns metrics for two heads of one language track.
+	CompareBranches(ctx context.Context, dubID, language, commitA, commitB string) (BranchComparison, error)
+}
+
 // ServerOptions supplies dependencies owned by other API tasks.
 type ServerOptions struct {
 	FrontendRoot string
 	Ledger       LedgerFlusher
 	Index        http.Handler
+	History      HistoryReader
 	Config       http.Handler
 	Upload       http.Handler
 	Sample       http.Handler
+	Runner       PipelineRunner
+	Recorder     RunRecorder
+	StorageDir   string
 	Logger       *slog.Logger
 }
 
@@ -36,7 +53,29 @@ type Server struct {
 	cfg    *config.Config
 	http   *http.Server
 	ledger LedgerFlusher
+	runs   *runRegistry
 	logger *slog.Logger
+}
+
+// Ledger readiness outcomes. The route reports exactly one of these.
+const (
+	ledgerStatusReady         = "ready"
+	ledgerStatusWaking        = "waking"
+	ledgerStatusUnreachable   = "unreachable"
+	ledgerStatusMisconfigured = "misconfigured"
+)
+
+// writeLedgerReady answers the readiness route as JSON. Only ready is a 200,
+// and detail carries the missing credential when the config is incomplete.
+func writeLedgerReady(w http.ResponseWriter, status, detail string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if status != ledgerStatusReady {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_ = json.NewEncoder(w).Encode(struct {
+		Status string `json:"status"`
+		Detail string `json:"detail,omitempty"`
+	}{Status: status, Detail: detail})
 }
 
 // NewServer mounts the cross-cutting API routes and the static workspace.
@@ -68,15 +107,10 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	}))
 	mux.Handle("GET /api/ledger/ready", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := cfg.RequireClickHouse(); err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			writeLedgerReady(w, ledgerStatusMisconfigured, err.Error())
 			return
 		}
-		if err := probeClickHouse(r.Context(), cfg); err != nil {
-			http.Error(w, "ClickHouse did not answer a ping.", http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`{"status":"ready"}`))
+		writeLedgerReady(w, probeClickHouse(r.Context(), cfg), "")
 	}))
 	if options.Index != nil {
 		mux.Handle("GET /api/dubs", options.Index)
@@ -90,6 +124,13 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	if options.Sample != nil {
 		mux.Handle("POST /api/dubs/sample", options.Sample)
 	}
+	mux.Handle("GET /api/dubs/{id}/history", HistoryHandlerFrom(options.History, logger))
+	mux.Handle("GET /api/dubs/{id}/timeline", TimelineHandlerFrom(options.History, logger))
+	mux.Handle("GET /api/dubs/{id}/branches", BranchCompareHandlerFrom(options.History, logger))
+	runs := newRunRegistry(options.Runner, options.Recorder, logger)
+	mux.Handle("POST /api/dubs/{id}/run", RunStartHandler(runs, options.StorageDir))
+	mux.Handle("POST /api/dubs/{id}/run/cancel", RunCancelHandler(runs))
+	mux.Handle("GET /api/dubs/{id}/events", EventsHandler(runs))
 	mux.Handle("POST /api/editor/commands/preview", NewCommandPreviewHandler())
 	mux.Handle("/api/", http.NotFoundHandler())
 	mux.Handle("/", frontend)
@@ -97,6 +138,7 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	return &Server{
 		cfg:    cfg,
 		ledger: options.Ledger,
+		runs:   runs,
 		logger: logger,
 		http: &http.Server{
 			Handler:           mux,
@@ -116,13 +158,22 @@ func (s *Server) Serve(listener net.Listener) error {
 	return s.http.Serve(listener)
 }
 
-// Shutdown stops new connections and drains in-flight requests. The caller
-// must still call FlushLedger, even when the drain exhausts its deadline.
+// Shutdown stops new connections and drains in-flight requests. It cancels
+// every active run first, so an event stream closes and the drain can finish,
+// and it waits a bounded time for those runs to stop before it returns. The
+// caller must still call FlushLedger, even when the drain exhausts its deadline.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s == nil || s.http == nil {
 		return nil
 	}
-	if err := s.http.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if s.runs != nil {
+		s.runs.cancelAll()
+	}
+	err := s.http.Shutdown(ctx)
+	if s.runs != nil {
+		s.runs.wait(ctx)
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
@@ -149,30 +200,82 @@ func (s *Server) FlushLedger(ctx context.Context) error {
 	return nil
 }
 
-// clickHouseProbeClient bounds the readiness probe so a partitioned ledger
-// fails the route quickly instead of hanging it.
-var clickHouseProbeClient = &http.Client{Timeout: 3 * time.Second}
+// probeDialTimeout bounds connection establishment for the readiness probe.
+// A refused or unresolved host fails here instead of waiting out the budget.
+var probeDialTimeout = 2 * time.Second
+
+// probeResponseBudget bounds the whole readiness probe. Measured against the
+// live ClickHouse Cloud instance on 2026-09-08: a warm ping answered in under
+// a second, but the first ping on a cold route took 13 seconds. This budget
+// covers that cold ping with margin, so a waking service reports ready. An
+// idle authenticated call needed more than 25 seconds, so that case reports
+// waking rather than claiming ClickHouse did not answer.
+var probeResponseBudget = 15 * time.Second
 
 // probeClickHouse observes the ClickHouse HTTP interface that the durable
-// ledger writes through. Readiness requires a live answer, not just settings.
-func probeClickHouse(ctx context.Context, cfg *config.Config) error {
+// ledger writes through. It reports ready, waking, or unreachable so the
+// route can tell a healthy service that is waking from a broken one.
+func probeClickHouse(ctx context.Context, cfg *config.Config) string {
 	scheme := "http"
 	if cfg.ClickHouseSecure {
 		scheme = "https"
 	}
+
+	// A response timeout and a dial timeout look alike, so record whether the
+	// TCP connection came up. Waking means the budget expired after connect.
+	// Every other post-connect failure is unreachable, so a wrong scheme or a
+	// reset cannot report waking forever.
+	var connected atomic.Bool
+	trace := &httptrace.ClientTrace{
+		ConnectDone: func(_, _ string, err error) {
+			if err == nil {
+				connected.Store(true)
+			}
+		},
+	}
+	ctx, cancel := context.WithTimeout(httptrace.WithClientTrace(ctx, trace), probeResponseBudget)
+	defer cancel()
+
+	// Keep-alives off forces one dial per probe, which keeps the
+	// connected-against-not decision deterministic. Redirects stay unfollowed
+	// so one probe never opens a second connection.
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			DialContext:       (&net.Dialer{Timeout: probeDialTimeout}).DialContext,
+			DisableKeepAlives: true,
+		},
+	}
+
 	probeURL := fmt.Sprintf("%s://%s:%d/ping", scheme, cfg.ClickHouseHost, cfg.ClickHousePort)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
 	if err != nil {
-		return fmt.Errorf("build ClickHouse ping: %w", err)
+		return ledgerStatusUnreachable
 	}
-	resp, err := clickHouseProbeClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("ping ClickHouse: %w", err)
+		if connected.Load() && probeTimedOut(err) {
+			return ledgerStatusWaking
+		}
+		return ledgerStatusUnreachable
 	}
+	// The status line answers the probe, so the body stays unread. A stalled
+	// /ping body therefore cannot hold the route for the whole budget.
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("ClickHouse ping returned %s", resp.Status)
+		return ledgerStatusUnreachable
 	}
-	return nil
+	return ledgerStatusReady
+}
+
+// probeTimedOut reports whether a probe failure ran out of time. Waking means
+// the response budget expired, never that an error followed a connection.
+func probeTimedOut(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var timeout net.Error
+	return errors.As(err, &timeout) && timeout.Timeout()
 }

@@ -103,6 +103,25 @@ Progress events must transmit natural sentences rather than raw status codes. Th
 
 ---
 
+### T1.4a: Wire examples for the ledger read payloads
+```yaml
+requires:   T7.2c
+fixture-ok: yes
+size:       XS · mid
+owns:       testdata/wire/, internal/api/wire_test.go
+status:     not-started
+```
+T1.4's done condition says `testdata/` stores one example payload per structure. T7.2c added five
+wire types with no example, so the claim is false for `DubHistory`, `TimelineView`,
+`TimelineEntry`, `BranchComparison`, and `BranchSummary`.
+
+Add one payload each and register them in `TestExamplesUnmarshal`, so a decode failure fails the
+suite. Keep every key identical to the Go tag.
+
+**Done when:** Every shared struct has an example payload and the suite decodes each one.
+
+---
+
 ### T1.5: Fixture manifest ★
 ```yaml
 requires:   T0.4, T1.1, T1.4
@@ -170,3 +189,13 @@ forward.
 
 The schema loads through `clickhouse client --queries-file`. The HTTP endpoint refuses a
 multi statement body. T4.1 must split statements if it applies the schema over HTTP.
+
+### T1.4 loop closed on 2026-09-08
+
+T1.4 was marked done while its only review said REMEDIATE. A closure review found one more L: the
+five wire types T7.2c added were absent from `mirroredTypes` in `internal/api/wire_test.go`, so a
+key drift in them passed the suite. The orchestrator appended them under the L exemption. Round 3
+returned APPROVE with zero findings and zero residue.
+
+The five types still lack a `testdata/wire/` example, so the claim above holds only for the twelve
+T1.4 payloads. T1.4a lands the missing five.

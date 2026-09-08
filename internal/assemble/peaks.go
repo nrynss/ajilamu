@@ -1,6 +1,7 @@
 package assemble
 
 import (
+	"context"
 	"fmt"
 	"math"
 
@@ -13,18 +14,18 @@ const PeakCount = 128
 // Peaks returns 128 uint8 values that sketch one take for the timeline.
 // Each bin is the max-abs of its frames, scaled to the take peak on 0 to 255.
 // A silent take is all zeros. The same path yields an identical slice.
-func Peaks(path string) ([]uint8, error) {
+func Peaks(ctx context.Context, path string) ([]uint8, error) {
 	if path == "" {
 		return nil, fmt.Errorf("take path is required")
 	}
-	format, err := media.AudioFormat(path)
+	format, err := media.AudioFormat(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("probe take peaks: %w", err)
 	}
 	if format.Channels <= 0 {
 		return nil, fmt.Errorf("take %q needs a positive channel count", path)
 	}
-	samples, err := decodeFloat32(path)
+	samples, err := decodeFloat32(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("decode take peaks: %w", err)
 	}

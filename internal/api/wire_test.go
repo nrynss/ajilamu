@@ -91,6 +91,11 @@ var mirroredTypes = []any{
 	Total{},
 	Commit{},
 	ProgressEvent{},
+	DubHistory{},
+	TimelineView{},
+	TimelineEntry{},
+	BranchComparison{},
+	BranchSummary{},
 }
 
 // tsInterface holds the parsed properties of one TypeScript interface.

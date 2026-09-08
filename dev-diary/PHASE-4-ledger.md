@@ -401,6 +401,11 @@ state, commits or costs. `/api/ledger/ready` is a health probe. `cmd/ajilamu/mai
 `internal/ledger` only to construct the client for the T7.0 shutdown flush, never to read.
 Outside this package the only other importer is `internal/fit/stretch.go`, for priors.
 
+**Corrected on 2026-09-08 after the P7 sweep.** `internal/fit/stretch.go` imports no ledger
+package, and `DurationPrior` has no production caller. `cmd/ajilamu/main.go` now imports
+`internal/ledger` for the history reader as well as the shutdown flush. T7.2c and T7.2c1 landed
+the caller this finding names, so the paragraph above describes the tree before them.
+
 So the History tab still has no path to real data, and `TimelineAt` and `CompareBranches`
 still have no caller. T7.3 remains `not-started`, and it is the nearest owned surface because
 it puts cumulative project cost on every progress event.
@@ -420,6 +425,13 @@ question than its name asks. Check `internal/gemini/segment.go` and `internal/tt
 first: both build a `cost.Charge` with no `CommitID`, while `internal/ledger/takes.go` rejects
 a charge whose `CommitID` is empty. Whether an unattributed charge can reach `charges_raw`
 today is unresolved, and it decides which of the two fixes is right.
+
+**Resolved by T7.2c1 on 2026-09-08.** `BranchView.CostUSD` is now `AttributedCostUSD`. No shipped
+writer can produce an unattributed charge. `charges_raw` has one writer path, `chargeInsert` in
+`internal/ledger/takes.go`, reached only from `RecordTake`. It rejects an empty `CommitID` and
+stamps every charge row with it. So the ancestry sum is complete for shipped data, and the field
+now names what it counts. The decision and its measurement are in
+`adversarial-review/t7.2c1-round2.md`.
 
 The package now has a snapshot writer, a view query, a replay pin, branch compare, and 503
 replay. The view names the ranked version `state_version_seq`, not `version_seq`. Decode

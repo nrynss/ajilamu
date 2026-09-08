@@ -336,6 +336,97 @@ func TestServerRejectsUnmatchedAPIRoutesBeforeSPA(t *testing.T) {
 	}
 }
 
+func TestServerMountsHistoryRoutes(t *testing.T) {
+	reader := &standInHistoryReader{
+		commits: []api.Commit{{
+			CommitID:      "commit-1",
+			VersionNumber: 1,
+			CreatedAt:     "2026-09-08T09:00:00Z",
+		}},
+		segments: []api.TimelineEntry{{
+			SegmentIndex: 1,
+			StartMs:      0,
+			EndMs:        1200,
+			VersionSeq:   2,
+		}},
+		comparison: api.BranchComparison{
+			A: api.BranchSummary{CommitID: "commit-a", Branch: "main", AttributedCostUSD: "1.230000"},
+			B: api.BranchSummary{CommitID: "commit-b", Branch: "shorter", AttributedCostUSD: "0.750000"},
+		},
+	}
+	cfg, err := config.LoadFromMap(map[string]string{})
+	if err != nil {
+		t.Fatalf("load no-environment config: %v", err)
+	}
+	server, err := api.NewServer(cfg, api.ServerOptions{
+		FrontendRoot: testFrontend(t),
+		History:      reader,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	for _, test := range []struct {
+		path   string
+		marker string
+	}{
+		{"/api/dubs/dub-1/history", `"commits":[{"commit_id":"commit-1"`},
+		{"/api/dubs/dub-1/timeline?language=ml&commit=commit-1", `"segments":[{"segment_index":1`},
+		{"/api/dubs/dub-1/branches?language=ml&a=commit-a&b=commit-b", `"a":{"commit_id":"commit-a"`},
+	} {
+		response, err := http.Get(httpServer.URL + test.path)
+		if err != nil {
+			t.Fatalf("get %s: %v", test.path, err)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			t.Fatalf("read %s: %v", test.path, readErr)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200", test.path, response.StatusCode)
+		}
+		if got := response.Header.Get("Cache-Control"); got != "no-store" {
+			t.Errorf("GET %s Cache-Control = %q, want no-store", test.path, got)
+		}
+		if !strings.Contains(string(body), test.marker) {
+			t.Errorf("GET %s body = %q, want %q", test.path, body, test.marker)
+		}
+	}
+
+	// Every route is mounted without a reader, so a clone with no credentials
+	// answers 503 and the tab keeps its fixture commits.
+	unavailable, err := api.NewServer(cfg, api.ServerOptions{FrontendRoot: testFrontend(t)})
+	if err != nil {
+		t.Fatalf("NewServer without history: %v", err)
+	}
+	unavailableServer := httptest.NewServer(unavailable.Handler())
+	t.Cleanup(unavailableServer.Close)
+	for _, path := range []string{
+		"/api/dubs/dub-1/history",
+		"/api/dubs/dub-1/timeline?language=ml&commit=commit-1",
+		"/api/dubs/dub-1/branches?language=ml&a=commit-a&b=commit-b",
+	} {
+		response, err := http.Get(unavailableServer.URL + path)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			t.Fatalf("read %s: %v", path, readErr)
+		}
+		if response.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("GET %s without history status = %d, want 503", path, response.StatusCode)
+		}
+		if !strings.Contains(string(body), "Ledger history is unavailable.") {
+			t.Errorf("GET %s without history body = %q", path, body)
+		}
+	}
+}
+
 func TestEntrypointExitsCleanlyWithoutLedger(t *testing.T) {
 	projectRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -627,72 +718,128 @@ func TestLedgerReadyProbesClickHouse(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(ping.Close)
-	host, port := testHostPort(t, ping.URL)
 
-	liveCfg := &config.Config{
-		ClickHouseHost:     host,
-		ClickHousePort:     port,
-		ClickHouseUser:     "fixture",
-		ClickHousePassword: "fixture",
+	live := newLedgerReadyServer(t, clickHouseFixtureConfig(t, ping.URL))
+	response := ledgerReadyRequest(t, live)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("ledger readiness = %d, want 200", response.StatusCode)
 	}
-	server, err := api.NewServer(liveCfg, api.ServerOptions{FrontendRoot: testFrontend(t)})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	httpServer := httptest.NewServer(server.Handler())
-	t.Cleanup(httpServer.Close)
-
-	response, err := http.Get(httpServer.URL + "/api/ledger/ready")
-	if err != nil {
-		t.Fatalf("get ledger readiness: %v", err)
-	}
-	body, err := io.ReadAll(response.Body)
-	response.Body.Close()
-	if err != nil {
-		t.Fatalf("read ledger readiness: %v", err)
-	}
-	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"ready"`) {
-		t.Fatalf("ledger readiness = %d %q, want 200 ready", response.StatusCode, body)
+	if status, _ := ledgerReadyPayload(t, response); status != "ready" {
+		t.Fatalf("ledger readiness status = %q, want ready", status)
 	}
 
-	// Nothing listens on the dead port, so the probe must fail the route.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve a dead port: %v", err)
-	}
-	deadAddress := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatalf("close dead port: %v", err)
-	}
-	_, deadPort, err := net.SplitHostPort(deadAddress)
-	if err != nil {
-		t.Fatalf("split dead address: %v", err)
-	}
-	deadPortNumber, err := strconv.Atoi(deadPort)
-	if err != nil {
-		t.Fatalf("parse dead port: %v", err)
-	}
-
-	deadCfg := &config.Config{
+	// Nothing listens on the reserved port, so the probe must fail on the dial
+	// instead of waiting out the response budget.
+	dead := newLedgerReadyServer(t, &config.Config{
 		ClickHouseHost:     "127.0.0.1",
-		ClickHousePort:     deadPortNumber,
+		ClickHousePort:     reserveClosedPort(t),
 		ClickHouseUser:     "fixture",
 		ClickHousePassword: "fixture",
-	}
-	deadServer, err := api.NewServer(deadCfg, api.ServerOptions{FrontendRoot: testFrontend(t)})
-	if err != nil {
-		t.Fatalf("NewServer with dead ClickHouse: %v", err)
-	}
-	deadHTTP := httptest.NewServer(deadServer.Handler())
-	t.Cleanup(deadHTTP.Close)
-
-	response, err = http.Get(deadHTTP.URL + "/api/ledger/ready")
-	if err != nil {
-		t.Fatalf("get ledger readiness against dead ClickHouse: %v", err)
-	}
-	response.Body.Close()
+	})
+	response = ledgerReadyRequest(t, dead)
 	if response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("ledger readiness against dead ClickHouse = %d, want 503", response.StatusCode)
+	}
+	if status, _ := ledgerReadyPayload(t, response); status != "unreachable" {
+		t.Fatalf("ledger readiness against dead ClickHouse status = %q, want unreachable", status)
+	}
+}
+
+// TestLedgerReadyReportsUnreachableOnBadAnswer proves a non-2xx ping answer
+// reports unreachable rather than ready or waking.
+func TestLedgerReadyReportsUnreachableOnBadAnswer(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ping" {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(bad.Close)
+
+	response := ledgerReadyRequest(t, newLedgerReadyServer(t, clickHouseFixtureConfig(t, bad.URL)))
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("ledger readiness = %d, want 503", response.StatusCode)
+	}
+	if status, _ := ledgerReadyPayload(t, response); status != "unreachable" {
+		t.Fatalf("ledger readiness status = %q, want unreachable", status)
+	}
+}
+
+// TestLedgerReadyReportsUnreachableOnRedirect proves a 3xx ping answer stays
+// unreachable. The probe refuses redirects, so a redirect cannot become a 2xx.
+func TestLedgerReadyReportsUnreachableOnRedirect(t *testing.T) {
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ping":
+			http.Redirect(w, r, "/healthy", http.StatusFound)
+		case "/healthy":
+			_, _ = w.Write([]byte("Ok."))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(redirecting.Close)
+
+	response := ledgerReadyRequest(t, newLedgerReadyServer(t, clickHouseFixtureConfig(t, redirecting.URL)))
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("ledger readiness = %d, want 503", response.StatusCode)
+	}
+	if status, _ := ledgerReadyPayload(t, response); status != "unreachable" {
+		t.Fatalf("ledger readiness status = %q, want unreachable", status)
+	}
+}
+
+// TestLedgerReadyReportsUnreachableOnSchemeMismatch proves a post-connect
+// failure that is not a timeout reports unreachable. Waking must mean the
+// response budget expired, so a TLS probe against a plain HTTP listener cannot
+// report waking forever.
+func TestLedgerReadyReportsUnreachableOnSchemeMismatch(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ping" {
+			_, _ = w.Write([]byte("Ok."))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(plain.Close)
+
+	cfg := clickHouseFixtureConfig(t, plain.URL)
+	cfg.ClickHouseSecure = true
+	response := ledgerReadyRequest(t, newLedgerReadyServer(t, cfg))
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("ledger readiness = %d, want 503", response.StatusCode)
+	}
+	if status, _ := ledgerReadyPayload(t, response); status != "unreachable" {
+		t.Fatalf("ledger readiness status = %q, want unreachable", status)
+	}
+}
+
+// TestLedgerReadyReportsMisconfigurationBeforeProbing proves a missing
+// credential fails the route without any network attempt.
+func TestLedgerReadyReportsMisconfigurationBeforeProbing(t *testing.T) {
+	var requests atomic.Int32
+	standIn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(standIn.Close)
+
+	cfg := clickHouseFixtureConfig(t, standIn.URL)
+	cfg.ClickHousePassword = ""
+	response := ledgerReadyRequest(t, newLedgerReadyServer(t, cfg))
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("ledger readiness = %d, want 503", response.StatusCode)
+	}
+	status, detail := ledgerReadyPayload(t, response)
+	if status != "misconfigured" {
+		t.Fatalf("ledger readiness status = %q, want misconfigured", status)
+	}
+	if !strings.Contains(detail, "CLICKHOUSE_PASSWORD") {
+		t.Fatalf("ledger readiness detail = %q, want CLICKHOUSE_PASSWORD", detail)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("ClickHouse stand-in requests = %d, want 0", got)
 	}
 }
 
@@ -735,5 +882,187 @@ func copyFixture(t *testing.T, source, destination string) {
 	}
 	if err := out.Close(); err != nil {
 		t.Fatalf("close fixture copy: %v", err)
+	}
+}
+
+// ledgerReadyRequest returns the readiness response for a server URL.
+func ledgerReadyRequest(t *testing.T, serverURL string) *http.Response {
+	t.Helper()
+	response, err := http.Get(serverURL + "/api/ledger/ready")
+	if err != nil {
+		t.Fatalf("get ledger readiness: %v", err)
+	}
+	return response
+}
+
+// ledgerReadyPayload reads a readiness response and returns status and detail.
+func ledgerReadyPayload(t *testing.T, response *http.Response) (string, string) {
+	t.Helper()
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read ledger readiness: %v", err)
+	}
+	if got := response.Header.Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("ledger readiness content type = %q, want JSON", got)
+	}
+	var payload struct {
+		Status string `json:"status"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode ledger readiness %q: %v", body, err)
+	}
+	return payload.Status, payload.Detail
+}
+
+// newLedgerReadyServer mounts the API handler over cfg and returns its URL.
+func newLedgerReadyServer(t *testing.T, cfg *config.Config) string {
+	t.Helper()
+	server, err := api.NewServer(cfg, api.ServerOptions{FrontendRoot: testFrontend(t)})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	return httpServer.URL
+}
+
+// clickHouseFixtureConfig points a config at a stand-in ClickHouse URL.
+func clickHouseFixtureConfig(t *testing.T, rawURL string) *config.Config {
+	t.Helper()
+	host, port := testHostPort(t, rawURL)
+	return &config.Config{
+		ClickHouseHost:     host,
+		ClickHousePort:     port,
+		ClickHouseUser:     "fixture",
+		ClickHousePassword: "fixture",
+	}
+}
+
+// reserveClosedPort returns a port that nothing listens on.
+func reserveClosedPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve a dead port: %v", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close dead port: %v", err)
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatalf("split dead address: %v", err)
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatalf("parse dead port: %v", err)
+	}
+	return number
+}
+
+// TestServerMountsRunRoutes proves the start, events, and cancel routes mount.
+func TestServerMountsRunRoutes(t *testing.T) {
+	storage := t.TempDir()
+	writeProjectSource(t, storage, "dub-mount")
+	started := make(chan struct{})
+	runner := runFunc(func(ctx context.Context, _ api.RunRequest, _ func(api.ProgressEvent)) (api.RunResult, error) {
+		close(started)
+		<-ctx.Done()
+		return api.RunResult{}, ctx.Err()
+	})
+	cfg, err := config.LoadFromMap(map[string]string{})
+	if err != nil {
+		t.Fatalf("load fixture config: %v", err)
+	}
+	server, err := api.NewServer(cfg, api.ServerOptions{
+		FrontendRoot: testFrontend(t),
+		Runner:       runner,
+		Recorder:     recordFunc(func(context.Context, api.RunRequest, api.RunResult) error { return nil }),
+		StorageDir:   storage,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	start := postRun(t, httpServer.URL, "dub-mount", "language=ml")
+	start.Body.Close()
+	if start.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", start.StatusCode)
+	}
+	<-started
+
+	events, err := http.Get(httpServer.URL + "/api/dubs/dub-mount/events")
+	if err != nil {
+		t.Fatalf("get events: %v", err)
+	}
+	if events.StatusCode != http.StatusOK {
+		events.Body.Close()
+		t.Fatalf("events status = %d, want 200", events.StatusCode)
+	}
+	if got := events.Header.Get("Content-Type"); got != "text/event-stream" {
+		events.Body.Close()
+		t.Fatalf("events content type = %q, want text/event-stream", got)
+	}
+	events.Body.Close()
+
+	cancel := postCancel(t, httpServer.URL, "dub-mount")
+	cancel.Body.Close()
+	if cancel.StatusCode != http.StatusAccepted {
+		t.Fatalf("cancel status = %d, want 202", cancel.StatusCode)
+	}
+}
+
+// TestShutdownCancelsRunningPipeline proves shutdown cancels the pipeline
+// context and waits for the run goroutine to stop.
+func TestShutdownCancelsRunningPipeline(t *testing.T) {
+	storage := t.TempDir()
+	writeProjectSource(t, storage, "dub-shutdown")
+	started := make(chan struct{})
+	stopped := make(chan error, 1)
+	runner := runFunc(func(ctx context.Context, _ api.RunRequest, _ func(api.ProgressEvent)) (api.RunResult, error) {
+		close(started)
+		<-ctx.Done()
+		stopped <- ctx.Err()
+		return api.RunResult{}, ctx.Err()
+	})
+	cfg, err := config.LoadFromMap(map[string]string{})
+	if err != nil {
+		t.Fatalf("load fixture config: %v", err)
+	}
+	server, err := api.NewServer(cfg, api.ServerOptions{
+		FrontendRoot: testFrontend(t),
+		Runner:       runner,
+		Recorder:     recordFunc(func(context.Context, api.RunRequest, api.RunResult) error { return nil }),
+		StorageDir:   storage,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	start := postRun(t, httpServer.URL, "dub-shutdown", "language=ml")
+	start.Body.Close()
+	if start.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", start.StatusCode)
+	}
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("pipeline context error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown returned before the pipeline stopped")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -555,6 +556,196 @@ func TestAppendCommitSerializesConcurrentDuplicateIdentity(t *testing.T) {
 	if gotChecks != 2 {
 		t.Errorf("identity lookups = %d, want 2", gotChecks)
 	}
+}
+
+func TestListCommitsOrdersAndConvertsCreatedAt(t *testing.T) {
+	t.Parallel()
+
+	const (
+		dubID = "dub-history"
+		// The stand-in returns the rows out of order, so the reader must sort them.
+		payload = `{"commit_id":"c3","parent_commit_id":"c2","version_seq":2,"created_at_ms":1788825602789,"has_action":1,"action_type":"line_rewritten","author":"manual_ui","prompt":"","action_created_at_ms":1788825602789,"event_key":"k3"}` + "\n" +
+			`{"commit_id":"c1","parent_commit_id":"","version_seq":1,"created_at_ms":1788825600000,"has_action":1,"action_type":"segment_created","author":"agent","prompt":"","action_created_at_ms":1788825600000,"event_key":"k1"}` + "\n" +
+			`{"commit_id":"c2","parent_commit_id":"c1","version_seq":2,"created_at_ms":1788825601500,"has_action":1,"action_type":"user_command","author":"command_bar","prompt":"tighten line 3","action_created_at_ms":1788825601500,"event_key":"k2"}` + "\n"
+	)
+
+	var (
+		mu       sync.Mutex
+		requests []url.Values
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("query"); got != selectCommitHistory {
+			t.Errorf("query = %q, want the commit history statement", got)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		requests = append(requests, r.URL.Query())
+		mu.Unlock()
+		if _, err := w.Write([]byte(payload)); err != nil {
+			t.Errorf("write commit history payload: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := newCommitTestClient(t, server.URL)
+	defer client.Close()
+
+	got, err := client.ListCommits(context.Background(), dubID)
+	if err != nil {
+		t.Fatalf("ListCommits: %v", err)
+	}
+	wantIDs := []string{"c1", "c2", "c3"}
+	if len(got) != len(wantIDs) {
+		t.Fatalf("ListCommits returned %d rows, want %d", len(got), len(wantIDs))
+	}
+	for index, id := range wantIDs {
+		if got[index].CommitID != id {
+			t.Errorf("row %d commit_id = %q, want %s", index, got[index].CommitID, id)
+		}
+	}
+	wantParents := []string{"", "c1", "c2"}
+	for index, want := range wantParents {
+		if got[index].ParentCommitID != want {
+			t.Errorf("row %d parent_commit_id = %q, want %q", index, got[index].ParentCommitID, want)
+		}
+	}
+	wantCreated := []string{"2026-09-08T00:00:00Z", "2026-09-08T00:00:01.5Z", "2026-09-08T00:00:02.789Z"}
+	for index, want := range wantCreated {
+		if got[index].CreatedAt != want {
+			t.Errorf("row %d created_at = %q, want %q", index, got[index].CreatedAt, want)
+		}
+	}
+	if got[1].Action != "user_command" || got[1].Author != "command_bar" || got[1].Instruction != "tighten line 3" {
+		t.Errorf("row 1 provenance = %+v, want the command-bar action", got[1])
+	}
+
+	mu.Lock()
+	captured := append([]url.Values(nil), requests...)
+	mu.Unlock()
+	if len(captured) != 1 {
+		t.Fatalf("commit history requests = %d, want 1", len(captured))
+	}
+	if gotID := captured[0].Get("param_dub_id"); gotID != dubID {
+		t.Errorf("param_dub_id = %q, want %s", gotID, dubID)
+	}
+	if strings.Contains(captured[0].Get("query"), dubID) {
+		t.Errorf("statement interpolated dub_id %q: %s", dubID, captured[0].Get("query"))
+	}
+}
+
+func TestListCommitsPrefersPromptBearingAction(t *testing.T) {
+	t.Parallel()
+
+	payload := `{"commit_id":"c1","parent_commit_id":"","version_seq":1,"created_at_ms":1788825600000,"has_action":1,"action_type":"take_rendered","author":"agent","prompt":"","action_created_at_ms":1788825602000,"event_key":"k-newer"}` + "\n" +
+		`{"commit_id":"c1","parent_commit_id":"","version_seq":1,"created_at_ms":1788825600000,"has_action":1,"action_type":"user_command","author":"command_bar","prompt":"tighten line 3","action_created_at_ms":1788825601000,"event_key":"k-older"}` + "\n"
+
+	client := newCommitHistoryClient(t, payload)
+	got, err := client.ListCommits(context.Background(), "dub")
+	if err != nil {
+		t.Fatalf("ListCommits: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListCommits returned %d rows, want 1 collapsed commit", len(got))
+	}
+	if got[0].Action != "user_command" || got[0].Author != "command_bar" || got[0].Instruction != "tighten line 3" {
+		t.Errorf("collapsed action = %+v, want the older command-bar row whose prompt survives", got[0])
+	}
+}
+
+func TestListCommitsBreaksActionTiesByCreatedAtThenEventKey(t *testing.T) {
+	t.Parallel()
+
+	payload := `{"commit_id":"c1","parent_commit_id":"","version_seq":1,"created_at_ms":1788825600000,"has_action":1,"action_type":"user_command","author":"command_bar","prompt":"older","action_created_at_ms":1788825601000,"event_key":"k-z"}` + "\n" +
+		`{"commit_id":"c1","parent_commit_id":"","version_seq":1,"created_at_ms":1788825600000,"has_action":1,"action_type":"user_command","author":"command_bar","prompt":"newer","action_created_at_ms":1788825602000,"event_key":"k-a"}` + "\n" +
+		`{"commit_id":"c2","parent_commit_id":"c1","version_seq":2,"created_at_ms":1788825600000,"has_action":1,"action_type":"user_command","author":"command_bar","prompt":"first","action_created_at_ms":1788825603000,"event_key":"k-a"}` + "\n" +
+		`{"commit_id":"c2","parent_commit_id":"c1","version_seq":2,"created_at_ms":1788825600000,"has_action":1,"action_type":"user_command","author":"command_bar","prompt":"second","action_created_at_ms":1788825603000,"event_key":"k-b"}` + "\n"
+
+	client := newCommitHistoryClient(t, payload)
+	got, err := client.ListCommits(context.Background(), "dub")
+	if err != nil {
+		t.Fatalf("ListCommits: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListCommits returned %d rows, want 2 commits", len(got))
+	}
+	if got[0].CommitID != "c1" || got[0].Instruction != "newer" {
+		t.Errorf("commit c1 = %+v, want the newer action because created_at outranks event_key", got[0])
+	}
+	if got[1].CommitID != "c2" || got[1].Instruction != "second" {
+		t.Errorf("commit c2 = %+v, want the greater event_key when created_at ties", got[1])
+	}
+}
+
+func TestListCommitsWithoutActionRow(t *testing.T) {
+	t.Parallel()
+
+	// The stand-in fills author the way a real LEFT JOIN does, with the Enum8 default agent.
+	payload := `{"commit_id":"c1","parent_commit_id":"","version_seq":1,"created_at_ms":1788825600000,"has_action":0,"action_type":"","author":"agent","prompt":"","action_created_at_ms":0,"event_key":""}` + "\n"
+
+	client := newCommitHistoryClient(t, payload)
+	got, err := client.ListCommits(context.Background(), "dub")
+	if err != nil {
+		t.Fatalf("ListCommits: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListCommits returned %d rows, want the commit itself", len(got))
+	}
+	if got[0].Action != "" || got[0].Author != "" || got[0].Instruction != "" {
+		t.Errorf("actionless commit provenance = %+v, want empty action, author and instruction", got[0])
+	}
+	if got[0].CommitID != "c1" || got[0].VersionSeq != 1 || got[0].CreatedAt != "2026-09-08T00:00:00Z" {
+		t.Errorf("actionless commit = %+v, want c1 at version 1", got[0])
+	}
+}
+
+func TestListCommitsRejectsBlankDubID(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu       sync.Mutex
+		requests int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := newCommitTestClient(t, server.URL)
+	defer client.Close()
+	if _, err := client.ListCommits(context.Background(), "  "); err == nil {
+		t.Fatal("ListCommits with a blank dub_id succeeded, want a validation error")
+	}
+	mu.Lock()
+	got := requests
+	mu.Unlock()
+	if got != 0 {
+		t.Errorf("blank dub_id sent %d requests, want none", got)
+	}
+}
+
+// newCommitHistoryClient returns a client whose stand-in answers selectCommitHistory with
+// payload. The stand-in rejects any other statement, so a reader that bypasses the shared
+// builder fails here.
+func newCommitHistoryClient(t *testing.T, payload string) *Client {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("query"); got != selectCommitHistory {
+			t.Errorf("query = %q, want the commit history statement", got)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if _, err := w.Write([]byte(payload)); err != nil {
+			t.Errorf("write commit history payload: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newCommitTestClient(t, server.URL)
+	t.Cleanup(func() { client.Close() })
+	return client
 }
 
 func newCommitTestClient(t *testing.T, endpoint string) *Client {

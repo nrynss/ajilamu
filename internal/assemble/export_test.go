@@ -14,29 +14,29 @@ func TestExportTestdata(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join("..", "..", "testdata", "clip.mp4")
 	bedFile := filepath.Join(dir, "bed.wav")
-	bed, err := BuildBed(source, "", bedFile)
+	bed, err := BuildBed(t.Context(), source, "", bedFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	placed, err := bed.Place(fixtureClips(t), filepath.Join(dir, "speech.wav"))
+	placed, err := bed.Place(t.Context(), fixtureClips(t), filepath.Join(dir, "speech.wav"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	replacedMix := filepath.Join(dir, "replaced.wav")
 	duckedMix := filepath.Join(dir, "ducked.wav")
-	if err := bed.Overlay(placed.File, replacedMix); err != nil {
+	if err := bed.Overlay(t.Context(), placed.File, replacedMix); err != nil {
 		t.Fatal(err)
 	}
-	if err := bed.Duck(placed.File, duckedMix); err != nil {
+	if err := bed.Duck(t.Context(), placed.File, duckedMix); err != nil {
 		t.Fatal(err)
 	}
 
 	replaced := filepath.Join(dir, DubbedReplaced)
 	ducked := filepath.Join(dir, DubbedDucked)
-	if err := Export(source, replacedMix, replaced); err != nil {
+	if err := Export(t.Context(), source, replacedMix, replaced); err != nil {
 		t.Fatal(err)
 	}
-	if err := Export(source, duckedMix, ducked); err != nil {
+	if err := Export(t.Context(), source, duckedMix, ducked); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,7 +106,7 @@ func TestExportKeepsVideoWhenMixLengthDiffers(t *testing.T) {
 			mix := filepath.Join(t.TempDir(), "mix.wav")
 			synthMix(t, mix, seconds)
 			out := filepath.Join(t.TempDir(), "dubbed_replaced.mp4")
-			if err := Export(source, mix, out); err != nil {
+			if err := Export(t.Context(), source, mix, out); err != nil {
 				t.Fatal(err)
 			}
 			gotDur := probeFormatDuration(t, out)
@@ -135,13 +135,13 @@ func TestExportRejectsInvalidInputsAndPreservesOutputs(t *testing.T) {
 	if err := os.WriteFile(output, []byte("previous render"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Export("", mix, output); err == nil {
+	if err := Export(t.Context(), "", mix, output); err == nil {
 		t.Fatal("accepted empty video")
 	}
-	if err := Export(source, "", output); err == nil {
+	if err := Export(t.Context(), source, "", output); err == nil {
 		t.Fatal("accepted empty mix")
 	}
-	if err := Export(source, filepath.Join(dir, "missing.wav"), output); err == nil {
+	if err := Export(t.Context(), source, filepath.Join(dir, "missing.wav"), output); err == nil {
 		t.Fatal("accepted a missing mix")
 	}
 	data, err := os.ReadFile(output)
@@ -150,20 +150,20 @@ func TestExportRejectsInvalidInputsAndPreservesOutputs(t *testing.T) {
 	}
 	audioOnly := filepath.Join(dir, "audio-only.wav")
 	synthMix(t, audioOnly, 1)
-	if err := Export(audioOnly, mix, output); err == nil {
+	if err := Export(t.Context(), audioOnly, mix, output); err == nil {
 		t.Fatal("accepted a source with no video stream")
 	}
-	if err := Export(source, mix, source); err == nil {
+	if err := Export(t.Context(), source, mix, source); err == nil {
 		t.Fatal("allowed overwriting the video")
 	}
-	if err := Export(source, mix, mix); err == nil {
+	if err := Export(t.Context(), source, mix, mix); err == nil {
 		t.Fatal("allowed overwriting the mix")
 	}
 	alias := filepath.Join(dir, "alias.mp4")
 	if err := os.Link(source, alias); err != nil {
 		t.Fatal(err)
 	}
-	if err := Export(source, mix, alias); err == nil {
+	if err := Export(t.Context(), source, mix, alias); err == nil {
 		t.Fatal("allowed overwriting the video alias")
 	}
 	entries, err := filepath.Glob(filepath.Join(dir, ".assemble-*"))

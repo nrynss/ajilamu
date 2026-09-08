@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte"
+  import { onDestroy, onMount, tick } from "svelte"
   import { page } from "$app/state"
   import {
     fixtureLineRows,
@@ -14,15 +14,16 @@
     type CommandIntent,
     type CommandParseFailure
   } from "$lib/edit/CommandBar.svelte"
+  import { watchRunProgress, type ProgressSubscription } from "$lib/progress"
   import LanguageStrip from "$lib/LanguageStrip.svelte"
   import LengthBar from "$lib/LengthBar.svelte"
   import Preview from "$lib/Preview.svelte"
   import type { PlaybackSnapshot } from "$lib/Preview.svelte"
   import Rail from "$lib/Rail.svelte"
-  import { PanelState, type PanelViewState } from "$lib/states"
+  import { PanelState, ProcessingBanner, type PanelViewState, type ProcessingStep } from "$lib/states"
   import { createShortcutManager } from "$lib/shortcuts"
   import Timeline from "$lib/Timeline.svelte"
-  import type { Dub, DubIndex, Take } from "$lib/types"
+  import type { Dub, DubIndex, ProgressEvent, Take } from "$lib/types"
 
   type SelectionSource = "user" | "playhead"
 
@@ -44,6 +45,11 @@
   const pendingProjectSentence = "This project is waiting for dubbing. Its video is saved, but no lines, takes, or costs exist yet."
   const missingProjectSentence = "We could not find this project. Check the URL or return to the project index."
   const lookupFailedSentence = "We could not load the project list. Refresh this page or return to the index."
+
+  const runUnavailableSentence = "Runs are unavailable, so this project cannot start."
+  const runNoSourceSentence = "This project has no source video, so the run cannot start."
+  const runStartFailedSentence = "We could not reach the server, so the dubbing run did not start."
+  const runStartGenericSentence = "The dubbing run did not start, so nothing is processing."
 
   let projectID = $derived(page.params.id ?? "fixture")
   let initialDub: Dub | undefined
@@ -87,6 +93,12 @@
   let preview = $state<Preview | undefined>()
   let lengthList = $state<HTMLOListElement | undefined>()
   let takeAudio: HTMLAudioElement | undefined
+  let runStream: ProgressSubscription | undefined
+  let runStarting = $state(false)
+  let runWatching = $state(false)
+  let runEvent = $state<ProgressEvent | undefined>()
+  let runCost = $state<number | undefined>()
+  let runSentence = $state("")
 
   let lineRows = $derived(dub ? fixtureLineRows(dub, activeLanguage) : [])
   let selectedRow = $derived(lineRows.find((row) => row.segment.id === selectedSegmentId))
@@ -94,6 +106,16 @@
   let sharedReferenceSlotMs = $derived(dub ? referenceSlotMs(dub) : 1)
   let sharedPictureDurationMs = $derived(dub ? pictureDurationMs(dub) : 0)
   let flaggedNotes = $derived(lineRows.filter((row) => row.line?.flagged).map(flagSentence))
+  let runStep = $derived.by((): ProcessingStep | undefined => {
+    const event = runEvent
+    if (!event) return undefined
+    return {
+      stage: event.stage,
+      sentence: event.sentence,
+      lineNumber: event.segment_id > 0 ? event.segment_id : undefined,
+      language: event.language || undefined
+    }
+  })
   let railDub = $derived.by((): Dub | undefined => {
     if (!dub) return undefined
     return {
@@ -273,14 +295,99 @@
       && typeof preview.segment.speaker === "string"
   }
 
+  function formatCost(nanodollars: number): string {
+    return `$${(nanodollars / 1_000_000_000).toFixed(2)}`
+  }
+
+  function stopRunStream(): void {
+    runStream?.close()
+    runStream = undefined
+  }
+
+  function watchRun(): void {
+    stopRunStream()
+    runWatching = true
+    runEvent = undefined
+    runCost = undefined
+    runSentence = ""
+    runStream = watchRunProgress(projectID, {
+      onEvent: (event) => {
+        runCost = event.total_nanodollars
+        if (event.type === "progress") {
+          runEvent = event
+          return
+        }
+        runWatching = false
+        runEvent = undefined
+        runSentence = event.sentence
+      },
+      onPhase: (update) => {
+        if (update.phase === "live") {
+          runSentence = ""
+          return
+        }
+        if (update.phase === "reconnecting") {
+          runSentence = update.sentence
+          return
+        }
+        if (update.phase === "failed") {
+          runWatching = false
+          runEvent = undefined
+          runSentence = update.sentence
+        }
+      }
+    })
+  }
+
+  async function startFailureSentence(response: Response): Promise<string> {
+    if (response.status === 503) return runUnavailableSentence
+    if (response.status === 404) return runNoSourceSentence
+    try {
+      const body = (await response.json()) as { error?: unknown }
+      if (typeof body.error === "string" && body.error.length > 0) return body.error
+    } catch {
+      // The failure body was not JSON, so the sentence below stands.
+    }
+    return runStartGenericSentence
+  }
+
+  async function startRun(): Promise<void> {
+    if (runStarting || runWatching) return
+    if (!activeLanguage) {
+      runSentence = "This project has no target language, so the run cannot start."
+      return
+    }
+    runStarting = true
+    runSentence = ""
+    try {
+      const response = await fetch(
+        `/api/dubs/${encodeURIComponent(projectID)}/run?language=${encodeURIComponent(activeLanguage)}`,
+        { method: "POST" }
+      )
+      if (response.status === 409) {
+        watchRun()
+        return
+      }
+      if (!response.ok) {
+        runSentence = await startFailureSentence(response)
+        return
+      }
+      watchRun()
+    } catch {
+      runSentence = runStartFailedSentence
+    } finally {
+      runStarting = false
+    }
+  }
+
   $effect(() => {
     const id = page.params.id
     if (!id || isFixtureID(id)) {
       if (page.url.searchParams.get("panel") !== "loading") {
         try {
-          const fixtureDub = loadFixtureDub(id ?? "fixture")
-          dub = fixtureDub
-          workspaceState = fixtureDub && fixtureDub.segments.length > 0 && fixtureDub.languages.length > 0
+          const loaded = loadFixtureDub(id ?? "fixture")
+          dub = loaded
+          workspaceState = loaded && loaded.segments.length > 0 && loaded.languages.length > 0
             ? { kind: "populated" }
             : {
                 kind: "empty",
@@ -351,6 +458,10 @@
       stopTake()
     }
   })
+
+  onDestroy(() => {
+    stopRunStream()
+  })
 </script>
 
 <svelte:head>
@@ -363,6 +474,25 @@
         <section class="workspace" aria-label={`${dub.title} dubbing workspace`} data-project-id={projectID}>
         <section class="picture-area" aria-label="Picture and playback">
           <h1 class="project-title">{dub.title}</h1>
+          <div class="run-panel">
+            {#if !runWatching}
+              <button type="button" class="run-start" onclick={startRun} disabled={runStarting}>
+                {runStarting ? "Starting the dubbing run" : `Start the dubbing run into ${activeLanguage.toUpperCase()}`}
+              </button>
+            {/if}
+            {#if runStep}
+              <ProcessingBanner step={runStep} />
+            {/if}
+            {#if runCost !== undefined}
+              <p class="run-cost">
+                <span class="label">{runWatching ? "Running cost" : "Total cost"}</span>
+                <span class="numeric">{formatCost(runCost)}</span>
+              </p>
+            {/if}
+            {#if runSentence}
+              <p class="run-note" role="status">{runSentence}</p>
+            {/if}
+          </div>
           <Preview
             bind:this={preview}
             src="/clip.mp4"
@@ -529,6 +659,33 @@
     color: var(--dim);
     font-size: 11.5px;
     margin: 8px 0 0;
+  }
+
+  .run-panel {
+    display: grid;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .run-start {
+    justify-self: start;
+  }
+
+  .run-cost {
+    align-items: baseline;
+    display: flex;
+    gap: 8px;
+    margin: 0;
+  }
+
+  .run-cost .label {
+    margin: 0;
+  }
+
+  .run-note {
+    color: var(--dim);
+    font-size: 11.5px;
+    margin: 0;
   }
 
   .flagged-lines {

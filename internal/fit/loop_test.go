@@ -15,6 +15,7 @@ import (
 	"github.com/nrynss/ajilamu/internal/api"
 	"github.com/nrynss/ajilamu/internal/cost"
 	"github.com/nrynss/ajilamu/internal/gemini"
+	"github.com/nrynss/ajilamu/internal/media"
 	"github.com/nrynss/ajilamu/internal/tts"
 	"github.com/nrynss/ajilamu/internal/types"
 )
@@ -1027,5 +1028,744 @@ func TestPipelineProxyDecorators(t *testing.T) {
 	}
 	if len(res.Charges) == 0 {
 		t.Errorf("pipeline Charges is empty, want recorded charges")
+	}
+}
+
+// TestPipelineResumesAfterCompletedTake proves an interrupted run resumes.
+// The second pass renders only the lines the first pass never finished.
+func TestPipelineResumesAfterCompletedTake(t *testing.T) {
+	workDir := t.TempDir()
+	segments := []types.Segment{
+		{ID: 1, StartMs: 0, EndMs: 2000, Text: "First line", Speaker: types.Speaker{Name: "Suni Williams"}},
+		{ID: 2, StartMs: 2000, EndMs: 4000, Text: "Second line", Speaker: types.Speaker{Name: "Suni Williams"}},
+		{ID: 3, StartMs: 4000, EndMs: 6000, Text: "Third line", Speaker: types.Speaker{Name: "Suni Williams"}},
+	}
+
+	first := newMockPipelineSynthesizer("", nil)
+	first.durations[1] = []time.Duration{2000 * time.Millisecond}
+	first.errs[2] = errors.New("interrupted mid run")
+
+	cfg := PipelineConfig{
+		Segments:    segments,
+		Translator:  newMockPipelineTranslator(nil),
+		Synthesizer: first,
+		WorkDir:     workDir,
+	}
+	if _, err := RunPipeline(context.Background(), cfg); err == nil {
+		t.Fatal("first pass error = nil, want the interrupted run to fail")
+	}
+	if len(first.requests) != 2 {
+		t.Fatalf("first pass synth requests = %d, want 2", len(first.requests))
+	}
+
+	completed := filepath.Join(workDir, "seg_1_try1.wav")
+	if _, err := os.Stat(completed); err != nil {
+		t.Fatalf("completed take missing after the first pass: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "seg_2_try1.wav")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("interrupted line 2 left a take, stat err = %v", err)
+	}
+
+	second := newMockPipelineSynthesizer("", nil)
+	second.durations[2] = []time.Duration{2000 * time.Millisecond}
+	second.durations[3] = []time.Duration{2000 * time.Millisecond}
+	cfg.Translator = newMockPipelineTranslator(nil)
+	cfg.Synthesizer = second
+
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("resumed run failed: %v", err)
+	}
+
+	var rendered []int
+	for _, req := range second.requests {
+		rendered = append(rendered, req.SegmentID)
+	}
+	if len(rendered) != 2 || rendered[0] != 2 || rendered[1] != 3 {
+		t.Fatalf("resumed synth requests = %v, want [2 3]", rendered)
+	}
+
+	line1, ok := res.Line(1)
+	if !ok {
+		t.Fatal("resumed run lost line 1")
+	}
+	if line1.ChosenTake.File != completed {
+		t.Errorf("line 1 take = %s, want the take from the first pass", line1.ChosenTake.File)
+	}
+	if line1.Flagged {
+		t.Errorf("line 1 flagged = true, want false")
+	}
+	if line1.ChosenTake.Fit.Measured != 2000*time.Millisecond {
+		t.Errorf("line 1 measured = %v, want 2000ms", line1.ChosenTake.Fit.Measured)
+	}
+	if !res.IsClean() {
+		t.Errorf("resumed run flagged %v, want clean", res.FlaggedSegments)
+	}
+}
+
+// TestPipelineReplaysRecordedStretchedTake proves the loop never hands a
+// stretched take to RepairLine. It replays the recorded result instead.
+func TestPipelineReplaysRecordedStretchedTake(t *testing.T) {
+	workDir := t.TempDir()
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "Stretched resume line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	stretchedPath := filepath.Join(workDir, "seg_1_stretched.wav")
+	if err := writeTestWAV(stretchedPath, slot); err != nil {
+		t.Fatalf("writeTestWAV failed: %v", err)
+	}
+
+	recorded := LineResult{
+		Segment:    seg,
+		ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: stretchedPath, Duration: slot, Fit: types.NewFit(slot, slot)},
+		Attempts: []LineAttempt{{
+			Attempt:      1,
+			Mode:         gemini.ModeNormal,
+			Text:         "Stretched resume line",
+			AudioPath:    stretchedPath,
+			Fit:          types.NewFit(slot, slot),
+			Repair:       types.RepairAtempo,
+			RepairDetail: "atempo stretch applied at ratio 1.0500",
+			Stretched:    true,
+			Ratio:        1.05,
+		}},
+		NotificationCopy: "Line 1 fits slot (2000ms) on attempt 1 after time stretch at ratio 1.0500.",
+	}
+	if err := writeSegmentRecord(workDir, tts.Malayalam, recorded); err != nil {
+		t.Fatalf("writeSegmentRecord failed: %v", err)
+	}
+
+	synth := newMockPipelineSynthesizer("", nil)
+	cfg := PipelineConfig{
+		Segments:    []types.Segment{seg},
+		Translator:  newMockPipelineTranslator(nil),
+		Synthesizer: synth,
+		WorkDir:     workDir,
+	}
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunPipeline failed: %v", err)
+	}
+
+	if len(synth.requests) != 0 {
+		t.Fatalf("synth requests = %d, want 0 for a replayed stretched take", len(synth.requests))
+	}
+	line, ok := res.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in results")
+	}
+	if line.ChosenTake.File != stretchedPath {
+		t.Errorf("line 1 take = %s, want %s", line.ChosenTake.File, stretchedPath)
+	}
+	if line.Flagged {
+		t.Errorf("line 1 flagged = true, want false")
+	}
+	if len(line.Attempts) != 1 {
+		t.Fatalf("line 1 attempts = %d, want 1", len(line.Attempts))
+	}
+	if line.Attempts[0].Repair != types.RepairAtempo || !line.Attempts[0].Stretched {
+		t.Errorf("line 1 attempt = %+v, want the recorded atempo attempt", line.Attempts[0])
+	}
+	if line.Attempts[0].Text != "Stretched resume line" {
+		t.Errorf("line 1 text = %q, want the recorded text", line.Attempts[0].Text)
+	}
+}
+
+// TestReusableTakeRefusesStretchedAndFlagged pins the resume rule.
+// Only a first attempt take that fit without a flag is reusable.
+func TestReusableTakeRefusesStretchedAndFlagged(t *testing.T) {
+	raw := LineResult{
+		ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: "seg_1_try1.wav"},
+	}
+	if take := reusableTake(raw); take == nil || take.File != "seg_1_try1.wav" {
+		t.Errorf("reusableTake(raw first attempt) = %v, want the recorded take", take)
+	}
+
+	stretched := LineResult{
+		ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: "seg_1_stretched.wav"},
+	}
+	if take := reusableTake(stretched); take != nil {
+		t.Errorf("reusableTake(stretched) = %v, want nil", take)
+	}
+
+	flagged := LineResult{
+		Flagged:    true,
+		ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: "seg_1_try1.wav"},
+	}
+	if take := reusableTake(flagged); take != nil {
+		t.Errorf("reusableTake(flagged) = %v, want nil", take)
+	}
+
+	late := LineResult{
+		ChosenTake: types.Take{SegmentID: 1, Attempt: 2, File: "seg_1_try2.wav"},
+	}
+	if take := reusableTake(late); take != nil {
+		t.Errorf("reusableTake(second attempt) = %v, want nil", take)
+	}
+}
+
+// refusingSynthesizer mirrors the production client and refuses to overwrite.
+// The loop must clear a broken take before the fresh render claims that path.
+type refusingSynthesizer struct {
+	inner *mockPipelineSynthesizer
+}
+
+func (s *refusingSynthesizer) Synthesize(ctx context.Context, req tts.SynthesizeRequest) error {
+	if _, err := os.Stat(req.OutPath); err == nil {
+		return fmt.Errorf("tts refuses to overwrite %s", req.OutPath)
+	}
+	return s.inner.Synthesize(ctx, req)
+}
+
+// TestPipelineRerendersEmptyRecordedTake proves a zero-length take is not
+// completed work. The loop rejects the record and renders the line again.
+func TestPipelineRerendersEmptyRecordedTake(t *testing.T) {
+	workDir := t.TempDir()
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "Truncated take line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	takePath := filepath.Join(workDir, "seg_1_try1.wav")
+	if err := os.WriteFile(takePath, nil, 0o644); err != nil {
+		t.Fatalf("write empty take: %v", err)
+	}
+
+	recorded := LineResult{
+		Segment:    seg,
+		ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: takePath, Duration: slot, Fit: types.NewFit(slot, slot)},
+		Attempts: []LineAttempt{{
+			Attempt:      1,
+			Mode:         gemini.ModeNormal,
+			Text:         "Recorded text",
+			AudioPath:    takePath,
+			Fit:          types.NewFit(slot, slot),
+			Repair:       types.RepairNone,
+			RepairDetail: "fits slot within dead band",
+		}},
+		NotificationCopy: "Line 1 fits slot on attempt 1.",
+	}
+	if err := writeSegmentRecord(workDir, tts.Malayalam, recorded); err != nil {
+		t.Fatalf("writeSegmentRecord failed: %v", err)
+	}
+
+	synth := &refusingSynthesizer{inner: newMockPipelineSynthesizer("", nil)}
+	synth.inner.durations[1] = []time.Duration{slot}
+
+	cfg := PipelineConfig{
+		Segments:    []types.Segment{seg},
+		Translator:  newMockPipelineTranslator(nil),
+		Synthesizer: synth,
+		WorkDir:     workDir,
+	}
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("resumed run failed: %v", err)
+	}
+
+	if len(synth.inner.requests) != 1 {
+		t.Fatalf("synth requests = %d, want 1 to re-render the empty take", len(synth.inner.requests))
+	}
+	line, ok := res.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in results")
+	}
+	if line.ChosenTake.File != takePath {
+		t.Errorf("line 1 take = %s, want %s", line.ChosenTake.File, takePath)
+	}
+	if line.ChosenTake.Fit.Measured != slot {
+		t.Errorf("line 1 measured = %v, want %v", line.ChosenTake.Fit.Measured, slot)
+	}
+	info, err := os.Stat(takePath)
+	if err != nil {
+		t.Fatalf("stat re-rendered take: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Error("re-rendered take is still empty")
+	}
+}
+
+// TestPipelineRerendersEmptyReplayedTake proves the replay path never adopts
+// an empty take. A flagged or stretched record with a truncated take renders again.
+func TestPipelineRerendersEmptyReplayedTake(t *testing.T) {
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "Replayed truncated line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	cases := []struct {
+		name     string
+		takeName string
+		record   func(takePath string) LineResult
+	}{
+		{
+			name:     "flagged",
+			takeName: "seg_1_try1.wav",
+			record: func(takePath string) LineResult {
+				return LineResult{
+					Segment:    seg,
+					Flagged:    true,
+					ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: takePath, Fit: types.NewFit(slot, 0)},
+					Attempts: []LineAttempt{{
+						Attempt:      1,
+						Mode:         gemini.ModeNormal,
+						Text:         "Stale flagged text",
+						AudioPath:    takePath,
+						Fit:          types.NewFit(slot, 0),
+						Repair:       types.RepairManual,
+						RepairDetail: "flagged for creator review",
+					}},
+					NotificationCopy: "Line 1 flagged for creator review.",
+				}
+			},
+		},
+		{
+			name:     "stretched",
+			takeName: "seg_1_stretched.wav",
+			record: func(takePath string) LineResult {
+				return LineResult{
+					Segment:    seg,
+					ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: takePath, Duration: slot, Fit: types.NewFit(slot, slot)},
+					Attempts: []LineAttempt{{
+						Attempt:      1,
+						Mode:         gemini.ModeNormal,
+						Text:         "Stale stretched text",
+						AudioPath:    takePath,
+						Fit:          types.NewFit(slot, slot),
+						Repair:       types.RepairAtempo,
+						RepairDetail: "atempo stretch applied at ratio 1.0500",
+						Stretched:    true,
+						Ratio:        1.05,
+					}},
+					NotificationCopy: "Line 1 fits slot after time stretch.",
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			takePath := filepath.Join(workDir, tc.takeName)
+			if err := os.WriteFile(takePath, nil, 0o644); err != nil {
+				t.Fatalf("write empty take: %v", err)
+			}
+			if err := writeSegmentRecord(workDir, tts.Malayalam, tc.record(takePath)); err != nil {
+				t.Fatalf("writeSegmentRecord failed: %v", err)
+			}
+
+			synth := &refusingSynthesizer{inner: newMockPipelineSynthesizer("", nil)}
+			synth.inner.durations[1] = []time.Duration{slot}
+
+			cfg := PipelineConfig{
+				Segments:    []types.Segment{seg},
+				Translator:  newMockPipelineTranslator(nil),
+				Synthesizer: synth,
+				WorkDir:     workDir,
+			}
+			res, err := RunPipeline(context.Background(), cfg)
+			if err != nil {
+				t.Fatalf("resumed run failed: %v", err)
+			}
+			if len(synth.inner.requests) != 1 {
+				t.Fatalf("synth requests = %d, want 1 because an empty take cannot be replayed", len(synth.inner.requests))
+			}
+			line, ok := res.Line(1)
+			if !ok {
+				t.Fatal("missing line 1 in results")
+			}
+			if line.Flagged {
+				t.Error("line 1 flagged = true, want the fresh render")
+			}
+			if len(line.Attempts) == 0 || strings.HasPrefix(line.Attempts[0].Text, "Stale") {
+				t.Errorf("line 1 attempts = %+v, want a fresh render", line.Attempts)
+			}
+
+			freshPath := filepath.Join(workDir, "seg_1_try1.wav")
+			if takePath != freshPath {
+				if _, err := os.Stat(takePath); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("empty recorded take still present, stat err = %v", err)
+				}
+			}
+			info, err := os.Stat(freshPath)
+			if err != nil {
+				t.Fatalf("stat fresh take: %v", err)
+			}
+			if info.Size() == 0 {
+				t.Error("fresh take is empty")
+			}
+		})
+	}
+}
+
+// writePartialHeaderWAV writes a non-empty file cut inside the WAV header.
+// ffprobe cannot decode it, so the loop must not treat it as completed work.
+func writePartialHeaderWAV(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("RIFF\x00\x00\x00\x00WAVEfmt "), 0o644); err != nil {
+		t.Fatalf("write partial header take: %v", err)
+	}
+}
+
+// TestPipelineRerendersUndecodableRecordedTake proves a non-empty take that
+// no decoder can read is not completed work. The loop rejects the record,
+// removes the corrupt take, and renders the line again on the InitialTake path.
+func TestPipelineRerendersUndecodableRecordedTake(t *testing.T) {
+	workDir := t.TempDir()
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "Undecodable take line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	takePath := filepath.Join(workDir, "seg_1_try1.wav")
+	writePartialHeaderWAV(t, takePath)
+
+	recorded := LineResult{
+		Segment:    seg,
+		ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: takePath, Duration: slot, Fit: types.NewFit(slot, slot)},
+		Attempts: []LineAttempt{{
+			Attempt:      1,
+			Mode:         gemini.ModeNormal,
+			Text:         "Recorded text",
+			AudioPath:    takePath,
+			Fit:          types.NewFit(slot, slot),
+			Repair:       types.RepairNone,
+			RepairDetail: "fits slot within dead band",
+		}},
+		NotificationCopy: "Line 1 fits slot on attempt 1.",
+	}
+	if err := writeSegmentRecord(workDir, tts.Malayalam, recorded); err != nil {
+		t.Fatalf("writeSegmentRecord failed: %v", err)
+	}
+
+	synth := &refusingSynthesizer{inner: newMockPipelineSynthesizer("", nil)}
+	synth.inner.durations[1] = []time.Duration{slot}
+
+	cfg := PipelineConfig{
+		Segments:    []types.Segment{seg},
+		Translator:  newMockPipelineTranslator(nil),
+		Synthesizer: synth,
+		WorkDir:     workDir,
+	}
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("resumed run failed: %v", err)
+	}
+
+	if len(synth.inner.requests) != 1 {
+		t.Fatalf("synth requests = %d, want 1 to re-render the undecodable take", len(synth.inner.requests))
+	}
+	line, ok := res.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in results")
+	}
+	if line.ChosenTake.File != takePath {
+		t.Errorf("line 1 take = %s, want %s", line.ChosenTake.File, takePath)
+	}
+	measured, err := media.Duration(context.Background(), takePath)
+	if err != nil {
+		t.Fatalf("re-rendered take is not decodable: %v", err)
+	}
+	if measured != slot {
+		t.Errorf("re-rendered take measured = %v, want %v", measured, slot)
+	}
+}
+
+// TestPipelineRerendersUndecodableReplayedTake proves the replay path never
+// adopts a non-empty take that no decoder can read. A flagged or stretched
+// record with such a take renders the line again.
+func TestPipelineRerendersUndecodableReplayedTake(t *testing.T) {
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "Replayed undecodable line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	cases := []struct {
+		name     string
+		takeName string
+		record   func(takePath string) LineResult
+	}{
+		{
+			name:     "flagged",
+			takeName: "seg_1_try1.wav",
+			record: func(takePath string) LineResult {
+				return LineResult{
+					Segment:    seg,
+					Flagged:    true,
+					ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: takePath, Fit: types.NewFit(slot, 0)},
+					Attempts: []LineAttempt{{
+						Attempt:      1,
+						Mode:         gemini.ModeNormal,
+						Text:         "Stale flagged text",
+						AudioPath:    takePath,
+						Fit:          types.NewFit(slot, 0),
+						Repair:       types.RepairManual,
+						RepairDetail: "flagged for creator review",
+					}},
+					NotificationCopy: "Line 1 flagged for creator review.",
+				}
+			},
+		},
+		{
+			name:     "stretched",
+			takeName: "seg_1_stretched.wav",
+			record: func(takePath string) LineResult {
+				return LineResult{
+					Segment:    seg,
+					ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: takePath, Duration: slot, Fit: types.NewFit(slot, slot)},
+					Attempts: []LineAttempt{{
+						Attempt:      1,
+						Mode:         gemini.ModeNormal,
+						Text:         "Stale stretched text",
+						AudioPath:    takePath,
+						Fit:          types.NewFit(slot, slot),
+						Repair:       types.RepairAtempo,
+						RepairDetail: "atempo stretch applied at ratio 1.0500",
+						Stretched:    true,
+						Ratio:        1.05,
+					}},
+					NotificationCopy: "Line 1 fits slot after time stretch.",
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			takePath := filepath.Join(workDir, tc.takeName)
+			writePartialHeaderWAV(t, takePath)
+			if err := writeSegmentRecord(workDir, tts.Malayalam, tc.record(takePath)); err != nil {
+				t.Fatalf("writeSegmentRecord failed: %v", err)
+			}
+
+			synth := &refusingSynthesizer{inner: newMockPipelineSynthesizer("", nil)}
+			synth.inner.durations[1] = []time.Duration{slot}
+
+			cfg := PipelineConfig{
+				Segments:    []types.Segment{seg},
+				Translator:  newMockPipelineTranslator(nil),
+				Synthesizer: synth,
+				WorkDir:     workDir,
+			}
+			res, err := RunPipeline(context.Background(), cfg)
+			if err != nil {
+				t.Fatalf("resumed run failed: %v", err)
+			}
+			if len(synth.inner.requests) != 1 {
+				t.Fatalf("synth requests = %d, want 1 because an undecodable take cannot be replayed", len(synth.inner.requests))
+			}
+			line, ok := res.Line(1)
+			if !ok {
+				t.Fatal("missing line 1 in results")
+			}
+			if line.Flagged {
+				t.Error("line 1 flagged = true, want the fresh render")
+			}
+			if len(line.Attempts) == 0 || strings.HasPrefix(line.Attempts[0].Text, "Stale") {
+				t.Errorf("line 1 attempts = %+v, want a fresh render", line.Attempts)
+			}
+
+			freshPath := filepath.Join(workDir, "seg_1_try1.wav")
+			if takePath != freshPath {
+				if _, err := os.Stat(takePath); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("undecodable recorded take still present, stat err = %v", err)
+				}
+			}
+			measured, err := media.Duration(context.Background(), freshPath)
+			if err != nil {
+				t.Fatalf("fresh take is not decodable: %v", err)
+			}
+			if measured != slot {
+				t.Errorf("fresh take measured = %v, want %v", measured, slot)
+			}
+		})
+	}
+}
+
+// installFakeFFProbe puts a fake ffprobe ahead of the real one on PATH.
+// It returns a function that restores the original PATH.
+func installFakeFFProbe(t *testing.T, script string) func() {
+	t.Helper()
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "ffprobe")
+	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake ffprobe: %v", err)
+	}
+	orig := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+orig)
+	return func() {
+		if err := os.Setenv("PATH", orig); err != nil {
+			t.Fatalf("restore PATH: %v", err)
+		}
+	}
+}
+
+// waitForFile blocks until path exists or ten seconds elapse.
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
+}
+
+// completedTakeSetup writes a decodable take and a valid record for line 1.
+// It returns the work directory, the take path, and the segment.
+func completedTakeSetup(t *testing.T, slot time.Duration) (string, string, types.Segment) {
+	t.Helper()
+	workDir := t.TempDir()
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "Completed line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	takePath := filepath.Join(workDir, "seg_1_try1.wav")
+	if err := writeTestWAV(takePath, slot); err != nil {
+		t.Fatalf("writeTestWAV failed: %v", err)
+	}
+
+	recorded := LineResult{
+		Segment:    seg,
+		ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: takePath, Duration: slot, Fit: types.NewFit(slot, slot)},
+		Attempts: []LineAttempt{{
+			Attempt:      1,
+			Mode:         gemini.ModeNormal,
+			Text:         "Completed line",
+			AudioPath:    takePath,
+			Fit:          types.NewFit(slot, slot),
+			Repair:       types.RepairNone,
+			RepairDetail: "fits slot within dead band",
+		}},
+		NotificationCopy: "Line 1 fits slot on attempt 1.",
+	}
+	if err := writeSegmentRecord(workDir, tts.Malayalam, recorded); err != nil {
+		t.Fatalf("writeSegmentRecord failed: %v", err)
+	}
+	return workDir, takePath, seg
+}
+
+// TestPipelineCancelDuringProbeKeepsCompletedTake proves a cancel that lands
+// inside the probe never discards a completed take. The next resume reuses it.
+func TestPipelineCancelDuringProbeKeepsCompletedTake(t *testing.T) {
+	workDir, takePath, seg := completedTakeSetup(t, 2000*time.Millisecond)
+
+	marker := filepath.Join(t.TempDir(), "probe-started")
+	restorePath := installFakeFFProbe(t, fmt.Sprintf("#!/bin/sh\n: > '%s'\nexec sleep 30\n", marker))
+	defer restorePath()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	synth := newMockPipelineSynthesizer("", nil)
+	cfg := PipelineConfig{
+		Segments:    []types.Segment{seg},
+		Translator:  newMockPipelineTranslator(nil),
+		Synthesizer: synth,
+		WorkDir:     workDir,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunPipeline(ctx, cfg)
+		done <- err
+	}()
+
+	waitForFile(t, marker)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("interrupted run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("interrupted run did not return after the cancel")
+	}
+
+	if _, err := os.Stat(takePath); err != nil {
+		t.Fatalf("cancelled probe removed the completed take: %v", err)
+	}
+
+	restorePath()
+
+	second := newMockPipelineSynthesizer("", nil)
+	cfg.Synthesizer = second
+	cfg.Translator = newMockPipelineTranslator(nil)
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("resumed run failed: %v", err)
+	}
+	if len(second.requests) != 0 {
+		t.Fatalf("resumed synth requests = %d, want 0 to reuse the completed take", len(second.requests))
+	}
+	line, ok := res.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in results")
+	}
+	if line.ChosenTake.File != takePath {
+		t.Errorf("line 1 take = %s, want %s", line.ChosenTake.File, takePath)
+	}
+	if line.ChosenTake.Fit.Measured != 2000*time.Millisecond {
+		t.Errorf("line 1 measured = %v, want 2000ms", line.ChosenTake.Fit.Measured)
+	}
+}
+
+// TestPipelineDeadlineDuringProbeKeepsCompletedTake proves a deadline that
+// expires inside the probe leaves the completed take in place.
+func TestPipelineDeadlineDuringProbeKeepsCompletedTake(t *testing.T) {
+	workDir, takePath, seg := completedTakeSetup(t, 2000*time.Millisecond)
+
+	marker := filepath.Join(t.TempDir(), "probe-started")
+	restorePath := installFakeFFProbe(t, fmt.Sprintf("#!/bin/sh\n: > '%s'\nexec sleep 30\n", marker))
+	defer restorePath()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cfg := PipelineConfig{
+		Segments:    []types.Segment{seg},
+		Translator:  newMockPipelineTranslator(nil),
+		Synthesizer: newMockPipelineSynthesizer("", nil),
+		WorkDir:     workDir,
+	}
+
+	if _, err := RunPipeline(ctx, cfg); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timed out run error = %v, want context.DeadlineExceeded", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("deadline expired before the probe started: %v", err)
+	}
+	if _, err := os.Stat(takePath); err != nil {
+		t.Fatalf("expired probe removed the completed take: %v", err)
 	}
 }

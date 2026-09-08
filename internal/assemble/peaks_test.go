@@ -22,14 +22,14 @@ func TestFixtureTakePeaks(t *testing.T) {
 		}
 		files++
 		path := filepath.Join(dir, entry.Name())
-		got, err := Peaks(path)
+		got, err := Peaks(t.Context(), path)
 		if err != nil {
 			t.Fatalf("%s: %v", entry.Name(), err)
 		}
 		if len(got) < 64 || len(got) > 128 {
 			t.Fatalf("%s: length %d outside [64, 128]", entry.Name(), len(got))
 		}
-		again, err := Peaks(path)
+		again, err := Peaks(t.Context(), path)
 		if err != nil {
 			t.Fatalf("%s second read: %v", entry.Name(), err)
 		}
@@ -54,7 +54,7 @@ func TestSyntheticPeakDynamics(t *testing.T) {
 	silence := filepath.Join(dir, "silence.wav")
 	runAudioTool(t, "ffmpeg", "-v", "error", "-f", "lavfi", "-i",
 		"anullsrc=r=16000:cl=mono:d=1", "-c:a", "pcm_s16le", silence)
-	got, err := Peaks(silence)
+	got, err := Peaks(t.Context(), silence)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestSyntheticPeakDynamics(t *testing.T) {
 	tone := filepath.Join(dir, "tone.wav")
 	runAudioTool(t, "ffmpeg", "-v", "error", "-f", "lavfi", "-i",
 		"aevalsrc=sin(2*PI*440*t):s=16000:d=1", "-c:a", "pcm_f32le", tone)
-	got, err = Peaks(tone)
+	got, err = Peaks(t.Context(), tone)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestSyntheticPeakDynamics(t *testing.T) {
 
 	mixed := filepath.Join(dir, "tone_then_silence.wav")
 	synthToneSilence(t, mixed, 440, 0.5, 0.5)
-	got, err = Peaks(mixed)
+	got, err = Peaks(t.Context(), mixed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,13 +100,13 @@ func TestSyntheticPeakDynamics(t *testing.T) {
 }
 
 func TestPeaksRejectsInvalidPath(t *testing.T) {
-	if _, err := Peaks(""); err == nil {
+	if _, err := Peaks(t.Context(), ""); err == nil {
 		t.Fatal("empty path must fail")
 	}
-	if _, err := Peaks(filepath.Join(t.TempDir(), "missing.wav")); err == nil {
+	if _, err := Peaks(t.Context(), filepath.Join(t.TempDir(), "missing.wav")); err == nil {
 		t.Fatal("missing take must fail")
 	}
-	if _, err := Peaks(t.TempDir()); err == nil {
+	if _, err := Peaks(t.Context(), t.TempDir()); err == nil {
 		t.Fatal("directory path must fail")
 	}
 }

@@ -19,7 +19,7 @@ func TestDuckOutputMatchesBedDuration(t *testing.T) {
 				fmt.Sprintf("sine=frequency=80:sample_rate=44100:duration=%g", seconds),
 				"-ac", "2", "-af", "volume=0.2", "-c:a", "pcm_f32le", source)
 			bedFile := filepath.Join(dir, "bed.wav")
-			bed, err := BuildBed(source, "", bedFile)
+			bed, err := BuildBed(t.Context(), source, "", bedFile)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -28,11 +28,11 @@ func TestDuckOutputMatchesBedDuration(t *testing.T) {
 				fmt.Sprintf("sine=frequency=2000:sample_rate=44100:duration=%g", seconds),
 				"-ac", "2", "-af", "volume=0.4", "-c:a", "pcm_f32le", speech)
 			mixFile := filepath.Join(dir, "mix.wav")
-			if err := bed.Duck(speech, mixFile); err != nil {
+			if err := bed.Duck(t.Context(), speech, mixFile); err != nil {
 				t.Fatal(err)
 			}
 			overlayFile := filepath.Join(dir, "overlay.wav")
-			if err := bed.Overlay(speech, overlayFile); err != nil {
+			if err := bed.Overlay(t.Context(), speech, overlayFile); err != nil {
 				t.Fatal(err)
 			}
 
@@ -63,7 +63,7 @@ func TestDuckDipsBedUnderSpeech(t *testing.T) {
 		"sine=frequency=80:sample_rate=44100:duration=4", "-ac", "2", "-af", "volume=0.2",
 		"-c:a", "pcm_f32le", source)
 	bedFile := filepath.Join(dir, "bed.wav")
-	bed, err := BuildBed(source, "", bedFile)
+	bed, err := BuildBed(t.Context(), source, "", bedFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestDuckDipsBedUnderSpeech(t *testing.T) {
 		"-filter_complex", "[1]aformat=channel_layouts=stereo,volume=0.4[s];[0][s][2]concat=n=3:v=0:a=1",
 		"-c:a", "pcm_f32le", speech)
 	mixFile := filepath.Join(dir, "mix.wav")
-	if err := bed.Duck(speech, mixFile); err != nil {
+	if err := bed.Duck(t.Context(), speech, mixFile); err != nil {
 		t.Fatal(err)
 	}
 	probeBed(t, mixFile, "44100", "stereo", 2)
@@ -111,16 +111,16 @@ func TestFixtureDuckPreservesGapsAndVoices(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join("..", "..", "testdata", "clip.mp4")
 	bedFile := filepath.Join(dir, "bed.wav")
-	bed, err := BuildBed(source, "", bedFile)
+	bed, err := BuildBed(t.Context(), source, "", bedFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	placed, err := bed.Place(fixtureClips(t), filepath.Join(dir, "speech.wav"))
+	placed, err := bed.Place(t.Context(), fixtureClips(t), filepath.Join(dir, "speech.wav"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	mixFile := filepath.Join(dir, "ducked.wav")
-	if err := bed.Duck(placed.File, mixFile); err != nil {
+	if err := bed.Duck(t.Context(), placed.File, mixFile); err != nil {
 		t.Fatal(err)
 	}
 	probeBed(t, mixFile, "44100", "stereo", 2)
@@ -164,7 +164,7 @@ func TestSeparateMusicSkipsDucking(t *testing.T) {
 		"sine=frequency=80:sample_rate=44100:duration=3", "-ac", "2", "-af", "volume=0.15",
 		"-c:a", "pcm_f32le", music)
 	bedFile := filepath.Join(dir, "bed.wav")
-	bed, err := BuildBed(source, music, bedFile)
+	bed, err := BuildBed(t.Context(), source, music, bedFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,10 +180,10 @@ func TestSeparateMusicSkipsDucking(t *testing.T) {
 		"-c:a", "pcm_f32le", speech)
 	duckedFile := filepath.Join(dir, "ducked.wav")
 	overlayFile := filepath.Join(dir, "overlay.wav")
-	if err := bed.Duck(speech, duckedFile); err != nil {
+	if err := bed.Duck(t.Context(), speech, duckedFile); err != nil {
 		t.Fatal(err)
 	}
-	if err := bed.Overlay(speech, overlayFile); err != nil {
+	if err := bed.Overlay(t.Context(), speech, overlayFile); err != nil {
 		t.Fatal(err)
 	}
 	probeBed(t, duckedFile, "44100", "stereo", 2)
@@ -223,30 +223,30 @@ func TestDuckRejectsInvalidInputsAndPreservesOutputs(t *testing.T) {
 	if err := os.WriteFile(output, []byte("previous render"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := bed.Duck(filepath.Join(dir, "missing.wav"), output); err == nil {
+	if err := bed.Duck(t.Context(), filepath.Join(dir, "missing.wav"), output); err == nil {
 		t.Fatal("accepted a missing speech layer")
 	}
 	data, err := os.ReadFile(output)
 	if err != nil || string(data) != "previous render" {
 		t.Fatal("failed ducking changed existing output")
 	}
-	if err := (Bed{}).Duck(take, output); err == nil {
+	if err := (Bed{}).Duck(t.Context(), take, output); err == nil {
 		t.Fatal("accepted an uninitialized bed")
 	}
-	if err := bed.Duck("", output); err == nil {
+	if err := bed.Duck(t.Context(), "", output); err == nil {
 		t.Fatal("accepted empty speech")
 	}
-	if err := bed.Duck(take, bed.File); err == nil {
+	if err := bed.Duck(t.Context(), take, bed.File); err == nil {
 		t.Fatal("allowed overwriting the bed")
 	}
-	if err := bed.Duck(take, take); err == nil {
+	if err := bed.Duck(t.Context(), take, take); err == nil {
 		t.Fatal("allowed overwriting speech")
 	}
 	alias := filepath.Join(dir, "alias.wav")
 	if err := os.Link(bed.File, alias); err != nil {
 		t.Fatal(err)
 	}
-	if err := bed.Duck(take, alias); err == nil {
+	if err := bed.Duck(t.Context(), take, alias); err == nil {
 		t.Fatal("allowed overwriting the bed alias")
 	}
 	entries, err := filepath.Glob(filepath.Join(dir, ".assemble-*"))

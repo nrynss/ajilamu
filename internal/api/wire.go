@@ -298,6 +298,66 @@ type Commit struct {
 	Instruction string `json:"instruction"`
 }
 
+// DubHistory is the commit DAG payload for one dub.
+type DubHistory struct {
+	// Commits lists every commit, oldest first.
+	Commits []Commit `json:"commits"`
+}
+
+// TimelineView is the timeline snapshot at one commit.
+type TimelineView struct {
+	// CommitID names the commit the state comes from.
+	CommitID string `json:"commit_id"`
+	// Language names the target language track.
+	Language string `json:"language"`
+	// Segments lists the line state at that commit.
+	Segments []TimelineEntry `json:"segments"`
+}
+
+// TimelineEntry is one line snapshot at one commit.
+type TimelineEntry struct {
+	// SegmentIndex numbers the line inside the dub.
+	SegmentIndex int `json:"segment_index"`
+	// StartMs locates the slot start in the film.
+	StartMs int64 `json:"start_ms"`
+	// EndMs locates the slot end in the film.
+	EndMs int64 `json:"end_ms"`
+	// Speaker names the person talking.
+	Speaker string `json:"speaker"`
+	// Emotion describes how the line is spoken.
+	Emotion string `json:"emotion"`
+	// SourceText is the transcribed source line.
+	SourceText string `json:"source_text"`
+	// Text is the target-language line.
+	Text string `json:"text"`
+	// TakeID names the active take.
+	TakeID string `json:"take_id"`
+	// VersionSeq orders the snapshot state.
+	VersionSeq uint64 `json:"version_seq"`
+}
+
+// BranchComparison holds metrics for two heads of one language track.
+type BranchComparison struct {
+	// A reports the first head.
+	A BranchSummary `json:"a"`
+	// B reports the second head.
+	B BranchSummary `json:"b"`
+}
+
+// BranchSummary reports one head of a language track.
+type BranchSummary struct {
+	// CommitID identifies the head.
+	CommitID string `json:"commit_id"`
+	// Branch names the branch label.
+	Branch string `json:"branch"`
+	// SlotMs sums the reconstructed slot lengths.
+	SlotMs int64 `json:"slot_ms"`
+	// TakeCount counts the takes at the head.
+	TakeCount int `json:"take_count"`
+	// AttributedCostUSD sums attributed charges as a decimal string.
+	AttributedCostUSD string `json:"attributed_cost_usd"`
+}
+
 // ProgressEvent is one server-sent notification body.
 // Every event carries a complete sentence and the running cost.
 type ProgressEvent struct {

@@ -188,13 +188,13 @@ Protect this core flow above auxiliary features.
 | Phase | Tasks Complete | Status |
 |---|---|---|
 | P0 | 4 / 4 | Complete. Close review approved with zero residue. See [p0-close-round2.md](adversarial-review/p0-close-round2.md). |
-| P1 | 5 / 5 | Complete. Contracts frozen. See [PHASE-1-contracts.md](PHASE-1-contracts.md). |
+| P1 | 5 / 6 | Contracts frozen. T1.4a adds examples for the five T7.2c payloads. See [PHASE-1-contracts.md](PHASE-1-contracts.md). |
 | P2 | 8 / 8 | Complete. Loop orchestration approved with zero residue. See [t2.7-round2.md](adversarial-review/t2.7-round2.md). |
 | P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
 | P4 | 8 / 8 | Complete. Close review approved with zero residue. See [p4-close-round2.md](adversarial-review/p4-close-round2.md). |
 | P5 | 7 / 7 | Complete. Workspace renders from offline fixtures. See [PHASE-5-workspace.md](PHASE-5-workspace.md). |
-| P6 | 1 / 6 | In progress. T6.1 approved with zero residue. See [t6.1-round3.md](adversarial-review/t6.1-round3.md). |
-| P7 | 6 / 10 | In progress. T7.0, T7.0a, T7.1, T7.2, T7.2a, and T7.4 approved. T7.2b and T7.2c remain from the 2026-09-08 integration seam. See [PHASE-7-ingestion.md](PHASE-7-ingestion.md). |
+| P6 | 2 / 6 | In progress. T6.1 and T6.4 approved with zero residue. See [t6.4-round2.md](adversarial-review/t6.4-round2.md). |
+| P7 | 14 / 18 | In progress. T7.0, T7.0a, T7.1, T7.2, T7.2a, T7.2b, T7.2c, T7.2c1, T7.2d, T7.3, T7.3a, T7.3b, T7.3c, and T7.4 approved. T7.4a, T7.5, T7.5a, and T7.6 remain. See [PHASE-7-ingestion.md](PHASE-7-ingestion.md). |
 | P8 | 0 / 4 | Not started. |
 
 **Concept validation:** Complete. Recorded in [observations.md](observations.md) and reviewed in [adversarial-review](adversarial-review/2026-09-07-pipeline-and-claims.md).

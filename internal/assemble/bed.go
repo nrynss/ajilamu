@@ -2,6 +2,7 @@
 package assemble
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,15 +24,15 @@ type Bed struct {
 // Output is a float PCM WAV with the source sample rate, channels, and layout.
 // Short music receives silence padding. Long music ends at the source duration.
 // SeparateMusic tells the mixer to skip ducking for creator-supplied tracks.
-func BuildBed(source, music, output string) (Bed, error) {
-	format, err := media.AudioFormat(source)
+func BuildBed(ctx context.Context, source, music, output string) (Bed, error) {
+	format, err := media.AudioFormat(ctx, source)
 	if err != nil {
 		return Bed{}, fmt.Errorf("probe bed source: %w", err)
 	}
 	if err := validateBedFormat(format); err != nil {
 		return Bed{}, err
 	}
-	duration, err := media.Duration(source)
+	duration, err := media.Duration(ctx, source)
 	if err != nil {
 		return Bed{}, fmt.Errorf("probe bed duration: %w", err)
 	}
@@ -44,7 +45,7 @@ func BuildBed(source, music, output string) (Bed, error) {
 	filter := "aresample=async=1:first_pts=0:min_hard_comp=0"
 	if music != "" {
 		input = music
-		musicFormat, err := media.AudioFormat(music)
+		musicFormat, err := media.AudioFormat(ctx, music)
 		if err != nil {
 			return Bed{}, fmt.Errorf("probe bed music: %w", err)
 		}
@@ -54,7 +55,7 @@ func BuildBed(source, music, output string) (Bed, error) {
 		return Bed{}, err
 	}
 	filter += ",apad,atrim=duration=" + strconv.FormatFloat(duration.Seconds(), 'f', 9, 64)
-	if err := renderBedAudio(input, output, format, filter); err != nil {
+	if err := renderBedAudio(ctx, input, output, format, filter); err != nil {
 		return Bed{}, fmt.Errorf("build bed: %w", err)
 	}
 	// Format describes the intermediate WAV rather than the source codec.
@@ -65,19 +66,19 @@ func BuildBed(source, music, output string) (Bed, error) {
 
 // PrepareTake converts a take to the bed's format without changing its duration.
 // Mono speech duplicates into stereo at unity gain to preserve voice levels.
-func (b Bed) PrepareTake(input, output string) error {
+func (b Bed) PrepareTake(ctx context.Context, input, output string) error {
 	if err := validateBedFormat(b.Format); err != nil {
 		return err
 	}
 	if err := distinctOutput(output, input, b.File); err != nil {
 		return err
 	}
-	format, err := media.AudioFormat(input)
+	format, err := media.AudioFormat(ctx, input)
 	if err != nil {
 		return fmt.Errorf("probe take: %w", err)
 	}
 	filter := unityChannelFilter(format, b.Format)
-	if err := renderBedAudio(input, output, b.Format, filter); err != nil {
+	if err := renderBedAudio(ctx, input, output, b.Format, filter); err != nil {
 		return fmt.Errorf("prepare take: %w", err)
 	}
 	return nil
@@ -127,7 +128,7 @@ func distinctOutput(output string, inputs ...string) error {
 }
 
 // renderBedAudio publishes only complete WAV files and keeps failed renders private.
-func renderBedAudio(input, output string, format media.Format, filter string) error {
+func renderBedAudio(ctx context.Context, input, output string, format media.Format, filter string) error {
 	tmp, err := os.CreateTemp(filepath.Dir(output), ".assemble-*.wav")
 	if err != nil {
 		return err
@@ -137,7 +138,7 @@ func renderBedAudio(input, output string, format media.Format, filter string) er
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := media.Run("-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+	if err := media.Run(ctx, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
 		"-i", input, "-map", "0:a:0", "-vn", "-af", filter,
 		"-ar", strconv.Itoa(format.SampleRate), "-ac", strconv.Itoa(format.Channels),
 		"-channel_layout", format.ChannelLayout, "-c:a", "pcm_f32le", "-f", "wav", tmpPath); err != nil {

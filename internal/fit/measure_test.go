@@ -44,12 +44,12 @@ func TestMeasureTry1Takes(t *testing.T) {
 		t.Run(tc.file, func(t *testing.T) {
 			path := takesPath(t, tc.file)
 			slot := time.Duration(tc.slotMs) * time.Millisecond
-			got, err := Measure(path, slot)
+			got, err := Measure(t.Context(), path, slot)
 			if err != nil {
 				t.Fatalf("Measure(%s): %v", path, err)
 			}
 
-			probed, err := media.Duration(path)
+			probed, err := media.Duration(t.Context(), path)
 			if err != nil {
 				t.Fatalf("media.Duration(%s): %v", path, err)
 			}
@@ -95,7 +95,7 @@ func TestMeasureTry1Takes(t *testing.T) {
 func TestMeasureSegment8Underrun(t *testing.T) {
 	path := takesPath(t, "seg_8_try1.wav")
 	slot := 7110 * time.Millisecond
-	got, err := Measure(path, slot)
+	got, err := Measure(t.Context(), path, slot)
 	if err != nil {
 		t.Fatalf("Measure(%s): %v", path, err)
 	}
@@ -136,11 +136,11 @@ func TestMeasureStretchedTakes(t *testing.T) {
 		t.Run(tc.file, func(t *testing.T) {
 			path := takesPath(t, tc.file)
 			slot := time.Duration(tc.slotMs) * time.Millisecond
-			got, err := Measure(path, slot)
+			got, err := Measure(t.Context(), path, slot)
 			if err != nil {
 				t.Fatalf("Measure(%s): %v", path, err)
 			}
-			probed, err := media.Duration(path)
+			probed, err := media.Duration(t.Context(), path)
 			if err != nil {
 				t.Fatalf("media.Duration(%s): %v", path, err)
 			}
@@ -169,11 +169,11 @@ func TestMeasureProbesRenderedWAV(t *testing.T) {
 	}
 
 	slot := 200 * time.Millisecond
-	got, err := Measure(out, slot)
+	got, err := Measure(t.Context(), out, slot)
 	if err != nil {
 		t.Fatalf("Measure(%s): %v", out, err)
 	}
-	probed, err := media.Duration(out)
+	probed, err := media.Duration(t.Context(), out)
 	if err != nil {
 		t.Fatalf("media.Duration(%s): %v", out, err)
 	}
@@ -192,7 +192,7 @@ func TestMeasureProbesRenderedWAV(t *testing.T) {
 func TestMeasureRejectsInvalidPath(t *testing.T) {
 	slot := time.Second
 
-	got, err := Measure("", slot)
+	got, err := Measure(t.Context(), "", slot)
 	if err == nil {
 		t.Fatal("empty path must fail")
 	}
@@ -201,7 +201,7 @@ func TestMeasureRejectsInvalidPath(t *testing.T) {
 	}
 
 	missing := filepath.Join(t.TempDir(), "missing.wav")
-	got, err = Measure(missing, slot)
+	got, err = Measure(t.Context(), missing, slot)
 	if err == nil {
 		t.Fatal("missing take must fail")
 	}

@@ -2,6 +2,7 @@
 package fit
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -12,11 +13,11 @@ import (
 // Measure probes a rendered WAV take and returns its Fit against slot.
 // Signed delta is positive when the take runs long and negative when it runs short.
 // An empty path, a missing file, or an ffprobe failure returns a zero Fit and an error.
-func Measure(path string, slot time.Duration) (types.Fit, error) {
+func Measure(ctx context.Context, path string, slot time.Duration) (types.Fit, error) {
 	if path == "" {
 		return types.Fit{}, fmt.Errorf("take path is required")
 	}
-	measured, err := media.Duration(path)
+	measured, err := media.Duration(ctx, path)
 	if err != nil {
 		return types.Fit{}, err
 	}
