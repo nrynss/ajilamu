@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -59,6 +60,7 @@ func run() error {
 	var workspace api.WorkspaceReader
 	var runRecorder api.RunRecorder
 	var pipelineRunner api.PipelineRunner
+	var lineRenderer api.LineRenderer
 	if cfg.RequireClickHouse() == nil {
 		eventLedger, err = ledger.New(cfg, filepath.Join(cfg.DataDir, "ledger-queue"))
 		if err != nil {
@@ -76,6 +78,7 @@ func run() error {
 			slog.Warn("dubbing runs are unavailable", "error", err)
 		} else {
 			pipelineRunner = runner
+			lineRenderer, _ = runner.(api.LineRenderer)
 		}
 	}
 
@@ -105,6 +108,7 @@ func run() error {
 		Workspace:    workspace,
 		Project:      api.UploadProjectLookup(uploadDir),
 		Runner:       pipelineRunner,
+		Rerender:     lineRenderer,
 		Recorder:     runRecorder,
 		StorageDir:   uploadDir,
 		Upload:       api.NewUploadHandler(uploadDir),
@@ -520,6 +524,9 @@ type pipelineRunner struct {
 
 var _ api.PipelineRunner = (*pipelineRunner)(nil)
 
+// The runner also re-renders one line, so the server passes it for both seams.
+var _ api.LineRenderer = (*pipelineRunner)(nil)
+
 // runSynthesizerFactory builds the per-run synthesizer factory. Production
 // passes a nil client, so Cloud TTS opens on ADC. A test passes a fake client
 // and reads the language the factory forwards.
@@ -603,6 +610,84 @@ func (p *pipelineRunner) Run(ctx context.Context, req api.RunRequest, emit func(
 		return api.RunResult{}, err
 	}
 	return pipelineRunResult(ctx, result, assemble.Peaks)
+}
+
+// RenderLine re-runs one dialogue line through the fit loop and writes its new
+// take. It holds the runner mutex, so a re-render never overlaps a run.
+func (p *pipelineRunner) RenderLine(ctx context.Context, req api.LineRenderRequest) (api.LineRenderResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	language, err := resolveRunLanguage(req.Language)
+	if err != nil {
+		return api.LineRenderResult{}, err
+	}
+
+	charges := cost.NewLedger()
+	p.router.set(charges)
+	defer p.router.set(nil)
+
+	synthesizer, err := p.newSynthesizer(language.tag, charges)
+	if err != nil {
+		return api.LineRenderResult{}, fmt.Errorf("open the synthesizer: %w", err)
+	}
+
+	line, err := fit.RepairLine(ctx, req.Segment, fit.RewriteConfig{
+		Translator:  p.translator,
+		Synthesizer: synthesizer,
+		WorkDir:     req.WorkDir,
+		PathBuilder: rerenderTakePath(req.TakeFile),
+		MaxAttempts: fit.DefaultMaxAttempts,
+		InitialText: req.Text,
+	})
+	if err != nil {
+		return api.LineRenderResult{}, err
+	}
+
+	attempt := chosenAttempt(line)
+	peaks, err := assemble.Peaks(ctx, line.ChosenTake.File)
+	if err != nil {
+		return api.LineRenderResult{}, fmt.Errorf("sketch take peaks: %w", err)
+	}
+	voice, err := tts.Assign(line.Segment.Speaker, language.tag)
+	if err != nil {
+		return api.LineRenderResult{}, err
+	}
+	return api.LineRenderResult{
+		Take:         line.ChosenTake,
+		Text:         attempt.Text,
+		Voice:        voice.Name,
+		Repair:       attempt.Repair,
+		RepairDetail: attempt.RepairDetail,
+		Flagged:      line.Flagged,
+		Charges:      charges.Charges(),
+		Total:        charges.Total(),
+		Peaks:        peaks,
+	}, nil
+}
+
+// rerenderTakePath names each attempt of one re-render. Attempt one keeps the
+// path the route chose. Later attempts extend its try number, so no attempt
+// reuses a take file that already exists.
+func rerenderTakePath(first string) fit.PathBuilder {
+	stem := strings.TrimSuffix(first, filepath.Ext(first))
+	prefix, number := stem, 0
+	if at := strings.LastIndex(stem, "_try"); at >= 0 {
+		prefix = stem[:at]
+		if parsed, err := strconv.Atoi(stem[at+len("_try"):]); err == nil {
+			number = parsed
+		}
+	}
+	return func(_ int, attempt int, stretched bool) string {
+		if number < 1 {
+			return first
+		}
+		suffix := ".wav"
+		if stretched {
+			suffix = "_stretched.wav"
+		}
+		return fmt.Sprintf("%s_try%d%s", prefix, number+attempt-1, suffix)
+	}
 }
 
 // chargeRouter sends every client charge to the ledger of the active run.

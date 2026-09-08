@@ -102,7 +102,7 @@ fixture-ok: no
 size:       M · frontier
 owns:       internal/api/rerender.go, internal/api/rerender_test.go,
             internal/api/server.go, cmd/ajilamu/main.go
-status:     not-started
+status:     done
 ```
 Re-run one dialogue line through the fit loop and save the output as a new take. Never
 overwrite a previous take. Preserve `seg_3_try1.wav` when creating `seg_3_try2.wav`.
@@ -374,3 +374,90 @@ The live probe sits behind `//go:build live`. It reads `SHOW GRANTS FOR mcp_read
 requires a SELECT-only grant set, lists tables, reads commits for one dub, and refuses an
 INSERT. No container ran here, so it has no transcript. `go build ./...`
 and the scoped tests pass. `python3 tools/audit_docs.py` prints no pending line.
+
+### T6.5a line re-render route
+
+`POST /api/dubs/{id}/lines/{segment}/rerender` re-runs one dialogue line through the
+fit loop. It writes the result as a new take beside the previous ones. It never
+overwrites an existing take.
+
+The body is optional JSON. Every field is optional.
+
+```json
+{"language": "ml-IN", "text": "corrected target line", "speaker": "Mark Vande Hei"}
+```
+
+`language` overrides the project's stored target language. Without it the route
+resolves the language from `project.json`. The route maps the code to its catalog
+tag, so `ml` and `ml-IN` name one track. `text` is the authoritative target line.
+`speaker` reassigns the line to another voice owner. An empty body re-renders the
+stored line with its stored speaker.
+A project with no upload record needs the `language` field, because the bundled
+fixture stores no code to fall back to.
+
+The response is 201.
+
+```json
+{
+  "segment_id": 3,
+  "language": "ml-IN",
+  "commit_id": "99114c542ff4ab74415e13c014396a25",
+  "total_nanodollars": 630000,
+  "sentence": "Line 3 re-rendered as take seg_3_try2.wav.",
+  "take": {
+    "take_id": "a5e9b83bc5f9455950543d405939a8e8",
+    "file": "/data/uploads/probedub/work/ml-IN/seg_3_try2.wav",
+    "name": "seg_3_try2.wav",
+    "attempt": 2,
+    "voice": "ml-IN-Chirp3-HD-Achird",
+    "repair": "none",
+    "repair_detail": "fits slot within dead band",
+    "flagged": false,
+    "fit": {"slot_ms": 5320, "measured_ms": 5320, "delta_ms": 0, "state": "fits"},
+    "charges": [{"kind": "synthesize", "segment_id": 3, "take_file": "seg_3_try2.wav",
+      "units": 21, "unit_price_nanodollars": 30000, "total_nanodollars": 630000}]
+  }
+}
+```
+
+T6.3 calls it after a target-text edit. Send `{"text": "<the edited line>"}`. The
+route passes that text as `RewriteConfig.InitialText`, so attempt one synthesizes
+without a translation call. A measured run made zero translation calls and one TTS
+call. T6.3 must keep its confirmation panel before the call, because the call bills.
+
+T6.5 calls it after a speaker change and for a re-roll. Send
+`{"speaker": "<name>"}` or an empty body. The route replaces the segment speaker
+before the fit loop, so `tts.Assign` maps the new speaker to its own voice. A
+measured run sent Cloud TTS `voice.language_code=ml-IN` and
+`voice.name=ml-IN-Chirp3-HD-Achird` for `Mark Vande Hei`. T6.5 shows the estimate
+first, then refreshes the workspace payload after the 201.
+
+The route records the take, its charges, one commit, one action and one timeline
+snapshot through `api.RunRecorder`. A stand-in ClickHouse measured one `takes_raw`
+row, one `charges_raw` row and one `commits_raw` row. The take row carries `attempt`
+2, so the ledger attempt matches the file name. The route answers 409 while a run
+holds the project. It reads the head timeline under the caller's language code
+first, then falls back to the resolved tag.
+
+`internal/api` cannot import `internal/fit`. `api.LineRenderer` is the seam, and
+`*pipelineRunner` in `cmd/ajilamu/main.go` adapts it. `RenderLine` holds the runner
+mutex, so a re-render never overlaps a run. It builds a per-call synthesizer from the
+resolved tag and a per-call charge ledger. The handler serializes re-renders, so two
+requests cannot choose one take file.
+
+Surprises. `fit.RepairLine` reads `InitialText` on attempt one alone. Attempts two and
+three still translate when the authoritative text misses its slot. The route always
+passes the stored or corrected text, so a speaker-only re-render also skips
+translation. `RecordTake` rejects a charge whose `TakeID` differs from the segment,
+so the route attributes every charge to the line. The ledger's `takes_raw.text`
+column carries the source line, because `TakeAttempt.rows` writes `Segment.Text`.
+
+Measured on 2026-09-09 with a throwaway harness in package main. A POST with a
+corrected text and a new speaker wrote `seg_3_try2.wav` beside `seg_3_try1.wav`.
+The probe `sha256sum testdata/takes/seg_3_try1.wav` prints
+`8928864cd133b7c718c50eec7088f6e2d7eecdfcd39201676504f5369c43ec6c` before and after
+the call. The probe `ffprobe -v error -show_entries format=duration
+testdata/takes/seg_3_try1.wav` prints 5.720375 seconds. The new take measures
+5.320000 seconds, and `TestRerenderReadsTheLedgerTrackUnderTheCallerCode` pins it
+with `ffprobe`. `internal/api/rerender_test.go` keeps the route tests with a
+stand-in renderer.
