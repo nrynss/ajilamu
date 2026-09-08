@@ -338,12 +338,12 @@ func TestServerRejectsUnmatchedAPIRoutesBeforeSPA(t *testing.T) {
 
 func TestServerMountsHistoryRoutes(t *testing.T) {
 	reader := &standInHistoryReader{
-		commits:    []api.Commit{{
+		commits: []api.Commit{{
 			CommitID:      "commit-1",
 			VersionNumber: 1,
 			CreatedAt:     "2026-09-08T09:00:00Z",
 		}},
-		segments:   []api.TimelineEntry{{
+		segments: []api.TimelineEntry{{
 			SegmentIndex: 1,
 			StartMs:      0,
 			EndMs:        1200,
