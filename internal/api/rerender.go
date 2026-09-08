@@ -34,10 +34,14 @@ type LineRenderRequest struct {
 	DubID string
 	// Language is the resolved BCP-47 target tag.
 	Language string
+	// SourceLanguage is the film's source language code. Empty means unknown,
+	// so the translator prompt names no source language.
+	SourceLanguage string
 	// Segment is the line to re-run. Its speaker is already the requested one.
 	Segment types.Segment
-	// Text is the authoritative target text. An empty value asks the loop to
-	// translate the source line on its first attempt.
+	// Text is the authoritative target text. The loop speaks it on every
+	// attempt and never translates. An empty value asks the loop to
+	// translate the source line instead.
 	Text string
 	// WorkDir holds the project's take files.
 	WorkDir string
@@ -68,6 +72,29 @@ type LineRenderResult struct {
 	Peaks []uint8
 }
 
+// CorrectedRecorder records a take produced from a corrected source line.
+//
+// The route records that take under the text_corrected action with the
+// manual_ui author, so a plain RunRecorder cannot serve the source path.
+// The production adapter in cmd/ajilamu/main.go implements both.
+type CorrectedRecorder interface {
+	// PersistCorrected writes the commit, action, take, charges and timeline
+	// snapshot for one corrected source line.
+	PersistCorrected(ctx context.Context, req RunRequest, result RunResult, corrected CorrectedRerender) error
+}
+
+// CorrectedRerender is the provenance of one corrected-source re-render.
+// The route fixes the action and the author, so the ledger row never
+// depends on adapter taste.
+type CorrectedRerender struct {
+	// Action names what the commit changed. It is always text_corrected.
+	Action string
+	// Author names who caused the change. It is always manual_ui.
+	Author string
+	// Segment numbers the corrected line.
+	Segment int
+}
+
 // Rerender failure sentences. A failure never carries internal detail.
 const (
 	rerenderUnavailable  = "Line re-rendering is unavailable."
@@ -76,6 +103,8 @@ const (
 	rerenderBadSegment   = "The segment id must be a whole number."
 	rerenderBadBody      = "The request body is not valid JSON."
 	rerenderEmptyText    = "The corrected text cannot be empty."
+	rerenderEmptySource  = "The corrected source line cannot be empty."
+	rerenderBothTexts    = "Send a corrected source line or a corrected target line, not both."
 	rerenderBadSpeaker   = "That speaker has no voice in this language."
 	rerenderReadFailed   = "Could not read the project ledger."
 	rerenderRenderFailed = "The line could not be re-rendered."
@@ -87,9 +116,13 @@ const (
 type rerenderBody struct {
 	// Language overrides the project's stored target language code.
 	Language *string `json:"language,omitempty"`
-	// Text is a corrected target line. It is authoritative for the first
-	// attempt, so the loop skips translation.
+	// Text is a corrected target line. It is authoritative for every
+	// attempt, so the loop never translates the source to second-guess it.
 	Text *string `json:"text,omitempty"`
+	// SourceText is a corrected source line. It replaces the stored
+	// transcript and makes the fit loop translate it, because no
+	// authoritative target text exists yet.
+	SourceText *string `json:"source_text,omitempty"`
 	// Speaker reassigns the line to another voice owner.
 	Speaker *string `json:"speaker,omitempty"`
 }
@@ -107,6 +140,10 @@ type RerenderResponse struct {
 	TotalNanodollars cost.Price `json:"total_nanodollars"`
 	// Sentence describes the result in one line of prose.
 	Sentence string `json:"sentence"`
+	// Text is the spoken target text of the new take.
+	Text string `json:"text"`
+	// SourceText echoes the corrected source line when the request carried one.
+	SourceText string `json:"source_text,omitempty"`
 	// Take names the new take.
 	Take RerenderTake `json:"take"`
 }
@@ -139,8 +176,9 @@ type RerenderTake struct {
 //
 // It re-runs one dialogue line through the fit loop, saves the result as a new
 // take beside the previous ones, and records the take, its charges, and one
-// commit. The body is optional and carries a corrected target text and a
-// speaker. The route never overwrites an existing take file.
+// commit. The body is optional and carries a corrected target text, a corrected
+// source text, or a speaker. A corrected source re-translates and records the
+// text_corrected action. The route never overwrites an existing take file.
 func RerenderHandler(renderer LineRenderer, recorder RunRecorder, history HistoryReader, storageDir string, active RunActive, logger *slog.Logger) http.Handler {
 	// One re-render at a time keeps two requests from choosing the same new
 	// take file. The runner serializes the fit loop for the same reason.
@@ -168,7 +206,7 @@ func RerenderHandler(renderer LineRenderer, recorder RunRecorder, history Histor
 			return
 		}
 
-		language := projectTargetLanguage(storageDir, dubID)
+		sourceLanguage, language := projectLanguage(storageDir, dubID)
 		if body.Language != nil {
 			language = strings.TrimSpace(*body.Language)
 		}
@@ -218,11 +256,26 @@ func RerenderHandler(renderer LineRenderer, recorder RunRecorder, history Histor
 		}
 		text := entry.Text
 		if body.Text != nil {
+			if body.SourceText != nil {
+				writeHistoryFailure(w, http.StatusBadRequest, rerenderBothTexts)
+				return
+			}
 			text = strings.TrimSpace(*body.Text)
 			if text == "" {
 				writeHistoryFailure(w, http.StatusBadRequest, rerenderEmptyText)
 				return
 			}
+		}
+		if body.SourceText != nil {
+			corrected := strings.TrimSpace(*body.SourceText)
+			if corrected == "" {
+				writeHistoryFailure(w, http.StatusBadRequest, rerenderEmptySource)
+				return
+			}
+			// The corrected source replaces the stored transcript. An empty
+			// target text asks the fit loop to translate it on attempt one.
+			segment.Text = corrected
+			text = ""
 		}
 		if body.Speaker != nil {
 			speaker := strings.TrimSpace(*body.Speaker)
@@ -232,18 +285,26 @@ func RerenderHandler(renderer LineRenderer, recorder RunRecorder, history Histor
 			}
 			segment.Speaker.Name = speaker
 		}
+		// The source path needs a recorder that names the text_corrected
+		// action. Check the seam before any model runs.
+		correctedRecorder, _ := recorder.(CorrectedRecorder)
+		if body.SourceText != nil && correctedRecorder == nil {
+			writeHistoryFailure(w, http.StatusServiceUnavailable, rerenderUnavailable)
+			return
+		}
 
 		workDir := runWorkDirFor(storageDir, dubID, tag)
 		tryNumber := nextTakeNumber(workDir, segmentID)
 		takeFile := filepath.Join(workDir, fmt.Sprintf("seg_%d_try%d.wav", segmentID, tryNumber))
 
 		rendered, err := renderer.RenderLine(r.Context(), LineRenderRequest{
-			DubID:    dubID,
-			Language: tag,
-			Segment:  segment,
-			Text:     text,
-			WorkDir:  workDir,
-			TakeFile: takeFile,
+			DubID:          dubID,
+			Language:       tag,
+			SourceLanguage: sourceLanguage,
+			Segment:        segment,
+			Text:           text,
+			WorkDir:        workDir,
+			TakeFile:       takeFile,
 		})
 		if err != nil {
 			logHistoryFailure(logger, "render the line", err)
@@ -254,13 +315,27 @@ func RerenderHandler(renderer LineRenderer, recorder RunRecorder, history Histor
 		record := RunRequest{DubID: dubID, Language: tag, WorkDir: workDir}
 		result := rerenderResult(segmentID, segment, rendered)
 		mintRunIdentity(record, &result)
-		if err := recorder.Persist(r.Context(), record, result); err != nil {
-			logHistoryFailure(logger, "record the new take", err)
+		var recordErr error
+		if body.SourceText != nil {
+			recordErr = correctedRecorder.PersistCorrected(r.Context(), record, result, CorrectedRerender{
+				Action:  ActionTextCorrected,
+				Author:  AuthorManualUI,
+				Segment: segmentID,
+			})
+		} else {
+			recordErr = recorder.Persist(r.Context(), record, result)
+		}
+		if recordErr != nil {
+			logHistoryFailure(logger, "record the new take", recordErr)
 			writeHistoryFailure(w, http.StatusInternalServerError, rerenderRecordFailed)
 			return
 		}
 
-		writeHistoryJSON(w, http.StatusCreated, rerenderResponseBody(segmentID, tag, result, rendered))
+		correctedSource := ""
+		if body.SourceText != nil {
+			correctedSource = segment.Text
+		}
+		writeHistoryJSON(w, http.StatusCreated, rerenderResponseBody(segmentID, tag, correctedSource, result, rendered))
 	})
 }
 
@@ -303,21 +378,22 @@ func headLine(ctx context.Context, history HistoryReader, dubID, language string
 	return nil, nil
 }
 
-// projectTargetLanguage reads the target language code the upload record
-// stores. An empty storage directory or a missing record returns empty.
-func projectTargetLanguage(storageDir, dubID string) string {
+// projectLanguage reads the source and target language codes the upload
+// record stores. An empty storage directory or a missing record returns
+// two empty codes.
+func projectLanguage(storageDir, dubID string) (string, string) {
 	if storageDir == "" || !safeProjectID(dubID) {
-		return ""
+		return "", ""
 	}
 	payload, err := os.ReadFile(filepath.Join(storageDir, dubID, uploadRecordName))
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	var record uploadRecord
 	if err := json.Unmarshal(payload, &record); err != nil {
-		return ""
+		return "", ""
 	}
-	return strings.TrimSpace(record.Language)
+	return strings.TrimSpace(record.SourceLanguage), strings.TrimSpace(record.Language)
 }
 
 // nextTakeNumber returns the first try number that names no existing take.
@@ -388,7 +464,8 @@ func rerenderResult(segmentID int, segment types.Segment, rendered LineRenderRes
 }
 
 // rerenderResponseBody builds the 201 body from the recorded result.
-func rerenderResponseBody(segmentID int, language string, result RunResult, rendered LineRenderResult) RerenderResponse {
+// correctedSource echoes the corrected source line, or stays empty.
+func rerenderResponseBody(segmentID int, language, correctedSource string, result RunResult, rendered LineRenderResult) RerenderResponse {
 	take := result.Takes[0]
 	name := filepath.Base(take.Take.File)
 	sentence := fmt.Sprintf("Line %d re-rendered as take %s.", segmentID, name)
@@ -401,6 +478,8 @@ func rerenderResponseBody(segmentID int, language string, result RunResult, rend
 		CommitID:         result.CommitID,
 		TotalNanodollars: result.TotalCost,
 		Sentence:         sentence,
+		Text:             rendered.Text,
+		SourceText:       correctedSource,
 		Take: RerenderTake{
 			TakeID:       take.TakeID,
 			File:         take.Take.File,

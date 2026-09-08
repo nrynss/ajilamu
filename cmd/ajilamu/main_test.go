@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -884,5 +885,80 @@ func TestRunSynthesizerFactoryForwardsLanguage(t *testing.T) {
 				t.Errorf("Cloud TTS Name = %q, want %s", got, tc.voiceName)
 			}
 		})
+	}
+}
+
+// wavOfMillis returns a silent mono 16 kHz 16-bit WAV of the requested
+// length. The fit loop measures it with ffprobe, so the header must be real.
+func wavOfMillis(ms int) []byte {
+	const (
+		sampleRate = 16000
+		channels   = 1
+		bitsPer    = 16
+	)
+	audio := make([]byte, sampleRate*ms/1000*channels*bitsPer/8)
+	wav := make([]byte, 44+len(audio))
+	copy(wav, "RIFF")
+	binary.LittleEndian.PutUint32(wav[4:], uint32(36+len(audio)))
+	copy(wav[8:], "WAVEfmt ")
+	binary.LittleEndian.PutUint32(wav[16:], 16)
+	binary.LittleEndian.PutUint16(wav[20:], 1)
+	binary.LittleEndian.PutUint16(wav[22:], channels)
+	binary.LittleEndian.PutUint32(wav[24:], sampleRate)
+	binary.LittleEndian.PutUint32(wav[28:], sampleRate*channels*bitsPer/8)
+	binary.LittleEndian.PutUint16(wav[32:], channels*bitsPer/8)
+	binary.LittleEndian.PutUint16(wav[34:], bitsPer)
+	copy(wav[36:], "data")
+	binary.LittleEndian.PutUint32(wav[40:], uint32(len(audio)))
+	return wav
+}
+
+// TestRenderLineCorrectedTargetMissNeverTranslates drives the production
+// adapter, not a copy of its decision. A corrected target line misses every
+// attempt. RenderLine must set AuthoritativeText, so the loop calls no
+// translator and the chosen take keeps the creator's text.
+func TestRenderLineCorrectedTargetMissNeverTranslates(t *testing.T) {
+	workDir := t.TempDir()
+	translator := &runnerTestTranslator{}
+	client := &runnerTestTTSClient{audio: wavOfMillis(10640)}
+	runner := &pipelineRunner{
+		translator:     translator,
+		router:         &chargeRouter{},
+		newSynthesizer: runSynthesizerFactory(&config.Config{GoogleCloudProject: "test-project"}, cost.DefaultRateCard(), client),
+	}
+	segment := types.Segment{
+		ID:      3,
+		StartMs: 13208,
+		EndMs:   18528,
+		Text:    "source line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	result, err := runner.RenderLine(context.Background(), api.LineRenderRequest{
+		DubID:          "dub-render-line",
+		Language:       "ml",
+		SourceLanguage: "en-US",
+		Segment:        segment,
+		Text:           "corrected target line",
+		WorkDir:        workDir,
+		TakeFile:       filepath.Join(workDir, "seg_3_try2.wav"),
+	})
+	if err != nil {
+		t.Fatalf("RenderLine: %v", err)
+	}
+	t.Logf("translation calls = %d, synthesis calls = %d, spoken text = %q, flagged = %v",
+		translator.calls, client.calls, result.Text, result.Flagged)
+
+	if translator.calls != 0 {
+		t.Errorf("translation calls = %d, want 0 on the corrected target path", translator.calls)
+	}
+	if client.calls != fit.DefaultMaxAttempts {
+		t.Errorf("synthesis calls = %d, want %d", client.calls, fit.DefaultMaxAttempts)
+	}
+	if result.Text != "corrected target line" {
+		t.Errorf("spoken text = %q, want the creator's corrected target line", result.Text)
+	}
+	if !result.Flagged {
+		t.Error("flagged = false, want a flagged line")
 	}
 }

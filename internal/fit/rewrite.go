@@ -30,6 +30,9 @@ var (
 
 	// ErrSynthesizerRequired reports a missing synthesizer when synthesis needs one.
 	ErrSynthesizerRequired = errors.New("synthesizer is required")
+
+	// ErrInitialTextRequired reports an authoritative text mode with no text.
+	ErrInitialTextRequired = errors.New("initial text is required when authoritative")
 )
 
 // PathBuilder resolves the destination audio path for an attempt.
@@ -53,6 +56,9 @@ type RewriteConfig struct {
 	MaxAttempts int
 	InitialTake *types.Take
 	InitialText string
+	// AuthoritativeText keeps InitialText as the spoken text on every
+	// attempt. The loop never calls the translator when it is set.
+	AuthoritativeText bool
 }
 
 // LineAttempt records one recorded attempt for a dialogue line.
@@ -246,6 +252,9 @@ func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (Line
 	if cfg.MaxAttempts <= 0 {
 		cfg.MaxAttempts = DefaultMaxAttempts
 	}
+	if cfg.AuthoritativeText && cfg.InitialText == "" {
+		return LineResult{}, ErrInitialTextRequired
+	}
 
 	resolvePath := func(attempt int, stretched bool) string {
 		if cfg.PathBuilder != nil {
@@ -267,9 +276,13 @@ func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (Line
 		}
 
 		var mode gemini.TranslateMode
-		if attemptNum == 1 {
+		switch {
+		case cfg.AuthoritativeText:
+			// The creator's text is authoritative, so no rewrite mode applies.
 			mode = gemini.ModeNormal
-		} else {
+		case attemptNum == 1:
+			mode = gemini.ModeNormal
+		default:
 			prevFit := attempts[attemptNum-2].Fit
 			miss := prevFit.Measured - prevFit.Slot
 			if miss > 0 {
@@ -292,9 +305,14 @@ func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (Line
 			}
 			fit = types.NewFit(slot, measured)
 		} else {
-			if attemptNum == 1 && cfg.InitialText != "" {
+			switch {
+			case cfg.AuthoritativeText:
+				// A corrected target line stays the spoken line on every
+				// attempt, so the loop never translates the source.
 				text = cfg.InitialText
-			} else {
+			case attemptNum == 1 && cfg.InitialText != "":
+				text = cfg.InitialText
+			default:
 				if cfg.Translator == nil {
 					return result, ErrTranslatorRequired
 				}

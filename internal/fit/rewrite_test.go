@@ -1219,3 +1219,118 @@ func TestSignedDeltasDerived(t *testing.T) {
 		t.Errorf("ms[1] = %d, want -300", ms[1])
 	}
 }
+
+// TestAuthoritativeTextFlagsRatherThanTranslates proves an authoritative
+// target text stays the spoken line on every attempt and the loop calls no
+// translator. A line that still misses is flagged rather than rewritten.
+func TestAuthoritativeTextFlagsRatherThanTranslates(t *testing.T) {
+	workDir := t.TempDir()
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      20,
+		StartMs: 0,
+		EndMs:   int64(slot.Milliseconds()),
+		Text:    "source line",
+		Speaker: types.Speaker{Name: "Speaker20"},
+	}
+
+	trans := &mockTranslator{replies: []string{"translated source line", "shorter source line", "fuller source line"}}
+	synth := &mockSynthesizer{durations: []time.Duration{4000 * time.Millisecond, 4000 * time.Millisecond, 4000 * time.Millisecond}}
+
+	cfg := RewriteConfig{
+		Translator:        trans,
+		Synthesizer:       synth,
+		WorkDir:           workDir,
+		InitialText:       "corrected target line",
+		AuthoritativeText: true,
+	}
+
+	res, err := RepairLine(context.Background(), seg, cfg)
+	if err != nil {
+		t.Fatalf("RepairLine failed: %v", err)
+	}
+	t.Logf("translation calls = %d, synthesis calls = %d, chosen attempt = %d, spoken text = %q, flagged = %v",
+		len(trans.requests), len(synth.requests), res.ChosenTake.Attempt, res.Attempts[0].Text, res.Flagged)
+
+	if len(trans.requests) != 0 {
+		t.Errorf("translation calls = %d, want 0", len(trans.requests))
+	}
+	if len(synth.requests) != DefaultMaxAttempts {
+		t.Errorf("synthesis calls = %d, want %d", len(synth.requests), DefaultMaxAttempts)
+	}
+	for _, req := range synth.requests {
+		if req.Text != "corrected target line" {
+			t.Errorf("synthesized text = %q, want the creator's corrected target line", req.Text)
+		}
+	}
+	if len(res.Attempts) != DefaultMaxAttempts {
+		t.Fatalf("got %d attempts, want %d", len(res.Attempts), DefaultMaxAttempts)
+	}
+	for _, att := range res.Attempts {
+		if att.Text != "corrected target line" {
+			t.Errorf("attempt %d text = %q, want the creator's corrected target line", att.Attempt, att.Text)
+		}
+	}
+	if !res.Flagged {
+		t.Error("flagged = false, want a flagged line")
+	}
+	if res.ChosenTake.Attempt != 1 {
+		t.Errorf("chosen take attempt = %d, want 1", res.ChosenTake.Attempt)
+	}
+	assertProseStyle(t, res.NotificationCopy)
+}
+
+// TestAuthoritativeTextStillStretches proves atempo stays available when the
+// text is authoritative. Attempt two lands inside the stretch budget, so the
+// loop stretches the creator's line without translating the source.
+func TestAuthoritativeTextStillStretches(t *testing.T) {
+	workDir := t.TempDir()
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      21,
+		StartMs: 0,
+		EndMs:   int64(slot.Milliseconds()),
+		Text:    "source line",
+		Speaker: types.Speaker{Name: "Speaker21"},
+	}
+
+	trans := &mockTranslator{replies: []string{"translated source line", "shorter source line"}}
+	synth := &mockSynthesizer{durations: []time.Duration{2400 * time.Millisecond, 2100 * time.Millisecond}}
+
+	cfg := RewriteConfig{
+		Translator:        trans,
+		Synthesizer:       synth,
+		WorkDir:           workDir,
+		InitialText:       "corrected target line",
+		AuthoritativeText: true,
+	}
+
+	res, err := RepairLine(context.Background(), seg, cfg)
+	if err != nil {
+		t.Fatalf("RepairLine failed: %v", err)
+	}
+
+	if len(trans.requests) != 0 {
+		t.Errorf("translation calls = %d, want 0", len(trans.requests))
+	}
+	if res.Flagged {
+		t.Error("flagged = true, want a fitted line")
+	}
+	if len(res.Attempts) != 2 {
+		t.Fatalf("got %d attempts, want 2", len(res.Attempts))
+	}
+	if res.ChosenTake.Attempt != 2 {
+		t.Errorf("chosen take attempt = %d, want 2", res.ChosenTake.Attempt)
+	}
+	att := res.Attempts[1]
+	if att.Repair != types.RepairAtempo {
+		t.Errorf("attempt 2 repair = %v, want RepairAtempo", att.Repair)
+	}
+	if !att.Stretched {
+		t.Error("attempt 2 stretched = false, want true")
+	}
+	if att.Text != "corrected target line" {
+		t.Errorf("attempt 2 text = %q, want the creator's corrected target line", att.Text)
+	}
+	assertProseStyle(t, res.NotificationCopy)
+}

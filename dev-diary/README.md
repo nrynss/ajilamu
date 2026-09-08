@@ -193,7 +193,7 @@ Protect this core flow above auxiliary features.
 | P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
 | P4 | 8 / 8 | Complete. Close review approved with zero residue. See [p4-close-round2.md](adversarial-review/p4-close-round2.md). |
 | P5 | 7 / 7 | Complete. Workspace renders from offline fixtures. See [PHASE-5-workspace.md](PHASE-5-workspace.md). |
-| P6 | 6 / 8 | In progress. T6.1, T6.2, T6.3, T6.4, T6.5a and T6.6 approved with zero residue. T6.5 and T6.5b remain. See [t6.3-round2.md](adversarial-review/t6.3-round2.md). |
+| P6 | 7 / 8 | In progress. T6.1, T6.2, T6.3, T6.4, T6.5a, T6.5b and T6.6 approved with zero residue. T6.5 remains. See [t6.5b-round3.md](adversarial-review/t6.5b-round3.md). |
 | P7 | 20 / 20 | Complete. Close review approved with zero residue. See [p7-close-round4.md](adversarial-review/p7-close-round4.md). |
 | P8 | 0 / 4 | Not started. |
 

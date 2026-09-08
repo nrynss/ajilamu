@@ -1,12 +1,16 @@
 <script lang="ts">
   import type { Line, Segment, Take } from "$lib/types"
 
-  /** TextRerenderRequest asks the parent to re-render one line from corrected target text. */
+  /** TextRerenderRequest asks the parent to re-render one line. A corrected
+      target text is authoritative. A corrected source text re-translates. */
   export interface TextRerenderRequest {
     segmentId: number
     /** Language names the target track the correction belongs to. */
     language: string
-    text: string
+    /** Text carries a corrected target line. It is authoritative. */
+    text?: string
+    /** SourceText carries a corrected source line. It re-translates first. */
+    sourceText?: string
   }
 
   /** TextRerenderResult reports the take the server recorded. */
@@ -14,6 +18,10 @@
     sentence: string
     take: Take
     totalNanodollars: number
+    /** Text is the spoken target text of the new take. */
+    text: string
+    /** SourceText echoes the corrected source line when one was sent. */
+    sourceText?: string
   }
 
   /** TextRerenderFailure explains why the line did not re-render. */
@@ -141,14 +149,43 @@
     }
   }
 
-  function confirmSource(): void {
-    pending = undefined
+  async function confirmSource(): Promise<void> {
+    const sourceSegment = segment
+    const sourceLanguage = language
+    const sourceText = sourceDraft.trim()
+    if (sourceText.length === 0) {
+      error = "The corrected source line cannot be empty."
+      return
+    }
+    if (!onrerender) {
+      error = "Line re-rendering is unavailable for this workspace."
+      return
+    }
+
+    busy = true
     error = ""
-    // The landed re-render route accepts a corrected target line only.
-    // A corrected source needs a route that runs translation first, so this
-    // panel reports the gap instead of sending a target text that would speak
-    // the wrong language.
-    note = `Line ${segment.id} cannot re-translate yet. The re-render route accepts a corrected target line, not a corrected source line. Nothing was sent and no model ran. T6.5b owns that path.`
+    try {
+      const result = await onrerender({ segmentId: sourceSegment.id, language: sourceLanguage, sourceText })
+      if (segment.id !== sourceSegment.id) {
+        pending = undefined
+        return
+      }
+      if ("error" in result) {
+        error = result.error
+        return
+      }
+      appliedSource = sourceText
+      sourceDraft = sourceText
+      appliedTarget = result.text
+      targetDraft = result.text
+      sourceSignature = `${sourceSegment.id}:${sourceText}:${result.text}`
+      pending = undefined
+      note = result.sentence || `Line ${sourceSegment.id} re-translated as ${result.take.file}.`
+    } catch {
+      error = "We could not re-translate that line. The take is unchanged."
+    } finally {
+      busy = false
+    }
   }
 </script>
 
@@ -179,7 +216,7 @@
     ></textarea>
     <div class="field-actions">
       <button type="button" onclick={promptSource} disabled={!sourceDirty || busy}>Re-translate line</button>
-      <span class="hint">A corrected source line needs re-translation. T6.5b lands that path.</span>
+      <span class="hint">A corrected source line re-translates, then renders a new take.</span>
     </div>
   </div>
 
@@ -228,14 +265,24 @@
   {#if pending === "source"}
     <aside aria-live="assertive" class="pending" role="alert">
       <p>
-        Re-translating line {segment.id} from the corrected source needs a route that runs
-        the translation model first. The landed re-render route accepts a corrected target
-        line only, so no handler takes a corrected source line yet. T6.5b owns that path.
-        This confirm reports the gap only, so it sends nothing and runs no model.
+        Re-translating line {segment.id} from this corrected source runs the
+        translation model, then the fit loop saves a new take beside the old ones.
       </p>
+      {#if estimateTake}
+        <p class="basis">
+          Estimated at
+          <span class="numeric" data-fee={estimatedNanodollars} data-fee-text={feeText}>{feeText}</span>
+          from the take
+          <span class="numeric" data-take-file={estimateTake.file}>{estimateTake.file}</span>.
+        </p>
+      {:else}
+        <p class="basis">No take is recorded for this line, so no estimate exists.</p>
+      {/if}
       <div class="actions">
         <button type="button" onclick={cancel} disabled={busy}>Cancel</button>
-        <button class="confirm" type="button" onclick={confirmSource} disabled={busy}>Re-translate line</button>
+        <button class="confirm" type="button" onclick={confirmSource} disabled={busy}>
+          {busy ? "Re-translating…" : "Re-translate line"}
+        </button>
       </div>
     </aside>
   {/if}

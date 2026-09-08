@@ -62,6 +62,8 @@
     language: string
     sentence: string
     total_nanodollars: number
+    text: string
+    source_text?: string
     take: RerenderTakePayload
   }
 
@@ -263,6 +265,14 @@
     const currentDub = dub
     if (!currentDub) return { error: "This workspace is not ready for a re-render." }
     if (!request.language) return { error: "This project has no target language, so the line cannot re-render." }
+    const body: Record<string, string> = { language: request.language }
+    if (request.sourceText !== undefined) {
+      body.source_text = request.sourceText
+    } else if (request.text !== undefined) {
+      body.text = request.text
+    } else {
+      return { error: "This line has no corrected text to send." }
+    }
 
     try {
       const response = await fetch(
@@ -270,7 +280,7 @@
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ language: request.language, text: request.text })
+          body: JSON.stringify(body)
         }
       )
       if (!response.ok) return { error: await rerenderFailureSentence(response) }
@@ -278,11 +288,13 @@
       if (!isRerenderPayload(payload)) {
         return { error: "The re-render answer was incomplete. The take is unchanged." }
       }
-      applyRerenderedTake(payload, request.text, request.language)
+      applyRerenderedTake(payload, request)
       return {
         sentence: payload.sentence || `Line ${payload.segment_id} re-rendered as ${payload.take.name}.`,
         take: takeFromRerender(payload.take),
-        totalNanodollars: payload.total_nanodollars
+        totalNanodollars: payload.total_nanodollars,
+        text: payload.text,
+        sourceText: payload.source_text
       }
     } catch {
       return { error: "We could not reach the server, so the line was not re-rendered." }
@@ -299,19 +311,25 @@
     return `The line did not re-render (${response.status}).`
   }
 
-  function applyRerenderedTake(payload: RerenderPayload, text: string, language: string): void {
+  function applyRerenderedTake(payload: RerenderPayload, request: TextRerenderRequest): void {
     const currentDub = dub
     if (!currentDub) return
     const take = takeFromRerender(payload.take)
+    const correctedSource = request.sourceText
     dub = {
       ...currentDub,
+      segments: correctedSource === undefined
+        ? currentDub.segments
+        : currentDub.segments.map((segment) => (
+            segment.id === payload.segment_id ? { ...segment, text: correctedSource } : segment
+          )),
       languages: currentDub.languages.map((track) => {
-        if (track.language !== language) return track
+        if (track.language !== request.language) return track
         return {
           ...track,
           lines: track.lines.map((line) => (
             line.segment_id === payload.segment_id
-              ? { ...line, text, flagged: payload.take.flagged, takes: [...line.takes, take] }
+              ? { ...line, text: payload.text, flagged: payload.take.flagged, takes: [...line.takes, take] }
               : line
           ))
         }
@@ -342,6 +360,7 @@
     return typeof payload.segment_id === "number"
       && typeof payload.sentence === "string"
       && typeof payload.total_nanodollars === "number"
+      && typeof payload.text === "string"
       && typeof take.file === "string"
       && typeof take.name === "string"
       && typeof take.attempt === "number"

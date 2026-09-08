@@ -146,8 +146,10 @@ fixture-ok: no
 size:       M · frontier
 owns:       internal/api/rerender.go, internal/api/rerender_test.go,
             internal/api/server.go, cmd/ajilamu/main.go,
+            internal/fit/rewrite.go, internal/fit/rewrite_test.go,
+            web/src/lib/edit/Text.svelte,
             web/src/routes/d/[id]/+page.svelte
-status:     not-started
+status:     done
 ```
 T6.3's contract change records the gap. The re-render route takes a target text only, so a
 corrected source line cannot be re-translated. Add an optional `source_text` to the route
@@ -447,9 +449,11 @@ The response is 201.
 ```
 
 T6.3 calls it after a target-text edit. Send `{"text": "<the edited line>"}`. The
-route passes that text as `RewriteConfig.InitialText`, so attempt one synthesizes
-without a translation call. A measured run made zero translation calls and one TTS
-call. T6.3 must keep its confirmation panel before the call, because the call bills.
+route passes that text as `RewriteConfig.InitialText` and sets
+`RewriteConfig.AuthoritativeText`, so every attempt speaks the creator's line and
+the loop calls no translator. The loop flags a line that still misses the slot
+rather than rewriting it. A measured run made zero translation calls and three TTS
+calls. T6.3 must keep its confirmation panel before the call, because the call bills.
 
 T6.5 calls it after a speaker change and for a re-roll. Send
 `{"speaker": "<name>"}` or an empty body. The route replaces the segment speaker
@@ -471,8 +475,9 @@ mutex, so a re-render never overlaps a run. It builds a per-call synthesizer fro
 resolved tag and a per-call charge ledger. The handler serializes re-renders, so two
 requests cannot choose one take file.
 
-Surprises. `fit.RepairLine` reads `InitialText` on attempt one alone. Attempts two and
-three still translate when the authoritative text misses its slot. The route always
+Surprises. `fit.RepairLine` reads `InitialText` on attempt one alone unless the
+caller sets `RewriteConfig.AuthoritativeText`. That mode speaks the text on every
+attempt, may still apply an atempo stretch, and never translates. The route always
 passes the stored or corrected text, so a speaker-only re-render also skips
 translation. `RecordTake` rejects a charge whose `TakeID` differs from the segment,
 so the route attributes every charge to the line. The ledger's `takes_raw.text`
@@ -540,3 +545,53 @@ answered the documented 201 shape. It makes no outbound call. The browser raised
 zero console messages and zero page errors. `npm --prefix web run check` reports
 183 files, 0 errors and 0 warnings. Neither changed file carries `export let`, `$:`
 or a store.
+
+### T6.5b source-text re-translation path
+
+`POST /api/dubs/{id}/lines/{segment}/rerender` now takes an optional `source_text`.
+A supplied `source_text` replaces the stored transcript before the fit loop runs.
+The route then sends an empty target text, so the fit loop translates the corrected
+source on attempt one. The 201 body gained `text` and `source_text`. A supplied
+`text` stays authoritative on every attempt and never translates.
+
+The route records this path under the `text_corrected` action with the `manual_ui`
+author. `api.CorrectedRecorder` carries the provenance. `cmd/ajilamu/main.go` maps
+it onto the ledger. A stand-in ClickHouse captured the row.
+
+```json
+{"action_id":"61cfad4111c703322797cfea920de94a","commit_id":"a17af21ff25818a667843600f94148d1","project_id":"live-source-dub","dub_id":"live-source-dub","owner_id":"local","language":"ml-IN","segment_index":3,"take_id":"","action_type":"text_corrected","author":"manual_ui","prompt":"","before_value":"","after_value":""}
+```
+
+`Text.svelte` now sends `source_text` from its source confirm. The page applies the
+answer to the source segment and the active track line. The confirm closed and the
+note read `Line 3 re-rendered as take seg_3_try2.wav.`
+
+Measured on 2026-09-09. A live run against Gemini and Cloud TTS answered 201 with a
+real Malayalam line and `seg_3_try3.wav`. The commit message read `Corrected the
+source of line 3 and re-rendered it.` The takes `seg_3_try1.wav` through
+`seg_3_try4.wav` kept their md5 hashes across a later target correction.
+
+Translation counts came from the real fit loop with a counting translator. A
+slot-fitting take gave one translation call on the source path and zero on the
+target-text path. A corrected target that missed its slot also gave zero
+translation calls, and the take spoke the creator's line.
+`TestRerenderCorrectedSourceRetranslates`, `TestRerenderCorrectedTargetSkipsTranslation`,
+and `TestRerenderCorrectedTargetMissNeverTranslates` pin those counts.
+
+Surprises. `fit.RepairLine` only read `InitialText` on attempt one, so attempts two
+and three translated when the take missed its slot. A live target correction paid
+for two translation calls while the route itself called the translator zero times.
+Round 1 of the T6.5b review found the gap. `RewriteConfig.AuthoritativeText` now
+speaks the creator's text on every attempt, and the loop flags a line that still
+misses. `RenderLine` names the target and source language on the translator
+request, because it calls the translator directly and skips the fit loop wrapper.
+The live model needs `GOOGLE_CLOUD_LOCATION=global`. The region `us-central1`
+answers 404 for `gemini-3.8-flash`.
+
+Seam expansion. T6.5b's owns line gained `web/src/lib/edit/Text.svelte`. The source
+confirm that reported the gap lives there, not on the page. The orchestrator granted
+the expansion before the edit.
+
+`go test -count=1 ./internal/api ./internal/fit ./cmd/...` reports ok for all three
+packages.
+`npm --prefix web run check` reports 183 files, 0 errors and 0 warnings.

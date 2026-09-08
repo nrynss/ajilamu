@@ -632,14 +632,24 @@ func (p *pipelineRunner) RenderLine(ctx context.Context, req api.LineRenderReque
 		return api.LineRenderResult{}, fmt.Errorf("open the synthesizer: %w", err)
 	}
 
-	line, err := fit.RepairLine(ctx, req.Segment, fit.RewriteConfig{
-		Translator:  p.translator,
+	cfg := fit.RewriteConfig{
+		Translator: &namedTranslator{
+			inner:  p.translator,
+			target: language.name,
+			source: resolveLanguageName(req.SourceLanguage),
+		},
 		Synthesizer: synthesizer,
 		WorkDir:     req.WorkDir,
 		PathBuilder: rerenderTakePath(req.TakeFile),
 		MaxAttempts: fit.DefaultMaxAttempts,
 		InitialText: req.Text,
-	})
+	}
+	if req.Text != "" {
+		// A corrected target line is authoritative. Every attempt speaks it,
+		// so the loop never translates the source to second-guess the creator.
+		cfg.AuthoritativeText = true
+	}
+	line, err := fit.RepairLine(ctx, req.Segment, cfg)
 	if err != nil {
 		return api.LineRenderResult{}, err
 	}
@@ -664,6 +674,22 @@ func (p *pipelineRunner) RenderLine(ctx context.Context, req api.LineRenderReque
 		Total:        charges.Total(),
 		Peaks:        peaks,
 	}, nil
+}
+
+// namedTranslator names the target and source language on every translate
+// request. fit.RunPipeline names them through its own wrapper. A re-render
+// calls the translator directly, so this adapter names them instead.
+type namedTranslator struct {
+	inner  gemini.Translator
+	target string
+	source string
+}
+
+// Translate names the languages and forwards the request.
+func (t *namedTranslator) Translate(ctx context.Context, req gemini.TranslateRequest) (string, error) {
+	req.TargetLanguageName = t.target
+	req.SourceLanguageName = t.source
+	return t.inner.Translate(ctx, req)
 }
 
 // rerenderTakePath names each attempt of one re-render. Attempt one keeps the
@@ -864,6 +890,7 @@ type runRecorder struct {
 }
 
 var _ api.RunRecorder = (*runRecorder)(nil)
+var _ api.CorrectedRecorder = (*runRecorder)(nil)
 
 // newRunRecorder returns nil for a nil client, so a typed nil never reaches a route.
 func newRunRecorder(client *ledger.Client, provider string, logger *slog.Logger) api.RunRecorder {
@@ -876,10 +903,25 @@ func newRunRecorder(client *ledger.Client, provider string, logger *slog.Logger)
 	return &runRecorder{client: client, provider: provider, logger: logger}
 }
 
-// Persist writes the run in ledger order. It flushes the durable queue first,
-// so a parent commit still queued is delivered before the head read, and again
-// at the end, so every row reaches ClickHouse before the run reports done.
+// Persist writes a full run in ledger order. It flushes the durable queue
+// first, so a parent commit still queued is delivered before the head read,
+// and again at the end, so every row reaches ClickHouse before the run
+// reports done.
 func (r *runRecorder) Persist(ctx context.Context, req api.RunRequest, result api.RunResult) error {
+	return r.persist(ctx, req, result, api.ActionTakeRendered, api.AuthorAgent, -1,
+		fmt.Sprintf("Rendered %d lines into %s.", len(result.Takes), req.Language))
+}
+
+// PersistCorrected writes one corrected-source re-render. It is the only
+// path that names the text_corrected action and the manual_ui author.
+func (r *runRecorder) PersistCorrected(ctx context.Context, req api.RunRequest, result api.RunResult, corrected api.CorrectedRerender) error {
+	return r.persist(ctx, req, result, corrected.Action, corrected.Author, int32(corrected.Segment),
+		fmt.Sprintf("Corrected the source of line %d and re-rendered it.", corrected.Segment))
+}
+
+// persist writes one commit with its action, takes, charges and timeline
+// snapshots. The caller names the action, the author and the commit message.
+func (r *runRecorder) persist(ctx context.Context, req api.RunRequest, result api.RunResult, actionType, author string, segmentIndex int32, message string) error {
 	if r.client == nil {
 		return errors.New("run recorder has no ledger client")
 	}
@@ -906,7 +948,7 @@ func (r *runRecorder) Persist(ctx context.Context, req api.RunRequest, result ap
 		Branch:         runBranch,
 		Language:       req.Language,
 		VersionSeq:     version,
-		Message:        fmt.Sprintf("Rendered %d lines into %s.", len(result.Takes), req.Language),
+		Message:        message,
 	}
 	if err := r.client.AppendCommit(ctx, commit); err != nil {
 		return fmt.Errorf("append the run commit: %w", err)
@@ -917,9 +959,9 @@ func (r *runRecorder) Persist(ctx context.Context, req api.RunRequest, result ap
 		DubID:        req.DubID,
 		OwnerID:      result.OwnerID,
 		Language:     req.Language,
-		SegmentIndex: -1,
-		ActionType:   api.ActionTakeRendered,
-		Author:       api.AuthorAgent,
+		SegmentIndex: segmentIndex,
+		ActionType:   actionType,
+		Author:       author,
 	}
 	if err := r.client.RecordAction(ctx, action); err != nil {
 		return fmt.Errorf("record the run action: %w", err)

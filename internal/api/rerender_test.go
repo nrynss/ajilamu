@@ -16,6 +16,8 @@ import (
 
 	"github.com/nrynss/ajilamu/internal/api"
 	"github.com/nrynss/ajilamu/internal/cost"
+	"github.com/nrynss/ajilamu/internal/fit"
+	"github.com/nrynss/ajilamu/internal/gemini"
 	"github.com/nrynss/ajilamu/internal/media"
 	"github.com/nrynss/ajilamu/internal/tts"
 	"github.com/nrynss/ajilamu/internal/types"
@@ -63,13 +65,17 @@ func standInTake(req api.LineRenderRequest) (api.LineRenderResult, error) {
 // Segment 3's slot is 5320 ms, so the stand-in take fits its slot and
 // ffprobe reads 5.320000 seconds.
 func slotWAV() []byte {
+	return wavOfMs(5320)
+}
+
+// wavOfMs returns a silent mono 16 kHz 16-bit WAV of the requested length.
+func wavOfMs(ms int) []byte {
 	const (
 		sampleRate = 16000
 		channels   = 1
 		bitsPer    = 16
-		slotMs     = 5320
 	)
-	audio := make([]byte, sampleRate*slotMs/1000*channels*bitsPer/8)
+	audio := make([]byte, sampleRate*ms/1000*channels*bitsPer/8)
 	wav := make([]byte, 44+len(audio))
 	copy(wav, "RIFF")
 	binary.LittleEndian.PutUint32(wav[4:], uint32(36+len(audio)))
@@ -432,6 +438,8 @@ func TestRerenderRejectsBadRequests(t *testing.T) {
 		{name: "unknown line", storage: storage, dubID: "dub-reject", segment: 9, body: `{}`, wantCode: http.StatusNotFound},
 		{name: "no target language", storage: missing, dubID: "dub-nolang", segment: 3, body: `{}`, wantCode: http.StatusBadRequest},
 		{name: "empty corrected text", storage: storage, dubID: "dub-reject", segment: 3, body: `{"text":"   "}`, wantCode: http.StatusBadRequest},
+		{name: "empty corrected source", storage: storage, dubID: "dub-reject", segment: 3, body: `{"source_text":"   "}`, wantCode: http.StatusBadRequest},
+		{name: "both corrected texts", storage: storage, dubID: "dub-reject", segment: 3, body: `{"text":"a","source_text":"b"}`, wantCode: http.StatusBadRequest},
 		{name: "unknown speaker", storage: storage, dubID: "dub-reject", segment: 3, body: `{"speaker":"Nobody"}`, wantCode: http.StatusBadRequest},
 		{name: "bad json", storage: storage, dubID: "dub-reject", segment: 3, body: `{`, wantCode: http.StatusBadRequest},
 	}
@@ -495,5 +503,365 @@ func TestRerenderUnavailableWithoutSeams(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", response.StatusCode)
+	}
+}
+
+// provenanceRecorder captures what the route hands the ledger, including the
+// corrected-source provenance a plain RunRecorder cannot carry.
+type provenanceRecorder struct {
+	persists  int
+	corrected int
+	record    api.CorrectedRerender
+	result    api.RunResult
+}
+
+// Persist counts a plain re-render.
+func (r *provenanceRecorder) Persist(context.Context, api.RunRequest, api.RunResult) error {
+	r.persists++
+	return nil
+}
+
+// PersistCorrected captures the corrected-source provenance.
+func (r *provenanceRecorder) PersistCorrected(_ context.Context, _ api.RunRequest, result api.RunResult, corrected api.CorrectedRerender) error {
+	r.corrected++
+	r.record = corrected
+	r.result = result
+	return nil
+}
+
+// countingTranslator counts the translation calls the real fit loop makes.
+type countingTranslator struct {
+	calls int
+	texts []string
+}
+
+// Translate answers the source line and counts the call.
+func (t *countingTranslator) Translate(_ context.Context, req gemini.TranslateRequest) (string, error) {
+	t.calls++
+	t.texts = append(t.texts, req.Text)
+	return "translated " + req.Text, nil
+}
+
+// wavSynthesizer writes a real WAV that exactly fills the line's slot.
+type wavSynthesizer struct {
+	calls int
+}
+
+// Synthesize writes the slot-length WAV at the requested path.
+func (s *wavSynthesizer) Synthesize(_ context.Context, req tts.SynthesizeRequest) error {
+	s.calls++
+	return os.WriteFile(req.OutPath, slotWAV(), 0o644)
+}
+
+// missSynthesizer writes a WAV far longer than the slot, so every attempt
+// misses and the fit loop flags the line.
+type missSynthesizer struct {
+	calls int
+}
+
+// Synthesize writes a 10640 ms WAV, twice segment 3's 5320 ms slot.
+func (s *missSynthesizer) Synthesize(_ context.Context, req tts.SynthesizeRequest) error {
+	s.calls++
+	return os.WriteFile(req.OutPath, wavOfMs(10640), 0o644)
+}
+
+// fitRenderer runs the real fit loop through the route seam, so a test counts
+// real translation calls rather than trusting a stand-in's guess.
+func fitRenderer(translator gemini.Translator, synthesizer tts.Synthesizer) lineRenderFunc {
+	return func(ctx context.Context, req api.LineRenderRequest) (api.LineRenderResult, error) {
+		cfg := fit.RewriteConfig{
+			Translator:  translator,
+			Synthesizer: synthesizer,
+			WorkDir:     req.WorkDir,
+			PathBuilder: func(int, int, bool) string { return req.TakeFile },
+			InitialText: req.Text,
+		}
+		if req.Text != "" {
+			// A non-empty text is the creator's authoritative target line.
+			cfg.AuthoritativeText = true
+		}
+		line, err := fit.RepairLine(ctx, req.Segment, cfg)
+		if err != nil {
+			return api.LineRenderResult{}, err
+		}
+		attempt := line.Attempts[len(line.Attempts)-1]
+		charges := []cost.Charge{{Kind: cost.ChargeSynthesize, TakeID: req.Segment.ID, Units: 1, UnitPrice: 30000}}
+		if req.Text == "" {
+			charges = append([]cost.Charge{{Kind: cost.ChargeTranslate, TakeID: req.Segment.ID, Units: 1, UnitPrice: 1000}}, charges...)
+		}
+		total := cost.Price(0)
+		for _, charge := range charges {
+			total += charge.Total()
+		}
+		return api.LineRenderResult{
+			Take:         line.ChosenTake,
+			Text:         attempt.Text,
+			Voice:        "test-voice",
+			Repair:       attempt.Repair,
+			RepairDetail: attempt.RepairDetail,
+			Flagged:      line.Flagged,
+			Charges:      charges,
+			Total:        total,
+			Peaks:        make([]uint8, 4),
+		}, nil
+	}
+}
+
+// TestRerenderCorrectedSourceRetranslates proves a corrected source line
+// replaces the stored transcript, runs the translation model once, writes a
+// new take beside the old one, and records text_corrected by manual_ui.
+func TestRerenderCorrectedSourceRetranslates(t *testing.T) {
+	storage, first := rerenderProject(t, "dub-source")
+	before, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatalf("read first take: %v", err)
+	}
+
+	translator := &countingTranslator{}
+	synthesizer := &wavSynthesizer{}
+	recorder := &provenanceRecorder{}
+	base := newRunTestServer(t, api.ServerOptions{
+		Rerender:   fitRenderer(translator, synthesizer),
+		Recorder:   recorder,
+		History:    rerenderHistory(),
+		StorageDir: storage,
+	})
+
+	response := postRerender(t, base, "dub-source", 3, `{"language":"ml","source_text":"corrected source line"}`)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("re-render status = %d, want 201", response.StatusCode)
+	}
+	body := decodeRerender(t, response)
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal response body: %v", err)
+	}
+	t.Logf("201 body = %s", encoded)
+	t.Logf("translation calls = %d, synthesis calls = %d", translator.calls, synthesizer.calls)
+
+	if translator.calls != 1 {
+		t.Errorf("translation calls = %d, want 1", translator.calls)
+	}
+	if len(translator.texts) != 1 || translator.texts[0] != "corrected source line" {
+		t.Errorf("translated source = %v, want the corrected source line", translator.texts)
+	}
+	if body.Take.Name != "seg_3_try2.wav" {
+		t.Errorf("take name = %q, want seg_3_try2.wav", body.Take.Name)
+	}
+	if body.Take.Attempt != 2 {
+		t.Errorf("take attempt = %d, want 2", body.Take.Attempt)
+	}
+	if body.Text != "translated corrected source line" {
+		t.Errorf("response text = %q, want the translated line", body.Text)
+	}
+	if body.SourceText != "corrected source line" {
+		t.Errorf("response source_text = %q, want the corrected source", body.SourceText)
+	}
+	if recorder.corrected != 1 || recorder.persists != 0 {
+		t.Errorf("recorder corrected = %d persists = %d, want 1 and 0", recorder.corrected, recorder.persists)
+	}
+	if recorder.record.Action != api.ActionTextCorrected {
+		t.Errorf("recorded action = %q, want %q", recorder.record.Action, api.ActionTextCorrected)
+	}
+	if recorder.record.Author != api.AuthorManualUI {
+		t.Errorf("recorded author = %q, want %q", recorder.record.Author, api.AuthorManualUI)
+	}
+	if recorder.record.Segment != 3 {
+		t.Errorf("recorded segment = %d, want 3", recorder.record.Segment)
+	}
+	if len(recorder.result.Timeline) != 1 ||
+		recorder.result.Timeline[0].SourceText != "corrected source line" ||
+		recorder.result.Timeline[0].Text != "translated corrected source line" {
+		t.Errorf("recorded timeline = %+v, want the corrected source and translated text", recorder.result.Timeline)
+	}
+
+	after, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatalf("read first take after the re-render: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Error("the corrected-source re-render changed the first take")
+	}
+	if _, err := os.Stat(body.Take.File); err != nil {
+		t.Errorf("new take missing: %v", err)
+	}
+}
+
+// TestRerenderCorrectedTargetSkipsTranslation proves the target-text path
+// still calls the translation model zero times while the source path calls it
+// once. It runs the real fit loop through the route seam.
+func TestRerenderCorrectedTargetSkipsTranslation(t *testing.T) {
+	storage, _ := rerenderProject(t, "dub-target")
+	translator := &countingTranslator{}
+	synthesizer := &wavSynthesizer{}
+	recorder := &provenanceRecorder{}
+	base := newRunTestServer(t, api.ServerOptions{
+		Rerender:   fitRenderer(translator, synthesizer),
+		Recorder:   recorder,
+		History:    rerenderHistory(),
+		StorageDir: storage,
+	})
+
+	response := postRerender(t, base, "dub-target", 3, `{"language":"ml","text":"corrected target line"}`)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("re-render status = %d, want 201", response.StatusCode)
+	}
+	body := decodeRerender(t, response)
+	t.Logf("translation calls = %d, synthesis calls = %d", translator.calls, synthesizer.calls)
+
+	if translator.calls != 0 {
+		t.Errorf("translation calls = %d, want 0 on the target-text path", translator.calls)
+	}
+	if synthesizer.calls != 1 {
+		t.Errorf("synthesis calls = %d, want 1", synthesizer.calls)
+	}
+	if recorder.persists != 1 || recorder.corrected != 0 {
+		t.Errorf("recorder persists = %d corrected = %d, want 1 and 0", recorder.persists, recorder.corrected)
+	}
+	if body.Text != "corrected target line" {
+		t.Errorf("response text = %q, want the corrected target line", body.Text)
+	}
+	if body.SourceText != "" {
+		t.Errorf("response source_text = %q, want empty on the target path", body.SourceText)
+	}
+}
+
+// TestRerenderCorrectedTargetMissNeverTranslates proves a corrected target
+// line that misses its slot keeps the creator's text on every attempt. The
+// loop calls no translation model and flags the line instead of rewriting it.
+func TestRerenderCorrectedTargetMissNeverTranslates(t *testing.T) {
+	storage, _ := rerenderProject(t, "dub-target-miss")
+	translator := &countingTranslator{}
+	synthesizer := &missSynthesizer{}
+	recorder := &provenanceRecorder{}
+	base := newRunTestServer(t, api.ServerOptions{
+		Rerender:   fitRenderer(translator, synthesizer),
+		Recorder:   recorder,
+		History:    rerenderHistory(),
+		StorageDir: storage,
+	})
+
+	response := postRerender(t, base, "dub-target-miss", 3, `{"language":"ml","text":"corrected target line"}`)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("re-render status = %d, want 201", response.StatusCode)
+	}
+	body := decodeRerender(t, response)
+	t.Logf("translation calls = %d, synthesis calls = %d, attempt = %d, text = %q, flagged = %v",
+		translator.calls, synthesizer.calls, body.Take.Attempt, body.Text, body.Take.Flagged)
+
+	if translator.calls != 0 {
+		t.Errorf("translation calls = %d, want 0 on the corrected target path", translator.calls)
+	}
+	if synthesizer.calls != fit.DefaultMaxAttempts {
+		t.Errorf("synthesis calls = %d, want %d", synthesizer.calls, fit.DefaultMaxAttempts)
+	}
+	if body.Text != "corrected target line" {
+		t.Errorf("spoken text = %q, want the creator's corrected target line", body.Text)
+	}
+	if !body.Take.Flagged {
+		t.Error("flagged = false, want a flagged line")
+	}
+	if recorder.persists != 1 || recorder.corrected != 0 {
+		t.Errorf("recorder persists = %d corrected = %d, want 1 and 0", recorder.persists, recorder.corrected)
+	}
+}
+
+// TestRerenderSourcePathNeedsCorrectedRecorder proves a recorder that cannot
+// name the text_corrected action answers 503 before any model runs.
+func TestRerenderSourcePathNeedsCorrectedRecorder(t *testing.T) {
+	storage, _ := rerenderProject(t, "dub-nocorrect")
+	var calls int
+	renderer := lineRenderFunc(func(_ context.Context, req api.LineRenderRequest) (api.LineRenderResult, error) {
+		calls++
+		return standInTake(req)
+	})
+	base := newRunTestServer(t, api.ServerOptions{
+		Rerender:   renderer,
+		Recorder:   recordFunc(func(context.Context, api.RunRequest, api.RunResult) error { return nil }),
+		History:    rerenderHistory(),
+		StorageDir: storage,
+	})
+
+	response := postRerender(t, base, "dub-nocorrect", 3, `{"language":"ml","source_text":"corrected"}`)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", response.StatusCode)
+	}
+	if calls != 0 {
+		t.Fatalf("the renderer ran %d times without a corrected recorder", calls)
+	}
+}
+
+// TestRerenderKeepsEveryTakeAcrossCorrections proves a source correction and a
+// target correction in either order leave the previous takes byte for byte.
+func TestRerenderKeepsEveryTakeAcrossCorrections(t *testing.T) {
+	orders := []struct {
+		name   string
+		first  string
+		second string
+	}{
+		{name: "source then target", first: `{"language":"ml","source_text":"first source"}`, second: `{"language":"ml","text":"second target"}`},
+		{name: "target then source", first: `{"language":"ml","text":"first target"}`, second: `{"language":"ml","source_text":"second source"}`},
+	}
+	for _, order := range orders {
+		t.Run(order.name, func(t *testing.T) {
+			storage, first := rerenderProject(t, "dub-history")
+			original, err := os.ReadFile(first)
+			if err != nil {
+				t.Fatalf("read first take: %v", err)
+			}
+			base := newRunTestServer(t, api.ServerOptions{
+				Rerender:   fitRenderer(&countingTranslator{}, &wavSynthesizer{}),
+				Recorder:   &provenanceRecorder{},
+				History:    rerenderHistory(),
+				StorageDir: storage,
+			})
+
+			firstResponse := postRerender(t, base, "dub-history", 3, order.first)
+			if firstResponse.StatusCode != http.StatusCreated {
+				t.Fatalf("first re-render status = %d, want 201", firstResponse.StatusCode)
+			}
+			firstBody := decodeRerender(t, firstResponse)
+			secondTake, err := os.ReadFile(firstBody.Take.File)
+			if err != nil {
+				t.Fatalf("read the second take: %v", err)
+			}
+
+			secondResponse := postRerender(t, base, "dub-history", 3, order.second)
+			if secondResponse.StatusCode != http.StatusCreated {
+				t.Fatalf("second re-render status = %d, want 201", secondResponse.StatusCode)
+			}
+			secondBody := decodeRerender(t, secondResponse)
+
+			if firstBody.Take.Name != "seg_3_try2.wav" {
+				t.Errorf("first take name = %q, want seg_3_try2.wav", firstBody.Take.Name)
+			}
+			if secondBody.Take.Name != "seg_3_try3.wav" {
+				t.Errorf("second take name = %q, want seg_3_try3.wav", secondBody.Take.Name)
+			}
+			afterOriginal, err := os.ReadFile(first)
+			if err != nil {
+				t.Fatalf("read the first take again: %v", err)
+			}
+			if string(afterOriginal) != string(original) {
+				t.Error("a correction changed the first take")
+			}
+			afterSecond, err := os.ReadFile(firstBody.Take.File)
+			if err != nil {
+				t.Fatalf("read the second take again: %v", err)
+			}
+			if string(afterSecond) != string(secondTake) {
+				t.Error("the second correction changed the second take")
+			}
+			names, err := filepath.Glob(filepath.Join(filepath.Dir(first), "seg_3_try*.wav"))
+			if err != nil {
+				t.Fatalf("list take files: %v", err)
+			}
+			slices.Sort(names)
+			if len(names) != 3 {
+				t.Errorf("take files = %v, want three", names)
+			}
+			t.Logf("take list = %v", names)
+		})
 	}
 }
