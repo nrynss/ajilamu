@@ -133,6 +133,9 @@ without an access grant.
 | `CLICKHOUSE_MCP_URL` | `http://127.0.0.1:8000/mcp` |
 | `CLICKHOUSE_MCP_SERVER_TRANSPORT` | `http` |
 | `CLICKHOUSE_MCP_ALLOWED_HOSTS` | `127.0.0.1:8000,localhost:8000` |
+| `AJILAMU_DATA_DIR` | `/data/storage/ajilamu` |
+| `AJILAMU_FRONTEND_DIR` | the built workspace directory |
+| `AJILAMU_SAMPLE_CLIP` | unset, the committed clip is found beside the process |
 
 The hostname and the two ClickHouse Cloud identifiers are not public, but they are not
 credentials either. Knowing them opens nothing without a password.

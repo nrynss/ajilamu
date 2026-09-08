@@ -315,23 +315,77 @@ the console holds no `effect_update_depth_exceeded`.
 
 ---
 
-### T7.3: Run orchestration and progress ★
+### T7.3: Run engine, server-sent events, and persistence ★
 ```yaml
-requires:   T1.4, T2.7, T3.4, T7.2a
+requires:   T7.3c, T1.4, T2.7, T3.4, T7.2a
 fixture-ok: yes
 size:       L · frontier
-owns:       internal/api/run.go, internal/api/events.go
+owns:       internal/api/run.go, internal/api/events.go,
+            internal/api/server.go, cmd/ajilamu/main.go
 status:     not-started
 ```
-Demux audio, run the fit loop, assemble output audio, and export video asynchronously. Stream server-sent events to the client.
+Start a run over HTTP, drive the fit loop and the assembler, persist what they produce, and stream server-sent events.
 
-Send natural sentences rather than technical status codes. For example: "Rendering line 3 in Malayalam" or "This take overruns by 1.2 seconds, trying a shorter line."
+Send natural sentences rather than technical status codes. For example: "Rendering line 3 in Malayalam" or "This take overruns by 1.2 seconds, trying a shorter line." Include cumulative project cost on every event.
 
-Include cumulative project cost on every event to keep the UI budget meter synchronized.
+**The import cycle decides the shape.** `internal/fit/loop.go` imports `internal/api` for the wire types, so `internal/api/run.go` cannot import the loop. Break it the way T7.2c broke the ledger seam. Declare the run interface in api types, adapt the pipeline in `cmd/ajilamu/main.go`, and assign the adapter only when its dependencies exist. Do not move the wire types.
 
-Preserve discrete WAV takes on disk during execution. If an external failure interrupts processing, the project resumes without re-rendering completed takes.
+**Persistence.** The run mints project_id, owner_id, commit_id, version_seq, and take_id. It writes takes, charges, commits, actions, and timeline snapshots through `internal/ledger`. `AppendCommit` checks its parent against ClickHouse, so the run must handle a parent still in the durable queue rather than fail. A whole-pass charge has no commit until one exists, so decide its attribution here and record the decision.
 
-**Done when:** Progress streaming functions smoothly across both fixture simulations and live end-to-end runs.
+**Resume is T7.3a. The client is T7.3b.** This task stops at the last event.
+
+**Done when:** A run starts over HTTP, streams complete sentences with cumulative cost through the fixture simulation and a live end-to-end run, and the ledger holds the takes, charges, commits, actions, and snapshots it produced.
+
+### T7.3a: Resumable runs
+```yaml
+requires:   T7.3
+fixture-ok: yes
+size:       M · mid
+owns:       internal/fit/loop.go, internal/fit/loop_test.go
+status:     not-started
+```
+An interrupted run must resume without re-rendering completed takes.
+
+The loop writes each take with `O_EXCL`, so a second pass over the same work directory fails rather than resumes. `RewriteConfig.InitialTake` already exists and `rewrite.go` honours it, but the loop never sets it. Detect a completed take for a segment, pass it as the initial take, and skip the synthesis that produced it.
+
+**Done when:** A run interrupted after several segments resumes and re-renders only the remaining segments, proven by a test that stops after a completed take and restarts.
+
+---
+
+### T7.3b: Live progress in the workspace
+```yaml
+requires:   T7.3
+fixture-ok: yes
+size:       M · mid
+owns:       web/src/lib/progress.ts, web/src/routes/d/[id]/+page.svelte
+status:     not-started
+```
+No web code consumes `ProgressEvent`. `ProcessingBanner.svelte` exists and is exported, and nothing imports it.
+
+Subscribe to the run's event stream, feed the banner the active step and sentence, keep the budget meter on the cumulative cost, and reconnect after the stream drops. `ui-ux.md` lines 130 and 177 name the running totals and the active step banner.
+
+**Done when:** A run shows its active step and running cost in the workspace, and a dropped stream reconnects without losing the last known cost.
+
+---
+
+### T7.3c: Cancellable media and assembler
+```yaml
+requires:   []
+fixture-ok: yes
+size:       M · mid
+owns:       internal/media/ffmpeg.go, internal/media/probe.go, internal/media/media_test.go,
+            internal/assemble/bed.go, internal/assemble/place.go, internal/assemble/duck.go,
+            internal/assemble/export.go, internal/assemble/peaks.go,
+            internal/assemble/bed_test.go, internal/assemble/place_test.go,
+            internal/assemble/duck_test.go, internal/assemble/export_test.go,
+            internal/assemble/peaks_test.go
+status:     not-started
+```
+Every ffmpeg and ffprobe call uses `exec.Command` with no context, so a run cannot be stopped and shutdown leaves children behind.
+
+Thread `context.Context` through every exported call in `internal/media` and `internal/assemble`, use `exec.CommandContext`, and return an error that names cancellation. Change nothing on the success path.
+
+**Done when:** Cancelling the context kills the child process, a test proves it, and every caller still compiles.
 
 ---
 
@@ -357,7 +411,8 @@ Ensure credential inputs are write-only. Never log, echo, or expose API secrets 
 requires:   T7.0, T7.4
 fixture-ok: yes
 size:       S · frontier
-owns:       internal/api/server.go, internal/config/settings.go, internal/config/settings_test.go
+owns:       internal/api/server.go, internal/config/settings.go, internal/config/settings_test.go,
+            cmd/ajilamu/main.go
 status:     not-started
 ```
 Connect T7.4's injected write-only configuration callback to durable server-side storage. Store
@@ -366,16 +421,41 @@ from reading them. The read API may report whether a value exists, but must neve
 log, or return the secret itself. Reuse T7.0's application data-directory contract instead of
 inventing a second location.
 
+The adapter that supplies the callback must live in `cmd/ajilamu/main.go`, because `internal/api`
+imports `internal/config` and the store cannot accept an `api.ConfigUpdate`. Nothing consumes a
+stored key today: `internal/config` has no voice or translation field, and Gemini and TTS
+authenticate through ADC. Record that in the handoff rather than inventing a consumer.
+
 **Done when:** A submitted credential survives a process restart, cannot be read through any
 HTTP response, is absent from logs, and has restrictive on-disk permissions.
 
+### T7.5a: Ledger workspace reads
+```yaml
+requires:   T4.2a, T4.6, T7.2a
+fixture-ok: yes
+size:       M · frontier
+owns:       internal/ledger/workspace.go, internal/ledger/workspace_test.go
+status:     not-started
+```
+The wire `Dub` needs takes with their fit and itemized charges, the whole-pass charges, the
+running total, the language list, and project metadata. The ledger exposes four reads and none
+returns any of that.
+
+Add the reads in one file, routed through `queryClickHouse` so both pinned settings apply. Bind
+every id as a parameter. Order each result deterministically.
+
+**Done when:** A stand-in drives each read, the quoted 64-bit shape still decodes, and no read
+names a setting on its own.
+
+---
 
 ### T7.5: Workspace payload route
 ```yaml
-requires:   T7.2c
+requires:   T7.5a, T7.3b
 fixture-ok: yes
 size:       L · frontier
 owns:       internal/api/workspace.go, internal/api/workspace_test.go,
+            internal/api/server.go, cmd/ajilamu/main.go,
             web/src/routes/d/[id]/+page.svelte
 status:     not-started
 ```
@@ -391,6 +471,23 @@ while scoping T7.2c. It is the same cause T7.0 names. Work nobody owns never get
 **Done when:** `GET /api/dubs/{id}` returns a `Dub` assembled from the ledger for a real project,
 the workspace page renders it for a non-fixture id, and a clone with no credentials still renders
 the fixture project.
+
+### T7.6: Frontend and entrypoint hygiene
+```yaml
+requires:   []
+fixture-ok: yes
+size:       S · mid
+owns:       web/package.json, web/package-lock.json, web/src/app.html, .gitignore,
+            cmd/ajilamu/main.go
+status:     not-started
+```
+Three live defects. Every page load logs a 404 because `web/src/app.html` declares no favicon.
+No `package-lock.json` exists and `web/package.json` pins no Node engine, so the version
+`AGENTS.md` names is unenforced. `findFrontendRoot` probes `web/dist`, which `.gitignore` does not
+cover, so a stale untracked build can be served.
+
+**Done when:** A page load logs no 404, `npm ci` reproduces the dependency tree, and the frontend
+probe cannot serve an untracked `web/dist`.
 
 ---
 

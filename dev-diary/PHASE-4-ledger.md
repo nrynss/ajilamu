@@ -401,6 +401,11 @@ state, commits or costs. `/api/ledger/ready` is a health probe. `cmd/ajilamu/mai
 `internal/ledger` only to construct the client for the T7.0 shutdown flush, never to read.
 Outside this package the only other importer is `internal/fit/stretch.go`, for priors.
 
+**Corrected on 2026-09-08 after the P7 sweep.** `internal/fit/stretch.go` imports no ledger
+package, and `DurationPrior` has no production caller. `cmd/ajilamu/main.go` now imports
+`internal/ledger` for the history reader as well as the shutdown flush. T7.2c and T7.2c1 landed
+the caller this finding names, so the paragraph above describes the tree before them.
+
 So the History tab still has no path to real data, and `TimelineAt` and `CompareBranches`
 still have no caller. T7.3 remains `not-started`, and it is the nearest owned surface because
 it puts cumulative project cost on every progress event.
