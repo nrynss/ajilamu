@@ -93,8 +93,8 @@ Every pipeline action and manual timeline edit produces an append-only commit. N
 requires:   T4.3
 fixture-ok: no
 size:       S · light
-owns:       internal/ledger/actions.go
-status:     not-started
+owns:       internal/ledger/actions.go, internal/ledger/actions_test.go
+status:     done
 ```
 Record action metadata for each commit: action type, author (`agent`, `command_bar`, `manual_ui`), prompt text, and before-and-after values.
 
@@ -235,3 +235,25 @@ New creators receive the population rate. Creator evidence gains the weight `n/(
 
 `internal/ledger/priors_test.go` pins bound query parameters, sample counts, cold-start fallback,
 creator weighting, malformed responses, and upstream errors through an HTTP capture.
+
+### T4.4 implementation handoff
+
+`internal/ledger/actions.go` exposes `Client.RecordAction`. It writes one append-only row to
+`actions_raw` through the durable queue. It never inserts into the `actions` view.
+
+The writer uses the frozen P1 wire vocabulary from `internal/api`. Stored stretch type is
+`atempo_stretched`. The PHASE-4 name `stretched` fails validation and never reaches the queue.
+
+`created_at`, `ingested_at`, and `event_key` stay off the JSON body. ClickHouse stamps those
+columns. `action_id` is a delivery id. The writer generates one when the caller leaves it empty.
+
+Command-bar prompts store byte for byte, including spaces, quotes, and punctuation. An empty
+command-bar prompt fails before enqueue. Language is required even for dub-wide rows.
+
+`before_value` and `after_value` are string fields that hold JSON text. They explain an edit.
+They are not nested objects, so encoding/json cannot flatten them into the row.
+A non-empty value that is not valid JSON fails before enqueue. Empty values stay allowed.
+
+`internal/ledger/actions_test.go` pins every recognized action type against the HTTP artifact.
+It also pins omitted server columns, verbatim command-bar prompts, rejected aliases, JSON text
+in before_value and after_value, and 503 replay of a byte-identical body.
