@@ -175,8 +175,9 @@ reader sets a setting on its own.
 requires:   T7.0
 fixture-ok: yes
 size:       XS · light
-owns:       internal/api/server.go, internal/api/server_test.go
-status:     not-started
+owns:       internal/api/server.go, internal/api/server_test.go,
+            internal/api/ready_internal_test.go
+status:     done
 ```
 Give `GET /api/ledger/ready` a budget that matches the deployment target.
 
@@ -406,3 +407,25 @@ fails when any non-test file other than `client.go` names either setting.
 Round 1 returned two L findings, one doc claim and one test comment. The orchestrator applied
 both under the L exemption and synced the `postClickHouse` claim in `PHASE-4-ledger.md`. Round 2
 returned APPROVE with zero residue.
+
+### T7.2b: Readiness probe budget
+
+`GET /api/ledger/ready` answers JSON on every outcome. `{"status":"ready"}` is 200.
+`misconfigured`, `waking`, and `unreachable` are 503. The credential check runs first, so a
+missing credential names the variable and opens no connection.
+
+`probeClickHouse` classifies with `httptrace.ConnectDone`. Waking means the response budget
+expired after the TCP connection came up. Every other post-connect failure reports unreachable,
+so a scheme mismatch cannot report waking forever.
+
+`probeDialTimeout` is 2 seconds and `probeResponseBudget` is 15 seconds. The measured cold first
+ping took 13 seconds, so a cold ClickHouse answers ready. The measured idle authenticated call
+exceeded 25 seconds, so that case reports waking. The probe decides on the status line and leaves
+the body unread.
+
+T7.2b owns `internal/api/ready_internal_test.go` for the package variables, because
+`server_test.go` is an external test package and the internal split cycles through
+`internal/ledger`. The record is in `adversarial-review/t7.2b-contract-change.md`.
+
+Round 1 returned one M and two L. Remediation fixed all three, and the orchestrator added the
+post-connect refinement. Round 2 returned APPROVE with zero residue.

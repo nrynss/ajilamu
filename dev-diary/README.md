@@ -194,7 +194,7 @@ Protect this core flow above auxiliary features.
 | P4 | 8 / 8 | Complete. Close review approved with zero residue. See [p4-close-round2.md](adversarial-review/p4-close-round2.md). |
 | P5 | 7 / 7 | Complete. Workspace renders from offline fixtures. See [PHASE-5-workspace.md](PHASE-5-workspace.md). |
 | P6 | 0 / 6 | Not started. |
-| P7 | 6 / 10 | In progress. T7.0, T7.0a, T7.1, T7.2, T7.2a, and T7.4 approved. T7.2b and T7.2c remain from the 2026-09-08 integration seam. See [PHASE-7-ingestion.md](PHASE-7-ingestion.md). |
+| P7 | 7 / 10 | In progress. T7.0, T7.0a, T7.1, T7.2, T7.2a, T7.2b, and T7.4 approved. T7.2c remains from the 2026-09-08 integration seam. See [PHASE-7-ingestion.md](PHASE-7-ingestion.md). |
 | P8 | 0 / 4 | Not started. |
 
 **Concept validation:** Complete. Recorded in [observations.md](observations.md) and reviewed in [adversarial-review](adversarial-review/2026-09-07-pipeline-and-claims.md).
