@@ -72,6 +72,11 @@ func TestRecordTakeFixtureCapture(t *testing.T) {
 	defer client.Close()
 
 	attempts := fixtureTakeAttempts(segments, metrics)
+	peaks := make([]uint8, 64)
+	for i := range peaks {
+		peaks[i] = uint8(i * 4)
+	}
+	attempts[0].Peaks = peaks
 	for _, attempt := range attempts {
 		if err := client.RecordTake(context.Background(), attempt); err != nil {
 			t.Fatalf("RecordTake segment %d attempt %d: %v", attempt.Segment.ID, attempt.Take.Attempt, err)
@@ -108,6 +113,30 @@ func TestRecordTakeFixtureCapture(t *testing.T) {
 	if got := segmentEight["delta_ms"]; got != float64(-2910) {
 		t.Errorf("segment 8 delta_ms = %v, want -2910", got)
 	}
+	firstTake := takeBySegment(t, takes, 1)
+	if got := firstTake["peaks"]; !equalJSONPeaks(got, peaks) {
+		t.Errorf("segment 1 peaks = %v, want %v", got, peaks)
+	}
+	secondTake := takeBySegment(t, takes, 2)
+	if got := secondTake["peaks"]; !equalJSONPeaks(got, nil) {
+		t.Errorf("segment 2 empty peaks = %v, want []", got)
+	}
+	maximum := attempts[0]
+	maximum.Peaks = make([]uint8, 128)
+	for i := range maximum.Peaks {
+		maximum.Peaks[i] = uint8(i)
+	}
+	beforeMaximum := captureCount(&captured, &capturedMu)
+	if err := client.RecordTake(context.Background(), maximum); err != nil {
+		t.Fatalf("RecordTake with 128 peaks: %v", err)
+	}
+	maximumTakes, maximumCharges := capturedRowsSince(t, &captured, &capturedMu, beforeMaximum)
+	if len(maximumTakes) != 1 || len(maximumCharges) != 3 {
+		t.Fatalf("128 peaks captured %d take rows and %d charge rows, want 1 and 3", len(maximumTakes), len(maximumCharges))
+	}
+	if got := maximumTakes[0]["peaks"]; !equalJSONPeaks(got, maximum.Peaks) {
+		t.Errorf("128 peaks = %v, want %v", got, maximum.Peaks)
+	}
 
 	beforeInvalid := captureCount(&captured, &capturedMu)
 	invalid := attempts[0]
@@ -117,6 +146,26 @@ func TestRecordTakeFixtureCapture(t *testing.T) {
 	}
 	if got := captureCount(&captured, &capturedMu); got != beforeInvalid {
 		t.Fatalf("invalid take made %d transport requests, want none", got-beforeInvalid)
+	}
+
+	beforeInvalid = captureCount(&captured, &capturedMu)
+	invalid = attempts[0]
+	invalid.Peaks = invalid.Peaks[:63]
+	if err := client.RecordTake(context.Background(), invalid); err == nil {
+		t.Fatal("RecordTake accepted an invalid peak vector")
+	}
+	if got := captureCount(&captured, &capturedMu); got != beforeInvalid {
+		t.Fatalf("invalid peaks made %d transport requests, want none", got-beforeInvalid)
+	}
+
+	beforeInvalid = captureCount(&captured, &capturedMu)
+	invalid = attempts[0]
+	invalid.Peaks = make([]uint8, 129)
+	if err := client.RecordTake(context.Background(), invalid); err == nil {
+		t.Fatal("RecordTake accepted a 129-sample peak vector")
+	}
+	if got := captureCount(&captured, &capturedMu); got != beforeInvalid {
+		t.Fatalf("129 peaks made %d transport requests, want none", got-beforeInvalid)
 	}
 
 	beforeRetry := captureCount(&captured, &capturedMu)
@@ -133,6 +182,19 @@ func TestRecordTakeFixtureCapture(t *testing.T) {
 			t.Errorf("retry charge identity changed: %#v", row)
 		}
 	}
+}
+
+func equalJSONPeaks(got any, want []uint8) bool {
+	values, ok := got.([]any)
+	if !ok || len(values) != len(want) {
+		return false
+	}
+	for i, value := range values {
+		if value != float64(want[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func fixtureLedgerClient(t *testing.T, endpoint string) *Client {

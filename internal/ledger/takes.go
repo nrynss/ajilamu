@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -13,7 +14,7 @@ import (
 	"github.com/nrynss/ajilamu/internal/types"
 )
 
-const takeInsert = "INSERT INTO takes_raw (take_id, commit_id, project_id, dub_id, owner_id, language, segment_index, attempt, speaker, voice, text, slot_start_ms, slot_ms, measured_ms, delta_ms, repair, repair_detail, audio_path) FORMAT JSONEachRow"
+const takeInsert = "INSERT INTO takes_raw (take_id, commit_id, project_id, dub_id, owner_id, language, segment_index, attempt, speaker, voice, text, slot_start_ms, slot_ms, measured_ms, delta_ms, repair, repair_detail, audio_path, peaks) FORMAT JSONEachRow"
 
 const chargeInsert = "INSERT INTO charges_raw (take_id, commit_id, project_id, dub_id, owner_id, language, segment_index, attempt, kind, provider, unit, units, unit_price_usd) FORMAT JSONEachRow"
 
@@ -33,27 +34,41 @@ type TakeAttempt struct {
 	Segment        types.Segment
 	Take           types.Take
 	Charges        []cost.Charge
+	Peaks          []uint8
 }
 
 type takeRow struct {
-	TakeID       string `json:"take_id"`
-	CommitID     string `json:"commit_id"`
-	ProjectID    string `json:"project_id"`
-	DubID        string `json:"dub_id"`
-	OwnerID      string `json:"owner_id"`
-	Language     string `json:"language"`
-	SegmentIndex int32  `json:"segment_index"`
-	Attempt      uint8  `json:"attempt"`
-	Speaker      string `json:"speaker"`
-	Voice        string `json:"voice"`
-	Text         string `json:"text"`
-	SlotStartMs  int64  `json:"slot_start_ms"`
-	SlotMs       int32  `json:"slot_ms"`
-	MeasuredMs   int32  `json:"measured_ms"`
-	DeltaMs      int32  `json:"delta_ms"`
-	Repair       string `json:"repair"`
-	RepairDetail string `json:"repair_detail"`
-	AudioPath    string `json:"audio_path"`
+	TakeID       string    `json:"take_id"`
+	CommitID     string    `json:"commit_id"`
+	ProjectID    string    `json:"project_id"`
+	DubID        string    `json:"dub_id"`
+	OwnerID      string    `json:"owner_id"`
+	Language     string    `json:"language"`
+	SegmentIndex int32     `json:"segment_index"`
+	Attempt      uint8     `json:"attempt"`
+	Speaker      string    `json:"speaker"`
+	Voice        string    `json:"voice"`
+	Text         string    `json:"text"`
+	SlotStartMs  int64     `json:"slot_start_ms"`
+	SlotMs       int32     `json:"slot_ms"`
+	MeasuredMs   int32     `json:"measured_ms"`
+	DeltaMs      int32     `json:"delta_ms"`
+	Repair       string    `json:"repair"`
+	RepairDetail string    `json:"repair_detail"`
+	AudioPath    string    `json:"audio_path"`
+	Peaks        takePeaks `json:"peaks"`
+}
+
+// takePeaks marshals unsigned waveform samples as a JSON number array.
+// encoding/json would otherwise encode []uint8 as a base64 string.
+type takePeaks []uint8
+
+func (values takePeaks) MarshalJSON() ([]byte, error) {
+	numbers := make([]int, len(values))
+	for i, value := range values {
+		numbers[i] = int(value)
+	}
+	return json.Marshal(numbers)
 }
 
 type chargeRow struct {
@@ -105,6 +120,9 @@ func (a TakeAttempt) rows() (takeRow, []chargeRow, error) {
 	}
 	if strings.TrimSpace(a.Take.File) == "" {
 		return takeRow{}, nil, errors.New("take audio path is empty")
+	}
+	if len(a.Peaks) != 0 && (len(a.Peaks) < 64 || len(a.Peaks) > 128) {
+		return takeRow{}, nil, fmt.Errorf("take peaks have length %d, want empty or 64 through 128", len(a.Peaks))
 	}
 	if a.Take.Fit.Slot != a.Segment.SlotDuration() {
 		return takeRow{}, nil, errors.New("take target slot does not match its provenance segment")
@@ -158,6 +176,7 @@ func (a TakeAttempt) rows() (takeRow, []chargeRow, error) {
 		Repair:       repair,
 		RepairDetail: a.RepairDetail,
 		AudioPath:    a.Take.File,
+		Peaks:        takePeaks(a.Peaks),
 	}, charges, nil
 }
 
