@@ -12,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	texttospeechpb "cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
+
 	"github.com/nrynss/ajilamu/internal/api"
+	"github.com/nrynss/ajilamu/internal/config"
 	"github.com/nrynss/ajilamu/internal/cost"
 	"github.com/nrynss/ajilamu/internal/gemini"
 	"github.com/nrynss/ajilamu/internal/media"
@@ -281,6 +284,9 @@ func TestPipelineEndToEndWithFixtures(t *testing.T) {
 	eventChan := make(chan api.ProgressEvent, 200)
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    segments,
 		Translator:  trans,
 		Synthesizer: synth,
@@ -491,6 +497,9 @@ func TestPipelineWithMediaInputSegmenter(t *testing.T) {
 
 	collector := &eventCollector{}
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segmenter:   segClient,
 		InputMedia:  inputMedia,
 		Translator:  trans,
@@ -540,6 +549,9 @@ func TestPipelineSegment8FlaggedThreeAttempts(t *testing.T) {
 	synth.durations[8] = []time.Duration{dur1, dur2, dur3}
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    []types.Segment{seg},
 		Translator:  trans,
 		Synthesizer: synth,
@@ -615,6 +627,9 @@ func TestPipelineSpeakerVoiceCollision(t *testing.T) {
 	}
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:      []types.Segment{seg1, seg2},
 		Translator:    newMockPipelineTranslator(nil),
 		Synthesizer:   newMockPipelineSynthesizer("", nil),
@@ -640,6 +655,9 @@ func TestPipelineSpeakerMissing(t *testing.T) {
 	}
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    []types.Segment{seg},
 		Translator:  newMockPipelineTranslator(nil),
 		Synthesizer: newMockPipelineSynthesizer("", nil),
@@ -664,6 +682,9 @@ func TestPipelineUnknownSpeaker(t *testing.T) {
 	}
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    []types.Segment{seg},
 		Translator:  newMockPipelineTranslator(nil),
 		Synthesizer: newMockPipelineSynthesizer("", nil),
@@ -688,6 +709,9 @@ func TestPipelineContextCancellation(t *testing.T) {
 	}
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    []types.Segment{seg},
 		Translator:  newMockPipelineTranslator(nil),
 		Synthesizer: newMockPipelineSynthesizer("", nil),
@@ -709,6 +733,9 @@ func TestPipelineSegmenterError(t *testing.T) {
 
 	collector := &eventCollector{}
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segmenter:   segClient,
 		InputMedia:  &gemini.Input{Data: []byte("media")},
 		Translator:  newMockPipelineTranslator(nil),
@@ -750,6 +777,9 @@ func TestPipelineTranslatorError(t *testing.T) {
 
 	collector := &eventCollector{}
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    []types.Segment{seg},
 		Translator:  trans,
 		Synthesizer: newMockPipelineSynthesizer("", nil),
@@ -777,6 +807,9 @@ func TestPipelineSynthesizerError(t *testing.T) {
 
 	collector := &eventCollector{}
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    []types.Segment{seg},
 		Translator:  newMockPipelineTranslator(nil),
 		Synthesizer: synth,
@@ -793,6 +826,9 @@ func TestPipelineSynthesizerError(t *testing.T) {
 func TestPipelineConfigValidation(t *testing.T) {
 	t.Run("missing segmenter when input media provided", func(t *testing.T) {
 		cfg := PipelineConfig{
+			Language:           tts.Malayalam,
+			TargetLanguageName: "Malayalam",
+
 			InputMedia:  &gemini.Input{Data: []byte("media")},
 			Translator:  newMockPipelineTranslator(nil),
 			Synthesizer: newMockPipelineSynthesizer("", nil),
@@ -805,6 +841,9 @@ func TestPipelineConfigValidation(t *testing.T) {
 
 	t.Run("missing segments when media is nil", func(t *testing.T) {
 		cfg := PipelineConfig{
+			Language:           tts.Malayalam,
+			TargetLanguageName: "Malayalam",
+
 			Translator:  newMockPipelineTranslator(nil),
 			Synthesizer: newMockPipelineSynthesizer("", nil),
 		}
@@ -816,6 +855,9 @@ func TestPipelineConfigValidation(t *testing.T) {
 
 	t.Run("missing translator", func(t *testing.T) {
 		cfg := PipelineConfig{
+			Language:           tts.Malayalam,
+			TargetLanguageName: "Malayalam",
+
 			Segments:    []types.Segment{{ID: 1}},
 			Synthesizer: newMockPipelineSynthesizer("", nil),
 		}
@@ -827,6 +869,9 @@ func TestPipelineConfigValidation(t *testing.T) {
 
 	t.Run("missing synthesizer", func(t *testing.T) {
 		cfg := PipelineConfig{
+			Language:           tts.Malayalam,
+			TargetLanguageName: "Malayalam",
+
 			Segments:   []types.Segment{{ID: 1}},
 			Translator: newMockPipelineTranslator(nil),
 		}
@@ -838,6 +883,9 @@ func TestPipelineConfigValidation(t *testing.T) {
 
 	t.Run("invalid stretch limits", func(t *testing.T) {
 		cfg := PipelineConfig{
+			Language:           tts.Malayalam,
+			TargetLanguageName: "Malayalam",
+
 			Segments:    []types.Segment{{ID: 1}},
 			Translator:  newMockPipelineTranslator(nil),
 			Synthesizer: newMockPipelineSynthesizer("", nil),
@@ -848,6 +896,142 @@ func TestPipelineConfigValidation(t *testing.T) {
 			t.Errorf("err = %v, want ErrLimits", err)
 		}
 	})
+}
+
+// languageCapturingTTSClient records the voice the synthesizer asks Cloud TTS for.
+type languageCapturingTTSClient struct {
+	audio []byte
+	voice *texttospeechpb.VoiceSelectionParams
+}
+
+// SynthesizeSpeech records the requested voice and returns canned audio.
+func (c *languageCapturingTTSClient) SynthesizeSpeech(ctx context.Context, req *texttospeechpb.SynthesizeSpeechRequest) (*texttospeechpb.SynthesizeSpeechResponse, error) {
+	c.voice = req.Voice
+	return &texttospeechpb.SynthesizeSpeechResponse{AudioContent: c.audio}, nil
+}
+
+// cannedWAVBytes returns decodable WAV bytes of the given duration.
+func cannedWAVBytes(t *testing.T, dur time.Duration) []byte {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "canned.wav")
+	if err := writeTestWAV(path, dur); err != nil {
+		t.Fatalf("write canned wav: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read canned wav: %v", err)
+	}
+	return data
+}
+
+// TestPipelineLanguageWiring proves the loop carries the language code and
+// display name into the translator, the voice assigner, and Cloud TTS.
+func TestPipelineLanguageWiring(t *testing.T) {
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   1000,
+		Text:    "Hello from orbit",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	ledger := cost.NewLedger()
+	trans := newMockPipelineTranslator(ledger)
+
+	// A real synthesizer built for es-ES. Its fake Cloud client observes the
+	// LanguageCode the loop's language reaches Cloud TTS as.
+	client := &languageCapturingTTSClient{audio: cannedWAVBytes(t, 1000*time.Millisecond)}
+	synth, err := tts.NewSynthesizer(&config.Config{GoogleCloudProject: "test-project"}, "es-ES", ledger, cost.DefaultRateCard(), client)
+	if err != nil {
+		t.Fatalf("NewSynthesizer: %v", err)
+	}
+
+	var assignedLanguage string
+	cfg := PipelineConfig{
+		Segments:           []types.Segment{seg},
+		Translator:         trans,
+		Synthesizer:        synth,
+		Language:           "es-ES",
+		TargetLanguageName: "Spanish",
+		SourceLanguageName: "English",
+		WorkDir:            t.TempDir(),
+		Recorder:           ledger,
+		VoiceAssigner: func(speaker types.Speaker, language string) (tts.Voice, error) {
+			assignedLanguage = language
+			return tts.Assign(speaker, language)
+		},
+	}
+
+	if _, err := RunPipeline(context.Background(), cfg); err != nil {
+		t.Fatalf("RunPipeline failed: %v", err)
+	}
+
+	if len(trans.requests) == 0 {
+		t.Fatal("no TranslateRequest captured")
+	}
+	got := trans.requests[0]
+	t.Logf("TranslateRequest.TargetLanguageName = %q", got.TargetLanguageName)
+	t.Logf("TranslateRequest.SourceLanguageName = %q", got.SourceLanguageName)
+	t.Logf("VoiceAssigner language = %q", assignedLanguage)
+	if client.voice == nil {
+		t.Fatal("synthesizer sent no voice to Cloud TTS")
+	}
+	t.Logf("Cloud TTS LanguageCode = %q", client.voice.LanguageCode)
+
+	if got.TargetLanguageName != "Spanish" {
+		t.Errorf("TargetLanguageName = %q, want Spanish", got.TargetLanguageName)
+	}
+	if got.SourceLanguageName != "English" {
+		t.Errorf("SourceLanguageName = %q, want English", got.SourceLanguageName)
+	}
+	if assignedLanguage != "es-ES" {
+		t.Errorf("VoiceAssigner language = %q, want es-ES", assignedLanguage)
+	}
+	if client.voice.LanguageCode != "es-ES" {
+		t.Errorf("Cloud TTS LanguageCode = %q, want es-ES", client.voice.LanguageCode)
+	}
+}
+
+// TestPipelineLanguageFailsBeforeCharge proves an empty or malformed language
+// fails validation before the loop records a single billable charge.
+func TestPipelineLanguageFailsBeforeCharge(t *testing.T) {
+	check := func(t *testing.T, name, language, targetLanguageName string, want error) {
+		t.Run(name, func(t *testing.T) {
+			ledger := cost.NewLedger()
+			trans := newMockPipelineTranslator(ledger)
+			synth := newMockPipelineSynthesizer("", ledger)
+			cfg := PipelineConfig{
+				Language:           language,
+				TargetLanguageName: targetLanguageName,
+
+				Segments:    []types.Segment{{ID: 1, StartMs: 0, EndMs: 2000, Speaker: types.Speaker{Name: "Suni Williams"}}},
+				Translator:  trans,
+				Synthesizer: synth,
+				WorkDir:     t.TempDir(),
+				Recorder:    ledger,
+			}
+
+			_, err := RunPipeline(context.Background(), cfg)
+			t.Logf("error = %v", err)
+			t.Logf("charges = %v", ledger.Charges())
+			if !errors.Is(err, want) {
+				t.Fatalf("err = %v, want %v", err, want)
+			}
+			if got := ledger.Charges(); len(got) != 0 {
+				t.Fatalf("charges = %v, want none before a billable call", got)
+			}
+			if len(trans.requests) != 0 {
+				t.Fatalf("translate requests = %d, want 0", len(trans.requests))
+			}
+			if len(synth.requests) != 0 {
+				t.Fatalf("synth requests = %d, want 0", len(synth.requests))
+			}
+		})
+	}
+
+	check(t, "empty language", "", "Spanish", ErrLanguageRequired)
+	check(t, "malformed code", "spanish", "Spanish", ErrLanguageMalformed)
+	check(t, "missing target name", "es-ES", "", ErrTargetLanguageName)
 }
 
 // TestPipelineTakeNaming verifies immutable take naming rules.
@@ -957,6 +1141,9 @@ func TestPipelineWithBareChargeRecorder(t *testing.T) {
 	}
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    segSubset,
 		Translator:  trans,
 		Synthesizer: synth,
@@ -1011,6 +1198,9 @@ func TestPipelineProxyDecorators(t *testing.T) {
 	}
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    segSubset,
 		Translator:  transProxy,
 		Synthesizer: synthProxy,
@@ -1046,6 +1236,9 @@ func TestPipelineResumesAfterCompletedTake(t *testing.T) {
 	first.errs[2] = errors.New("interrupted mid run")
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    segments,
 		Translator:  newMockPipelineTranslator(nil),
 		Synthesizer: first,
@@ -1143,6 +1336,9 @@ func TestPipelineReplaysRecordedStretchedTake(t *testing.T) {
 
 	synth := newMockPipelineSynthesizer("", nil)
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    []types.Segment{seg},
 		Translator:  newMockPipelineTranslator(nil),
 		Synthesizer: synth,
@@ -1263,6 +1459,9 @@ func TestPipelineRerendersEmptyRecordedTake(t *testing.T) {
 	synth.inner.durations[1] = []time.Duration{slot}
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    []types.Segment{seg},
 		Translator:  newMockPipelineTranslator(nil),
 		Synthesizer: synth,
@@ -1372,6 +1571,9 @@ func TestPipelineRerendersEmptyReplayedTake(t *testing.T) {
 			synth.inner.durations[1] = []time.Duration{slot}
 
 			cfg := PipelineConfig{
+				Language:           tts.Malayalam,
+				TargetLanguageName: "Malayalam",
+
 				Segments:    []types.Segment{seg},
 				Translator:  newMockPipelineTranslator(nil),
 				Synthesizer: synth,
@@ -1460,6 +1662,9 @@ func TestPipelineRerendersUndecodableRecordedTake(t *testing.T) {
 	synth.inner.durations[1] = []time.Duration{slot}
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    []types.Segment{seg},
 		Translator:  newMockPipelineTranslator(nil),
 		Synthesizer: synth,
@@ -1565,6 +1770,9 @@ func TestPipelineRerendersUndecodableReplayedTake(t *testing.T) {
 			synth.inner.durations[1] = []time.Duration{slot}
 
 			cfg := PipelineConfig{
+				Language:           tts.Malayalam,
+				TargetLanguageName: "Malayalam",
+
 				Segments:    []types.Segment{seg},
 				Translator:  newMockPipelineTranslator(nil),
 				Synthesizer: synth,
@@ -1688,6 +1896,9 @@ func TestPipelineCancelDuringProbeKeepsCompletedTake(t *testing.T) {
 
 	synth := newMockPipelineSynthesizer("", nil)
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    []types.Segment{seg},
 		Translator:  newMockPipelineTranslator(nil),
 		Synthesizer: synth,
@@ -1753,6 +1964,9 @@ func TestPipelineDeadlineDuringProbeKeepsCompletedTake(t *testing.T) {
 	defer cancel()
 
 	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
 		Segments:    []types.Segment{seg},
 		Translator:  newMockPipelineTranslator(nil),
 		Synthesizer: newMockPipelineSynthesizer("", nil),

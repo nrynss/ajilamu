@@ -126,3 +126,29 @@ func TestAssignRejectsEmptyInputs(t *testing.T) {
 		t.Error("blank speaker accepted, want error")
 	}
 }
+
+func TestValidateLanguageAcceptsWellFormedCodes(t *testing.T) {
+	cases := []string{"ml-IN", "es-ES", "en", "de", "pt-BR", "zh-Hans-CN", "es-419", "sr-Latn-RS"}
+	for _, code := range cases {
+		if err := ValidateLanguage(code); err != nil {
+			t.Errorf("ValidateLanguage(%q) = %v, want nil", code, err)
+		}
+	}
+}
+
+func TestValidateLanguageRejectsBadCodes(t *testing.T) {
+	cases := []string{"", "   ", "spanish", "es_ES", "e", "es-", "-ES", "es-ESP", "es ES", "123", "es-!!"}
+	for _, code := range cases {
+		if err := ValidateLanguage(code); err == nil {
+			t.Errorf("ValidateLanguage(%q) = nil, want error", code)
+		}
+	}
+}
+
+func TestAssignRejectsMalformedLanguage(t *testing.T) {
+	for _, code := range []string{"", "spanish", "es_ES"} {
+		if _, err := Assign(types.Speaker{Name: "Suni Williams"}, code); err == nil {
+			t.Errorf("Assign language %q accepted, want error", code)
+		}
+	}
+}

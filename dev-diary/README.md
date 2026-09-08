@@ -189,7 +189,7 @@ Protect this core flow above auxiliary features.
 |---|---|---|
 | P0 | 4 / 4 | Complete. Close review approved with zero residue. See [p0-close-round2.md](adversarial-review/p0-close-round2.md). |
 | P1 | 6 / 6 | Complete. Contracts frozen with one example payload per shared struct. See [t1.4a-round2.md](adversarial-review/t1.4a-round2.md). |
-| P2 | 8 / 10 | In progress. T2.1 to T2.7 approved with zero residue. T2.8a and T2.8b remain. See [t2.7-round2.md](adversarial-review/t2.7-round2.md). |
+| P2 | 10 / 10 | Complete. T2.1 to T2.7 approved with zero residue. T2.8a and T2.8b approved, with round four's L applied under the exemption. See [t2.8b-round4.md](adversarial-review/t2.8b-round4.md). |
 | P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
 | P4 | 8 / 8 | Complete. Close review approved with zero residue. See [p4-close-round2.md](adversarial-review/p4-close-round2.md). |
 | P5 | 7 / 7 | Complete. Workspace renders from offline fixtures. See [PHASE-5-workspace.md](PHASE-5-workspace.md). |

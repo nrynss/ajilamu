@@ -47,7 +47,7 @@ func (f *fakeTTS) SynthesizeSpeech(ctx context.Context, req *texttospeechpb.Synt
 
 func newTestSynthesizer(t *testing.T, rec ChargeRecorder, client TTSClient) Synthesizer {
 	t.Helper()
-	syn, err := NewSynthesizer(testConfig(), rec, cost.DefaultRateCard(), client)
+	syn, err := NewSynthesizer(testConfig(), Malayalam, rec, cost.DefaultRateCard(), client)
 	if err != nil {
 		t.Fatalf("NewSynthesizer: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestSynthesizeChargeUsesRuneCount(t *testing.T) {
 	client := &fakeTTS{audio: []byte(cannedLINEAR16)}
 	ledger := cost.NewLedger()
 	card := cost.DefaultRateCard()
-	syn, err := NewSynthesizer(testConfig(), ledger, card, client)
+	syn, err := NewSynthesizer(testConfig(), Malayalam, ledger, card, client)
 	if err != nil {
 		t.Fatalf("NewSynthesizer: %v", err)
 	}
@@ -302,19 +302,64 @@ func TestNewSynthesizerNilArguments(t *testing.T) {
 	var rec ChargeRecorder = cost.NewLedger()
 	client := &fakeTTS{audio: []byte(cannedLINEAR16)}
 
-	if _, err := NewSynthesizer(nil, rec, cost.DefaultRateCard(), client); err == nil {
+	if _, err := NewSynthesizer(nil, Malayalam, rec, cost.DefaultRateCard(), client); err == nil {
 		t.Error("nil config accepted, want error")
 	}
-	if _, err := NewSynthesizer(cfg, nil, cost.DefaultRateCard(), client); err == nil {
+	if _, err := NewSynthesizer(cfg, "", rec, cost.DefaultRateCard(), client); err == nil {
+		t.Error("empty language accepted, want error")
+	}
+	if _, err := NewSynthesizer(cfg, "spanish", rec, cost.DefaultRateCard(), client); err == nil {
+		t.Error("malformed language accepted, want error")
+	}
+	if _, err := NewSynthesizer(cfg, Malayalam, nil, cost.DefaultRateCard(), client); err == nil {
 		t.Error("nil charge recorder accepted, want error")
 	}
 	broken := testConfig()
 	broken.GoogleCloudProject = ""
-	if _, err := NewSynthesizer(broken, rec, cost.DefaultRateCard(), client); err == nil {
+	if _, err := NewSynthesizer(broken, Malayalam, rec, cost.DefaultRateCard(), client); err == nil {
 		t.Error("missing project accepted, want error")
 	}
-	if _, err := NewSynthesizer(cfg, rec, cost.DefaultRateCard(), client); err != nil {
+	if _, err := NewSynthesizer(cfg, Malayalam, rec, cost.DefaultRateCard(), client); err != nil {
 		t.Errorf("valid arguments rejected: %v", err)
+	}
+}
+
+func TestNewSynthesizerRejectsBadLanguage(t *testing.T) {
+	client := &fakeTTS{audio: []byte(cannedLINEAR16)}
+	ledger := cost.NewLedger()
+
+	for _, code := range []string{"", "spanish", "es_ES"} {
+		if _, err := NewSynthesizer(testConfig(), code, ledger, cost.DefaultRateCard(), client); err == nil {
+			t.Errorf("NewSynthesizer(%q) = nil error, want rejection", code)
+		}
+	}
+}
+
+func TestSynthesizeSendsRequestedLanguage(t *testing.T) {
+	client := &fakeTTS{audio: []byte(cannedLINEAR16)}
+	ledger := cost.NewLedger()
+	syn, err := NewSynthesizer(testConfig(), "es-ES", ledger, cost.DefaultRateCard(), client)
+	if err != nil {
+		t.Fatalf("NewSynthesizer: %v", err)
+	}
+
+	err = syn.Synthesize(context.Background(), SynthesizeRequest{
+		SegmentID: 1,
+		Text:      "hola",
+		Speaker:   types.Speaker{Name: "Suni Williams"},
+		OutPath:   filepath.Join(t.TempDir(), "seg_1_try1.wav"),
+	})
+	if err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+	if client.gotReq == nil || client.gotReq.Voice == nil {
+		t.Fatal("request missed voice params")
+	}
+	if got := client.gotReq.Voice.LanguageCode; got != "es-ES" {
+		t.Errorf("languageCode = %q, want es-ES", got)
+	}
+	if got := client.gotReq.Voice.Name; got != "es-ES-Chirp3-HD-Achernar" {
+		t.Errorf("voice name = %q, want es-ES-Chirp3-HD-Achernar", got)
 	}
 }
 

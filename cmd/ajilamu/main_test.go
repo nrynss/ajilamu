@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -15,10 +16,13 @@ import (
 	"testing"
 	"time"
 
+	texttospeechpb "cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
+
 	"github.com/nrynss/ajilamu/internal/api"
 	"github.com/nrynss/ajilamu/internal/config"
 	"github.com/nrynss/ajilamu/internal/cost"
 	"github.com/nrynss/ajilamu/internal/fit"
+	"github.com/nrynss/ajilamu/internal/gemini"
 	"github.com/nrynss/ajilamu/internal/ledger"
 	"github.com/nrynss/ajilamu/internal/tts"
 	"github.com/nrynss/ajilamu/internal/types"
@@ -610,5 +614,235 @@ func TestAssembleEventsCarryRunCost(t *testing.T) {
 	last := events[len(events)-1]
 	if last.Stage != api.StageExporting || last.Sentence != "Exporting the dubbed film." {
 		t.Errorf("last event = %q %q, want the export step", last.Stage, last.Sentence)
+	}
+}
+
+// runnerTestSegmenter returns fixed segments and counts its calls.
+type runnerTestSegmenter struct {
+	segments []types.Segment
+	calls    int
+}
+
+// Segment returns the fixed segments and counts the call.
+func (s *runnerTestSegmenter) Segment(context.Context, gemini.Input) ([]types.Segment, error) {
+	s.calls++
+	return s.segments, nil
+}
+
+// runnerTestTranslator records the requests it sees and counts its calls.
+type runnerTestTranslator struct {
+	requests []gemini.TranslateRequest
+	calls    int
+}
+
+// Translate records the request, counts the call, and echoes the source text.
+func (t *runnerTestTranslator) Translate(_ context.Context, req gemini.TranslateRequest) (string, error) {
+	t.calls++
+	t.requests = append(t.requests, req)
+	return req.Text, nil
+}
+
+// runnerTestTTSClient records the voice Cloud TTS receives and counts its calls.
+type runnerTestTTSClient struct {
+	audio []byte
+	voice *texttospeechpb.VoiceSelectionParams
+	calls int
+}
+
+// SynthesizeSpeech records the requested voice and returns canned audio.
+func (c *runnerTestTTSClient) SynthesizeSpeech(_ context.Context, req *texttospeechpb.SynthesizeSpeechRequest) (*texttospeechpb.SynthesizeSpeechResponse, error) {
+	c.calls++
+	c.voice = req.Voice
+	return &texttospeechpb.SynthesizeSpeechResponse{AudioContent: c.audio}, nil
+}
+
+// TestPipelineRunnerLanguageWiring proves the runner resolves each target
+// language onto its tag, builds the synthesizer with that tag, and carries the
+// tag to Cloud TTS and the display name to the translator. One case uses the
+// create screen code `ml`, whose tag `ml-IN` a regression could hardcode. The
+// other uses `es-ES`, whose tag differs from that constant.
+func TestPipelineRunnerLanguageWiring(t *testing.T) {
+	cases := []struct {
+		name      string
+		language  string
+		tag       string
+		target    string
+		voiceName string
+	}{
+		{name: "create screen code", language: "ml", tag: "ml-IN", target: "Malayalam", voiceName: "ml-IN-Chirp3-HD-Achernar"},
+		{name: "full tag", language: "es-ES", tag: "es-ES", target: "es-ES", voiceName: "es-ES-Chirp3-HD-Achernar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			source := filepath.Join(workDir, "source.mp4")
+			synthAssemblyFilm(t, source)
+			canned := filepath.Join(workDir, "canned.wav")
+			synthAssemblyTake(t, canned)
+			audio, err := os.ReadFile(canned)
+			if err != nil {
+				t.Fatalf("read canned take: %v", err)
+			}
+
+			segment := types.Segment{
+				ID:      1,
+				StartMs: 0,
+				EndMs:   1000,
+				Text:    "Hello from orbit",
+				Speaker: types.Speaker{Name: "Suni Williams"},
+			}
+			segmenter := &runnerTestSegmenter{segments: []types.Segment{segment}}
+			translator := &runnerTestTranslator{}
+			client := &runnerTestTTSClient{audio: audio}
+
+			var factoryLanguage string
+			runner := &pipelineRunner{
+				segmenter:  segmenter,
+				translator: translator,
+				router:     &chargeRouter{},
+				newSynthesizer: func(language string, rec tts.ChargeRecorder) (tts.Synthesizer, error) {
+					factoryLanguage = language
+					return tts.NewSynthesizer(&config.Config{GoogleCloudProject: "test-project"}, language, rec, cost.DefaultRateCard(), client)
+				},
+			}
+
+			var events []api.ProgressEvent
+			_, err = runner.Run(context.Background(), api.RunRequest{
+				DubID:    "dub-language",
+				Language: tc.language,
+				Source:   source,
+				WorkDir:  workDir,
+			}, func(event api.ProgressEvent) { events = append(events, event) })
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			t.Logf("factory language = %q", factoryLanguage)
+			if factoryLanguage != tc.tag {
+				t.Errorf("factory language = %q, want %s", factoryLanguage, tc.tag)
+			}
+			if len(translator.requests) == 0 {
+				t.Fatal("translator saw no request")
+			}
+			if got := translator.requests[0].TargetLanguageName; got != tc.target {
+				t.Errorf("TranslateRequest.TargetLanguageName = %q, want %s", got, tc.target)
+			}
+			if client.voice == nil {
+				t.Fatal("synthesizer sent no voice to Cloud TTS")
+			}
+			t.Logf("Cloud TTS LanguageCode = %q, Name = %q", client.voice.LanguageCode, client.voice.Name)
+			if got := client.voice.LanguageCode; got != tc.tag {
+				t.Errorf("Cloud TTS LanguageCode = %q, want %s", got, tc.tag)
+			}
+			if got := client.voice.Name; got != tc.voiceName {
+				t.Errorf("Cloud TTS Name = %q, want %s", got, tc.voiceName)
+			}
+			if len(events) == 0 {
+				t.Fatal("runner emitted no events")
+			}
+			for _, event := range events {
+				if event.Language != tc.tag {
+					t.Errorf("event %q language = %q, want %s", event.Sentence, event.Language, tc.tag)
+				}
+			}
+		})
+	}
+}
+
+// TestPipelineRunnerRejectsLanguageBeforeCharge proves an empty or malformed
+// target language fails in resolveRunLanguage, before any billable call.
+func TestPipelineRunnerRejectsLanguageBeforeCharge(t *testing.T) {
+	cases := []struct {
+		name     string
+		language string
+	}{
+		{name: "empty", language: ""},
+		{name: "malformed", language: "not a language"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			segmenter := &runnerTestSegmenter{}
+			translator := &runnerTestTranslator{}
+			client := &runnerTestTTSClient{}
+			factoryCalls := 0
+			runner := &pipelineRunner{
+				segmenter:  segmenter,
+				translator: translator,
+				router:     &chargeRouter{},
+				newSynthesizer: func(language string, rec tts.ChargeRecorder) (tts.Synthesizer, error) {
+					factoryCalls++
+					return tts.NewSynthesizer(&config.Config{GoogleCloudProject: "test-project"}, language, rec, cost.DefaultRateCard(), client)
+				},
+			}
+
+			var events []api.ProgressEvent
+			_, err := runner.Run(context.Background(), api.RunRequest{
+				DubID:    "dub-bad-language",
+				Language: tc.language,
+				Source:   filepath.Join(t.TempDir(), "missing.mp4"),
+				WorkDir:  t.TempDir(),
+			}, func(event api.ProgressEvent) { events = append(events, event) })
+			t.Logf("error = %v", err)
+			if err == nil {
+				t.Fatal("Run accepted a bad target language")
+			}
+			if factoryCalls != 0 || segmenter.calls != 0 || translator.calls != 0 || client.calls != 0 {
+				t.Errorf("billable calls: factory=%d segmenter=%d translator=%d tts=%d, want 0",
+					factoryCalls, segmenter.calls, translator.calls, client.calls)
+			}
+			if len(events) != 0 {
+				t.Errorf("events = %d, want 0", len(events))
+			}
+		})
+	}
+}
+
+// TestRunSynthesizerFactoryForwardsLanguage proves the production factory
+// forwards the language it receives onto Cloud TTS. The test passes a fake
+// client, so no ADC and no network are needed. The es-ES case fails a factory
+// that hardcodes the ml-IN create screen tag.
+func TestRunSynthesizerFactoryForwardsLanguage(t *testing.T) {
+	cases := []struct {
+		name      string
+		language  string
+		voiceName string
+	}{
+		{name: "create screen tag", language: "ml-IN", voiceName: "ml-IN-Chirp3-HD-Achernar"},
+		{name: "full tag", language: "es-ES", voiceName: "es-ES-Chirp3-HD-Achernar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			canned := filepath.Join(workDir, "canned.wav")
+			synthAssemblyTake(t, canned)
+			audio, err := os.ReadFile(canned)
+			if err != nil {
+				t.Fatalf("read canned take: %v", err)
+			}
+			client := &runnerTestTTSClient{audio: audio}
+			build := runSynthesizerFactory(&config.Config{GoogleCloudProject: "test-project"}, cost.DefaultRateCard(), client)
+			synthesizer, err := build(tc.language, cost.NewLedger())
+			if err != nil {
+				t.Fatalf("build synthesizer: %v", err)
+			}
+			if err := synthesizer.Synthesize(context.Background(), tts.SynthesizeRequest{
+				SegmentID: 1,
+				Text:      "Hello from orbit",
+				Speaker:   types.Speaker{Name: "Suni Williams"},
+				OutPath:   filepath.Join(workDir, "take.wav"),
+			}); err != nil {
+				t.Fatalf("Synthesize: %v", err)
+			}
+			if client.voice == nil {
+				t.Fatal("synthesizer sent no voice to Cloud TTS")
+			}
+			t.Logf("Cloud TTS LanguageCode = %q, Name = %q", client.voice.LanguageCode, client.voice.Name)
+			if got := client.voice.LanguageCode; got != tc.language {
+				t.Errorf("Cloud TTS LanguageCode = %q, want %s", got, tc.language)
+			}
+			if got := client.voice.Name; got != tc.voiceName {
+				t.Errorf("Cloud TTS Name = %q, want %s", got, tc.voiceName)
+			}
+		})
 	}
 }

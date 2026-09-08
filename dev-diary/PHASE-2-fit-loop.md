@@ -267,6 +267,54 @@ Emit progress events and charges at every stage. Call ledger logging through int
 
 ---
 
+### T2.8a: Language contract in TTS and translation ★
+```yaml
+requires:   T2.2, T2.3
+fixture-ok: yes
+size:       S · frontier
+owns:       internal/tts/chirp.go, internal/tts/chirp_test.go,
+            internal/tts/voices.go, internal/tts/voices_test.go,
+            internal/gemini/translate.go, internal/gemini/translate_test.go
+status:     done
+```
+`NewSynthesizer` takes the target language instead of pinning `Malayalam`.
+`ValidateLanguage` rejects an empty or malformed code. The translation prompt names the
+target language and the source language when the request carries one. It never claims
+English when the source language is unknown.
+
+The code exists from a failed attempt at the original T2.8. It builds, and
+`go test ./internal/tts ./internal/gemini` passes. The review measures it.
+
+**Done when:** A Spanish target reaches Cloud TTS as `es-ES`, the prompt names Spanish, an
+empty or malformed code fails before any billable call, and the Malayalam fixture behavior
+is unchanged.
+
+---
+
+### T2.8b: Fit loop language wiring ★
+```yaml
+requires:   T2.8a, T2.7
+fixture-ok: yes
+size:       S · mid
+owns:       internal/fit/loop.go, internal/fit/loop_test.go,
+            cmd/ajilamu/main.go, cmd/ajilamu/main_test.go,
+            dev-diary/adversarial-review/t2.8-contract-change.md
+status:     done
+```
+`PipelineConfig` gains the target display name and an optional source language name. The
+loop passes both to the translator and names the target language in its progress sentences.
+It fails an empty or malformed language before any billable call.
+
+The loop already requires a language. The committed tests do not set one, so six tests fail.
+Update them. Record the runner wiring in the contract-change file, naming T7.5b as its owner,
+because the runner must build one synthesizer per run.
+
+**Done when:** `go test -count=1 ./internal/fit` passes, a pipeline built for `es-ES` names
+Spanish in the prompt and sends `es-ES` to the synthesizer, and the contract-change file
+names the runner wiring and its owner.
+
+---
+
 ## Exit Criteria
 
 - [x] Pipeline executes end to end in Go.
@@ -701,3 +749,29 @@ The loop orchestrator lives in `internal/fit/loop.go`. It exports `Pipeline`, `P
 **Verification.** All unit and integration tests pass offline. The command `go test -count=1 ./internal/fit/` passes. The command `go test -count=1 -race ./internal/fit/` passes. The repository test suite `go test -count=1 ./...` passes. `gofmt -l internal/fit/` prints nothing. `go vet ./internal/fit/` reports zero warnings.
 
 **Next agent.** Round 2 review returned APPROVE with zero residue. The orchestrator lands T2.7 and marks Phase 2 complete.
+
+### T2.8b: Fit loop language wiring (implemented 2026-09-09)
+
+`PipelineConfig` carries the run language in three fields. `Language` is the required BCP-47 code. `TargetLanguageName` is the required display name. `SourceLanguageName` is optional, and empty means the prompt names no source. `NewPipeline` rejects an empty or malformed code and an empty display name before any billable call. The sentinels are `ErrLanguageRequired`, `ErrLanguageMalformed`, and `ErrTargetLanguageName`. `CleanErrorMessage` maps all three.
+
+**Wiring.** `loopTranslator` copies the code, the target name, and the source name onto every `gemini.TranslateRequest`. It names the target in its progress sentence. `loopSynthesizer` names the target in its render sentence. The loop passes `Language` to `VoiceAssigner`, so `tts.Assign` builds an `es-ES` voice for a Spanish run.
+
+**Tests.** Twenty-five `PipelineConfig` literals in `loop_test.go` set `Language: tts.Malayalam` and `TargetLanguageName: "Malayalam"`. The two new language tests use `es-ES` and a parameter instead. Resume tests match the records they write with `tts.Malayalam`. `TestPipelineLanguageWiring` runs a real `tts.NewSynthesizer` for `es-ES` with a fake Cloud client. It pins `TargetLanguageName` `Spanish` on the captured request and `LanguageCode` `es-ES` at the Cloud boundary. `TestPipelineLanguageFailsBeforeCharge` pins an empty code, a malformed code, and a missing target name. Each fails with zero charges and zero client calls. `TestPipelineRunnerLanguageWiring` and `TestPipelineRunnerRejectsLanguageBeforeCharge` in `cmd/ajilamu/main_test.go` pin the runner seam end to end.
+
+**Surprise.** The task named six failing tests. Twenty-five configs needed a language, because `NewPipeline` validates before every other guard. The config-validation subtests failed too.
+
+**Runner wiring landed.** `cmd/ajilamu` builds clean. `pipelineRunner` holds a `newSynthesizer`
+factory (`cmd/ajilamu/main.go:402-404`), not one process-wide synthesizer.
+`runSynthesizerFactory` builds the factory (`cmd/ajilamu/main.go:413-417`), and
+`newPipelineRunner` points the field at it with a nil client (`cmd/ajilamu/main.go:438`).
+`Run` resolves the language first (`cmd/ajilamu/main.go:447`), then builds the synthesizer with
+the resolved tag (`cmd/ajilamu/main.go:459`). A `ml` run reaches Cloud TTS as `ml-IN`.
+`resolveRunLanguage` (`cmd/ajilamu/main.go:378`) maps the create-screen code onto its tag and
+display name. T7.5b still owns the request change and the source language. The exact seam lives
+in `adversarial-review/t2.8-contract-change.md`.
+
+**Next agent.** Do not re-derive the language plumbing. Set `Language`, `TargetLanguageName`, and `SourceLanguageName` on `PipelineConfig`. Read `t2.8-contract-change.md` before touching the runner.
+
+**Orchestrator note.** Round four filed one L against these records, because the factory
+extraction moved the seam and the line numbers. The orchestrator applied the correction under
+the L exemption, so no remediation round ran.

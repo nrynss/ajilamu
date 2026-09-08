@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/nrynss/ajilamu/internal/api"
@@ -31,6 +32,15 @@ var (
 
 	// ErrMissingSpeaker reports a segment with an empty speaker name.
 	ErrMissingSpeaker = errors.New("segment speaker name is required")
+
+	// ErrLanguageRequired reports a missing target language code.
+	ErrLanguageRequired = errors.New("target language code is required")
+
+	// ErrLanguageMalformed reports a target language code that is not BCP-47.
+	ErrLanguageMalformed = errors.New("target language code is malformed")
+
+	// ErrTargetLanguageName reports a missing display name for the target language.
+	ErrTargetLanguageName = errors.New("target language name is required")
 )
 
 // EventListener receives pipeline progress notifications.
@@ -313,8 +323,17 @@ type PipelineConfig struct {
 	// Synthesizer renders spoken dialogue into WAV audio.
 	Synthesizer tts.Synthesizer
 
-	// Language specifies the target language BCP-47 code.
+	// Language is the required target language BCP-47 code. It reaches
+	// Cloud TTS as the LanguageCode and names the run's language.
 	Language string
+
+	// TargetLanguageName is the target language in words, such as Spanish.
+	// The translation prompt and the progress sentences name it.
+	TargetLanguageName string
+
+	// SourceLanguageName is the source language in words, such as English.
+	// Empty means the source language is unknown, so the prompt names none.
+	SourceLanguageName string
 
 	// Limits configures time stretch ratio boundaries.
 	Limits StretchLimits
@@ -408,6 +427,12 @@ func CleanErrorMessage(err error) string {
 		return "Distinct speakers collided on the same voice profile."
 	case errors.Is(err, ErrMissingSpeaker):
 		return "Dialogue segment lacks a speaker name."
+	case errors.Is(err, ErrLanguageRequired):
+		return "Target language code is required."
+	case errors.Is(err, ErrLanguageMalformed):
+		return "Target language code is not a valid language tag."
+	case errors.Is(err, ErrTargetLanguageName):
+		return "Target language name is required."
 	case errors.Is(err, ErrDeadBand):
 		return "Audio take already sits inside the stretch dead band."
 	case errors.Is(err, ErrOverrunTooLarge):
@@ -556,14 +581,19 @@ type loopTranslator struct {
 	emitter  *eventEmitter
 	tracker  *trackingRecorder
 	language string
+	target   string
+	source   string
 }
 
 func (lt *loopTranslator) Translate(ctx context.Context, req gemini.TranslateRequest) (string, error) {
+	req.TargetLanguageName = lt.target
+	req.SourceLanguageName = lt.source
+
 	var sentence string
 	if req.Mode == gemini.ModeNormal {
-		sentence = fmt.Sprintf("Translating line %d into Malayalam.", req.SegmentID)
+		sentence = fmt.Sprintf("Translating line %d into %s.", req.SegmentID, lt.target)
 	} else {
-		sentence = fmt.Sprintf("Translating line %d (%s mode) into Malayalam.", req.SegmentID, req.Mode)
+		sentence = fmt.Sprintf("Translating line %d (%s mode) into %s.", req.SegmentID, req.Mode, lt.target)
 	}
 
 	lt.emitter.emit(api.ProgressEvent{
@@ -583,6 +613,7 @@ type loopSynthesizer struct {
 	emitter  *eventEmitter
 	tracker  *trackingRecorder
 	language string
+	target   string
 }
 
 func (ls *loopSynthesizer) Synthesize(ctx context.Context, req tts.SynthesizeRequest) error {
@@ -590,7 +621,7 @@ func (ls *loopSynthesizer) Synthesize(ctx context.Context, req tts.SynthesizeReq
 	ls.emitter.emit(api.ProgressEvent{
 		Type:      api.EventProgress,
 		Stage:     api.StageSynthesizing,
-		Sentence:  fmt.Sprintf("Rendering line %d in Malayalam.", req.SegmentID),
+		Sentence:  fmt.Sprintf("Rendering line %d in %s.", req.SegmentID, ls.target),
 		SegmentID: req.SegmentID,
 		Language:  ls.language,
 		TakeFile:  takeFile,
@@ -619,9 +650,18 @@ type Pipeline struct {
 
 // NewPipeline creates a new dubbing pipeline with validated options.
 func NewPipeline(cfg PipelineConfig) (*Pipeline, error) {
-	if cfg.Language == "" {
-		cfg.Language = tts.Malayalam
+	if strings.TrimSpace(cfg.Language) == "" {
+		return nil, ErrLanguageRequired
 	}
+	if err := tts.ValidateLanguage(cfg.Language); err != nil {
+		return nil, fmt.Errorf("%w: %q", ErrLanguageMalformed, cfg.Language)
+	}
+	if strings.TrimSpace(cfg.TargetLanguageName) == "" {
+		return nil, ErrTargetLanguageName
+	}
+	cfg.Language = strings.TrimSpace(cfg.Language)
+	cfg.TargetLanguageName = strings.TrimSpace(cfg.TargetLanguageName)
+	cfg.SourceLanguageName = strings.TrimSpace(cfg.SourceLanguageName)
 	if cfg.Limits == (StretchLimits{}) {
 		cfg.Limits = DefaultStretchLimits()
 	} else if !cfg.Limits.Valid() {
@@ -772,6 +812,8 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 		emitter:  emitter,
 		tracker:  tracker,
 		language: p.cfg.Language,
+		target:   p.cfg.TargetLanguageName,
+		source:   p.cfg.SourceLanguageName,
 	}
 
 	wrappedSynthesizer := &loopSynthesizer{
@@ -779,6 +821,7 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 		emitter:  emitter,
 		tracker:  tracker,
 		language: p.cfg.Language,
+		target:   p.cfg.TargetLanguageName,
 	}
 
 	resolveTakePath := func(segmentID, attempt int, stretched bool) string {

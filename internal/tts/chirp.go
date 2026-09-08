@@ -1,4 +1,4 @@
-// Package tts synthesizes Malayalam speech with Cloud Chirp 3 HD voices.
+// Package tts synthesizes speech with Cloud Chirp 3 HD voices.
 package tts
 
 import (
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"unicode/utf8"
 
 	texttospeech "cloud.google.com/go/texttospeech/apiv1"
@@ -21,7 +22,7 @@ import (
 type SynthesizeRequest struct {
 	// SegmentID identifies the take. It lands on the charge as TakeID.
 	SegmentID int
-	// Text is the spoken Malayalam line.
+	// Text is the spoken line in the synthesizer's target language.
 	Text string
 	// Speaker selects the Chirp 3 HD voice through Assign.
 	Speaker types.Speaker
@@ -63,11 +64,16 @@ type chirpSynthesizer struct {
 	language string
 }
 
-// NewSynthesizer builds the Chirp 3 HD synthesis client.
-// A nil client constructs the production ADC client.
-func NewSynthesizer(cfg *config.Config, rec ChargeRecorder, card cost.RateCard, client TTSClient) (Synthesizer, error) {
+// NewSynthesizer builds the Chirp 3 HD synthesis client for one target language.
+// The language must be a well formed BCP-47 code. A nil client constructs the
+// production ADC client. The language reaches Cloud TTS as the LanguageCode.
+func NewSynthesizer(cfg *config.Config, language string, rec ChargeRecorder, card cost.RateCard, client TTSClient) (Synthesizer, error) {
 	if cfg == nil {
 		return nil, errors.New("tts synthesizer needs a config")
+	}
+	language = strings.TrimSpace(language)
+	if err := ValidateLanguage(language); err != nil {
+		return nil, err
 	}
 	if rec == nil {
 		return nil, errors.New("tts synthesizer needs a charge recorder")
@@ -86,7 +92,7 @@ func NewSynthesizer(cfg *config.Config, rec ChargeRecorder, card cost.RateCard, 
 		rec:      rec,
 		card:     card,
 		client:   client,
-		language: Malayalam,
+		language: language,
 	}, nil
 }
 

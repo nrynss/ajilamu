@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -353,19 +354,67 @@ func languageCodes(dub *api.Dub) []string {
 // runBranch names the single history branch a run writes.
 const runBranch = "main"
 
+// runLanguage names one resolved target language.
+type runLanguage struct {
+	// tag is the BCP-47 code Cloud TTS receives as the LanguageCode.
+	tag string
+	// name is the language in words, such as Malayalam.
+	name string
+}
+
+// createScreenLanguages maps the target language codes the create screen
+// offers today onto their BCP-47 tag and display name.
+//
+// Deletion point: T7.7 replaces this table with the fetched Cloud TTS
+// catalog, and the create screen sends a code the catalog already names.
+var createScreenLanguages = map[string]runLanguage{
+	"ml": {tag: "ml-IN", name: "Malayalam"},
+}
+
+// resolveRunLanguage resolves the target language of one run. A code the
+// create screen offers resolves to its tag and display name. Any other well
+// formed code falls back to itself as the display name. An empty or malformed
+// code fails, so the run stops before any billable call.
+func resolveRunLanguage(code string) (runLanguage, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return runLanguage{}, errors.New("the run needs a target language")
+	}
+	if known, ok := createScreenLanguages[code]; ok {
+		return known, nil
+	}
+	if err := tts.ValidateLanguage(code); err != nil {
+		return runLanguage{}, fmt.Errorf("the run cannot use %q as a target language: %w", code, err)
+	}
+	return runLanguage{tag: code, name: code}, nil
+}
+
 // pipelineRunner adapts the fit pipeline and the assembler onto api.PipelineRunner.
 // internal/api cannot import internal/fit, so this adapter is the only seam.
-// The clients are built once, so no run leaks a gRPC connection. Runs are
-// serialized, so the charge router always has exactly one active target.
+// The segmenter and the translator are built once, so no run leaks a gRPC
+// connection. Runs are serialized, so the charge router always has exactly one
+// active target. The synthesizer is built per run, because its target language
+// binds at construction and one project may carry more than one language.
 type pipelineRunner struct {
-	segmenter   gemini.Segmenter
-	translator  gemini.Translator
-	synthesizer tts.Synthesizer
-	router      *chargeRouter
-	mu          sync.Mutex
+	segmenter  gemini.Segmenter
+	translator gemini.Translator
+	router     *chargeRouter
+	// newSynthesizer builds the synthesizer for one run from the run's
+	// BCP-47 language tag and the run's charge ledger.
+	newSynthesizer func(language string, rec tts.ChargeRecorder) (tts.Synthesizer, error)
+	mu             sync.Mutex
 }
 
 var _ api.PipelineRunner = (*pipelineRunner)(nil)
+
+// runSynthesizerFactory builds the per-run synthesizer factory. Production
+// passes a nil client, so Cloud TTS opens on ADC. A test passes a fake client
+// and reads the language the factory forwards.
+func runSynthesizerFactory(cfg *config.Config, card cost.RateCard, client tts.TTSClient) func(language string, rec tts.ChargeRecorder) (tts.Synthesizer, error) {
+	return func(language string, rec tts.ChargeRecorder) (tts.Synthesizer, error) {
+		return tts.NewSynthesizer(cfg, language, rec, card, client)
+	}
+}
 
 // newPipelineRunner builds the production clients. A nil config or an
 // incomplete Google Cloud project returns a nil interface, never a typed nil.
@@ -382,15 +431,11 @@ func newPipelineRunner(cfg *config.Config, card cost.RateCard) (api.PipelineRunn
 	if err != nil {
 		return nil, fmt.Errorf("open the translator: %w", err)
 	}
-	synthesizer, err := tts.NewSynthesizer(cfg, router, card, nil)
-	if err != nil {
-		return nil, fmt.Errorf("open the synthesizer: %w", err)
-	}
 	return &pipelineRunner{
-		segmenter:   segmenter,
-		translator:  translator,
-		synthesizer: synthesizer,
-		router:      router,
+		segmenter:      segmenter,
+		translator:     translator,
+		router:         router,
+		newSynthesizer: runSynthesizerFactory(cfg, card, nil),
 	}, nil
 }
 
@@ -399,9 +444,22 @@ func (p *pipelineRunner) Run(ctx context.Context, req api.RunRequest, emit func(
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	language, err := resolveRunLanguage(req.Language)
+	if err != nil {
+		return api.RunResult{}, err
+	}
+	// The resolved tag is the run's language from here on, so every event,
+	// the pipeline, and the synthesizer name the same code.
+	req.Language = language.tag
+
 	charges := cost.NewLedger()
 	p.router.set(charges)
 	defer p.router.set(nil)
+
+	synthesizer, err := p.newSynthesizer(language.tag, charges)
+	if err != nil {
+		return api.RunResult{}, fmt.Errorf("open the synthesizer: %w", err)
+	}
 
 	source, err := os.ReadFile(req.Source)
 	if err != nil {
@@ -411,17 +469,20 @@ func (p *pipelineRunner) Run(ctx context.Context, req api.RunRequest, emit func(
 		Type:     api.EventProgress,
 		Stage:    api.StageSegmenting,
 		Sentence: "Reading the source video.",
-		Language: req.Language,
+		Language: language.tag,
 	})
 	result, err := fit.RunPipeline(ctx, fit.PipelineConfig{
-		Segmenter:   p.segmenter,
-		InputMedia:  &gemini.Input{Data: source, MIMEType: mediaType(req.Source)},
-		Translator:  p.translator,
-		Synthesizer: p.synthesizer,
-		Language:    req.Language,
-		WorkDir:     req.WorkDir,
-		Recorder:    charges,
-		ProgressFn:  fit.ProgressFunc(emit),
+		Segmenter:          p.segmenter,
+		InputMedia:         &gemini.Input{Data: source, MIMEType: mediaType(req.Source)},
+		Translator:         p.translator,
+		Synthesizer:        synthesizer,
+		Language:           language.tag,
+		TargetLanguageName: language.name,
+		// SourceLanguageName stays empty until T7.5b carries the upload record.
+		SourceLanguageName: "",
+		WorkDir:            req.WorkDir,
+		Recorder:           charges,
+		ProgressFn:         fit.ProgressFunc(emit),
 	})
 	if err != nil {
 		return api.RunResult{}, err
