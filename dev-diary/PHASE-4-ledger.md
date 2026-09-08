@@ -126,7 +126,7 @@ requires:   T4.2a, T3.5
 fixture-ok: no
 size:       XS · light
 owns:       internal/ledger/peaks.go, internal/ledger/peaks_test.go
-status:     claimed:gpt-5.6-luna
+status:     done
 ```
 Store `Array(UInt8)` waveform peaks on take rows. Deliver peaks in API payloads so the timeline renders waveforms without reading audio files from disk.
 
