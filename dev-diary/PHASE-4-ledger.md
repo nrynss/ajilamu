@@ -41,8 +41,8 @@ Batch all insert queries to maximize ClickHouse ingestion performance.
 requires:   T4.1, T1.1, T1.2
 fixture-ok: no
 size:       S · mid
-owns:       internal/ledger/takes.go
-status:     not-started
+owns:       internal/ledger/takes.go, internal/ledger/takes_test.go
+status:     done
 ```
 Store one record per take attempt: project id, language, segment index, attempt number, voice, target slot, measured duration, signed delta, repair type, and audio path.
 
