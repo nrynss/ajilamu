@@ -25,7 +25,7 @@ fixture-ok: yes
 size:       M · frontier
 owns:       .gitignore, cmd/ajilamu/main.go, internal/api/server.go, internal/api/server_test.go,
             internal/api/static.go, internal/config/config.go, internal/config/config_test.go
-status:     claimed:gpt-5-codex
+status:     done
 ```
 Build the process that runs Ajilamu. It loads configuration, mounts every `internal/api`
 handler, serves the built frontend, and shuts down without losing ledger events.
@@ -205,6 +205,28 @@ HTTP response, is absent from logs, and has restrictive on-disk permissions.
 ## Handoff Log
 
 _(Fill on completion: record upload throughput metrics and SSE client reconnection behaviors.)_
+
+### T7.0: Server entrypoint
+
+`go run ./cmd/ajilamu` starts with no credentials and serves fixtures. Process settings
+load at boot. Credentials resolve when a feature needs them. `ENV=production` fails at
+boot if ClickHouse, Google Cloud, or the frontend build is missing.
+
+The mux mounts health, ledger readiness, `GET /api/dubs`, `POST /api/dubs/new`, and
+`POST /api/config`. Unmatched `/api/` paths return 404. Video ranges return 206.
+
+Shutdown drains HTTP for 10 seconds, then flushes the ledger for 5 seconds. A drain
+timeout still reaches flush and logs the pending count. Development leaves the ledger
+interface genuinely nil.
+
+`AJILAMU_DATA_DIR` defaults to `data`, which `.gitignore` covers. `AJILAMU_FRONTEND_DIR`
+names the static root. `/api/ledger/ready` pings ClickHouse. Config stays unwired
+(`ConfigHandler(nil)` returns 503) until T7.4a.
+
+T7.4 added `IndexHandlerFrom`. This land still mounts the snapshot constructor with the
+fixture project. A later change should pass a provider that includes uploads.
+
+Round 4 review returned APPROVE with zero residue.
 
 ### T7.1: Upload
 

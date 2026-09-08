@@ -5,7 +5,8 @@
 # Binaries and build outputs
 /bin/
 /dist/
-ajilamu
+/ajilamu
+/data/
 
 # Go artifacts
 vendor/
