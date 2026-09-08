@@ -189,3 +189,13 @@ forward.
 
 The schema loads through `clickhouse client --queries-file`. The HTTP endpoint refuses a
 multi statement body. T4.1 must split statements if it applies the schema over HTTP.
+
+### T1.4 loop closed on 2026-09-08
+
+T1.4 was marked done while its only review said REMEDIATE. A closure review found one more L: the
+five wire types T7.2c added were absent from `mirroredTypes` in `internal/api/wire_test.go`, so a
+key drift in them passed the suite. The orchestrator appended them under the L exemption. Round 3
+returned APPROVE with zero findings and zero residue.
+
+The five types still lack a `testdata/wire/` example, so the claim above holds only for the twelve
+T1.4 payloads. T1.4a lands the missing five.
