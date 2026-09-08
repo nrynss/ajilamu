@@ -109,8 +109,8 @@ Support actions: `segment_created`, `boundary_nudged`, `speaker_reassigned`, `te
 requires:   T4.3, T4.4
 fixture-ok: no
 size:       L · frontier
-owns:       internal/ledger/history.go
-status:     not-started
+owns:       internal/ledger/history.go, internal/ledger/history_test.go
+status:     done
 ```
 Reconstruct timeline state at any historical commit using analytical SQL queries.
 
@@ -257,3 +257,30 @@ A non-empty value that is not valid JSON fails before enqueue. Empty values stay
 `internal/ledger/actions_test.go` pins every recognized action type against the HTTP artifact.
 It also pins omitted server columns, verbatim command-bar prompts, rejected aliases, JSON text
 in before_value and after_value, and 503 replay of a byte-identical body.
+
+### T4.5 implementation handoff
+
+`internal/ledger/history.go` writes full snapshots to `timeline_state_raw` and reads state
+through `timeline_at_commit`. `RecordSegmentState` validates a complete row and enqueues it.
+It never fills a field from an earlier snapshot.
+
+`TimelineAt` binds `dub_id`, `language`, and `commit_id` and queries the view. It does not
+walk `parent_commit_id` in Go. A `version_seq` range would pull sibling commits once two
+branches reuse a number. A `branch` filter would drop the history a fork inherited.
+
+`ReplayAt` is a pure function over an in-memory DAG and snapshot log. It uses the same
+ancestry plus newest `version_seq` per segment rule as the view. Tests hard-code the view's
+JSONEachRow payload for root, child, and fork. They never call `ReplayAt` inside the mock.
+`TimelineAt` on that stand-in must equal `ReplayAt` field for field.
+
+`CompareBranches` reconstructs both heads, sums slot lengths, counts takes, and sums
+`charges.cost_usd` over each ancestry. It does not filter history by branch label. The
+label is display only.
+
+A live ClickHouse probe of the real view is not in this task's owns list. HTTP capture pins
+the query shape. A later b-track can hit a real server.
+
+The package now has a snapshot writer, a view query, a replay pin, branch compare, and 503
+replay. The view names the ranked version `state_version_seq`, not `version_seq`. Decode
+that name or replay and query disagree on version. The next agent must not treat a snapshot
+as a delta. A nudge that omits `take_id` erases the take at that commit.
