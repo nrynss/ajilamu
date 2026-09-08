@@ -498,7 +498,7 @@ owns:       internal/api/upload.go, internal/api/upload_test.go,
             internal/api/run.go, internal/api/run_test.go,
             internal/api/workspace.go, internal/api/workspace_test.go,
             cmd/ajilamu/main.go, web/src/routes/new/+page.svelte
-status:     not-started
+status:     done
 ```
 The wire `Dub.SourceLanguage` has no producer. The upload record stores only the target
 language, so every real workspace reports an empty source language. T7.5's round one
@@ -981,3 +981,43 @@ button issued `POST /api/languages/refresh`, and the status changed to "53 live 
 Cloud Text-to-Speech." The failure click showed the credential sentence and kept 53 options.
 `go test -count=1 ./internal/api ./internal/tts ./cmd/...` passed and `npm --prefix web run check`
 reported 0 errors.
+
+### T7.5b: User-defined languages at upload
+
+`internal/api/upload.go` stores `source_language` beside `language` in the project record. The
+handler accepts an absent source language, so an older record still loads.
+`internal/api/sample.go` records `en` to `ml`, because the NASA clip is English.
+`internal/api/workspace.go` fills `Dub.SourceLanguage` from `ProjectLookup`, which now returns
+the source language beside the title and timestamp. `internal/api/run.go` reads the source
+language from the record and puts it on `RunRequest.SourceLanguage`. It answers 400 for a
+language that is not a safe path segment, because the language now names the work subdirectory.
+Each language gets its own work directory, so a second language cannot overwrite the first
+language's takes. `cmd/ajilamu/main.go` sets `SourceLanguageName` from the request through
+`resolveLanguageName`. The create screen mounts `LanguagePicker` twice, as `source_language`
+and `language`, and submits both fields.
+
+Surprises. `createScreenLanguages` names every committed catalog code and the two sample codes
+`ml` and `en`, so the prompt names each language in words. A new upload stores `ml-IN`, and the
+prompt reads `Malayalam`. The T7.7 catalog carries codes and not names, so the table stays. The
+source picker starts empty, because the film language may be unknown, and an empty value submits
+empty. Headless Chromium runs
+`page.evaluate` in an isolated world, so a `window.fetch` wrapper there never sees the page's
+own requests. `page.evaluateOnNewDocument` installs the wrapper in the main world, and a DOM
+attribute carries the captured response back.
+
+Measured pins. A browser submit of `en-US` to `ml-IN` answered 201 with
+`{"id":"782b770392ab5034944e8d83b7dd57ca","source_language":"en-US","language":"ml-IN","video":{...}}`
+and the record file carried the same pair. `POST /api/dubs/sample` wrote
+`{"id":"a923d52e9803a8c67db9586e5fc5979c","title":"NASA 75-second clip","source_language":"en","language":"ml"}`.
+`GET /api/dubs/{id}` served `"source_language":"en-US"` through the real route with a stand-in
+ledger reader. An older record with no `source_language` key served `"source_language":""` and
+kept its title. A throwaway probe captured
+`TranslateRequest{TargetLanguageName:"Malayalam", SourceLanguageName:"English"}`.
+`go test -count=1 ./internal/api ./cmd/...` passed and `npm --prefix web run check` reported 0
+errors.
+
+Note. This machine holds no ClickHouse credential, so the running server answers 503 on
+`GET /api/dubs/{id}`. The route's source language was measured through the handler with a
+stand-in reader, the way T7.5 measured it. The first acceptance run failed the entrypoint sample
+with `no space left on device`, because `/tmp` was full. Freeing space made the test pass, so
+that failure was environmental.

@@ -30,10 +30,13 @@ type UploadFile struct {
 
 // Upload is the durable project input created by an upload request.
 type Upload struct {
-	ID       string      `json:"id"`
-	Language string      `json:"language"`
-	Video    UploadFile  `json:"video"`
-	Music    *UploadFile `json:"music,omitempty"`
+	ID string `json:"id"`
+	// SourceLanguage is the film language code. Empty means unknown, which
+	// an upload record written before T7.5b carries.
+	SourceLanguage string      `json:"source_language"`
+	Language       string      `json:"language"`
+	Video          UploadFile  `json:"video"`
+	Music          *UploadFile `json:"music,omitempty"`
 }
 
 // UploadHandler streams multipart project inputs into StorageDir.
@@ -48,7 +51,8 @@ func NewUploadHandler(storageDir string) *UploadHandler {
 	return &UploadHandler{StorageDir: storageDir, MaxBytes: MaxUploadBytes}
 }
 
-// ServeHTTP accepts a required video, optional music, and a target language.
+// ServeHTTP accepts a required video, optional music, a target language, and
+// an optional source language.
 func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -111,8 +115,11 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				h.writeUploadError(w, readErr)
 				return
 			}
-			if name == "language" || name == "languages" {
+			switch name {
+			case "language", "languages":
 				upload.Language = value
+			case "source_language", "source_languages":
+				upload.SourceLanguage = value
 			}
 			continue
 		}
@@ -246,18 +253,20 @@ func safeExtension(filename string) string {
 const uploadRecordName = "project.json"
 
 type uploadRecord struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Language  string `json:"language"`
-	CreatedAt string `json:"created_at"`
+	ID             string `json:"id"`
+	Title          string `json:"title"`
+	SourceLanguage string `json:"source_language"`
+	Language       string `json:"language"`
+	CreatedAt      string `json:"created_at"`
 }
 
 func writeUploadRecord(dir string, upload Upload) error {
 	record := uploadRecord{
-		ID:        upload.ID,
-		Title:     upload.Video.Name,
-		Language:  upload.Language,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		ID:             upload.ID,
+		Title:          upload.Video.Name,
+		SourceLanguage: upload.SourceLanguage,
+		Language:       upload.Language,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 	payload, err := json.Marshal(record)
 	if err != nil {

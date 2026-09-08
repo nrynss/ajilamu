@@ -1,4 +1,6 @@
 <script lang="ts">
+  import LanguagePicker from "$lib/LanguagePicker.svelte";
+
   const nanodollarsPerDollar = 1_000_000_000;
 
   // This reference is the completed P2 fixture ledger, not a made-up pipeline model.
@@ -20,6 +22,11 @@
   let videoDragging = $state(false);
   let musicDragging = $state(false);
   let videoSelection = $state(0);
+
+  // The source picker starts empty, because the film language may be unknown.
+  // The target picker starts on Malayalam, the only language the sample uses.
+  let sourceLanguage = $state("");
+  let targetLanguage = $state("ml-IN");
 
   let projectedFee = $derived(durationSeconds === null ? null : projectFee(durationSeconds));
   let formattedFee = $derived(projectedFee === null ? "" : formatCurrency(projectedFee));
@@ -109,13 +116,14 @@
 
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (!videoFile || durationSeconds === null || uploading || creatingSample) return;
+    if (!videoFile || durationSeconds === null || uploading || creatingSample || !targetLanguage) return;
     uploading = true;
     submitError = "";
     const body = new FormData();
     body.append("video", videoFile);
     if (musicFile) body.append("music", musicFile);
-    body.append("language", "ml");
+    body.append("source_language", sourceLanguage);
+    body.append("language", targetLanguage);
 
     try {
       const response = await fetch("/api/dubs/new", { method: "POST", body });
@@ -184,10 +192,21 @@
       <input id="music" class="file-picker" name="music" type="file" accept="audio/*" onchange={musicInput} />
     </label>
 
-    <label class="field-label" for="language">Language</label>
-    <select id="language" name="language">
-      <option value="ml">Malayalam</option>
-    </select>
+    <LanguagePicker
+      id="source-language"
+      name="source_language"
+      label="Source language"
+      value={sourceLanguage}
+      onlanguagechange={(language) => (sourceLanguage = language)}
+    />
+
+    <LanguagePicker
+      id="target-language"
+      name="language"
+      label="Target language"
+      value={targetLanguage}
+      onlanguagechange={(language) => (targetLanguage = language)}
+    />
 
     <div class="cost-note" aria-live="polite">
       <span class="label">Projected fee</span>
@@ -216,7 +235,7 @@
         </button>
         <p class="sample-fee">Measured fee: <span class="numeric">{formattedSampleFee}</span></p>
       </div>
-      <button class="start" type="submit" disabled={!videoFile || durationSeconds === null || uploading || creatingSample}>
+      <button class="start" type="submit" disabled={!videoFile || durationSeconds === null || uploading || creatingSample || !targetLanguage}>
         {uploading ? "Uploading…" : "Start dubbing"}
       </button>
     </div>
@@ -262,8 +281,6 @@
   .drop-copy, .optional, .cost-note p { color: var(--dim); font-size: 11.5px; }
   .file-picker { color: var(--dim); font-size: 11.5px; margin-top: 8px; max-width: 100%; }
   .music-option .file-picker { grid-column: 1 / -1; margin-top: 2px; }
-  .field-label { color: var(--dim); font-size: 11.5px; margin-bottom: -8px; }
-  select { background: var(--surface); border: 1px solid var(--line); color: var(--text); padding: 8px; }
   .cost-note { background: var(--accent-q); border-radius: var(--radius-panel); padding: 13px; }
   .cost-note strong { display: block; font-size: 16px; margin: 2px 0; }
   .error { color: #7a271a !important; margin-top: 8px !important; }

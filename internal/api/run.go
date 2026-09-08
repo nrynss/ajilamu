@@ -4,15 +4,19 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/nrynss/ajilamu/internal/cost"
+	"github.com/nrynss/ajilamu/internal/tts"
 	"github.com/nrynss/ajilamu/internal/types"
 )
 
@@ -40,6 +44,7 @@ const (
 	runNoActive    = "No run is active for this project."
 	runNoSource    = "This project has no source video."
 	runMissing     = "No run exists for this project."
+	runBadLanguage = "That language code is not valid."
 )
 
 var (
@@ -56,6 +61,9 @@ type RunRequest struct {
 	DubID string
 	// Language is the target language code.
 	Language string
+	// SourceLanguage is the film language code. Empty means unknown, which a
+	// record written before T7.5b carries.
+	SourceLanguage string
 	// Source is the absolute path of the source video.
 	Source string
 	// Music is the absolute path of the creator's music track. Empty means none.
@@ -523,6 +531,10 @@ func RunStartHandler(runs *runRegistry, storageDir string) http.Handler {
 			writeRunFailure(w, http.StatusBadRequest, problem)
 			return
 		}
+		if !safeDubID(language) {
+			writeRunFailure(w, http.StatusBadRequest, runBadLanguage)
+			return
+		}
 		dubID := r.PathValue("id")
 		if runs.active(dubID) {
 			writeRunFailure(w, http.StatusConflict, runActive)
@@ -534,11 +546,12 @@ func RunStartHandler(runs *runRegistry, storageDir string) http.Handler {
 			return
 		}
 		run, err := runs.start(RunRequest{
-			DubID:    dubID,
-			Language: language,
-			Source:   source,
-			Music:    music,
-			WorkDir:  filepath.Join(storageDir, dubID, runWorkDir),
+			DubID:          dubID,
+			Language:       language,
+			SourceLanguage: storedSourceLanguage(storageDir, dubID),
+			Source:         source,
+			Music:          music,
+			WorkDir:        runWorkDirFor(storageDir, dubID, language),
 		})
 		if err != nil {
 			writeRunFailure(w, http.StatusConflict, runActive)
@@ -561,6 +574,136 @@ func RunCancelHandler(runs *runRegistry) http.Handler {
 		}
 		writeHistoryJSON(w, http.StatusAccepted, runCancelled{Status: runStatusCancelling})
 	})
+}
+
+// storedSourceLanguage returns the film language the upload record stores.
+// An older record carries none, so empty is a normal answer and the pipeline
+// then names no source language.
+func storedSourceLanguage(storageDir, dubID string) string {
+	_, _, sourceLanguage, ok := UploadProjectLookup(storageDir)(dubID)
+	if !ok {
+		return ""
+	}
+	return sourceLanguage
+}
+
+// runWorkDirFor names the work directory of one project.
+// The name is the resolved language tag, so the sample code `ml` and the
+// catalog tag `ml-IN` share one directory. A resume that switches spelling
+// then reuses every finished take. A run under the raw code left its records
+// in a directory named by that code. This reuses such a directory when it
+// holds a record for the same language. A run interrupted before the
+// per-language layout left its records in the flat work directory, which is
+// the last fallback. The language directory wins when more than one holds a
+// record. Take files carry no language, so a second language would overwrite
+// the first language's takes in a shared directory. The caller has already
+// checked the language is a safe path segment.
+func runWorkDirFor(storageDir, dubID, language string) string {
+	flat := filepath.Join(storageDir, dubID, runWorkDir)
+	perLanguage := filepath.Join(flat, resolveRunTag(language))
+	if holdsRecord(perLanguage) {
+		return perLanguage
+	}
+	if holdsRecordFor(flat, language) {
+		return flat
+	}
+	if raw := rawCodeWorkDir(flat, perLanguage, language); raw != "" {
+		return raw
+	}
+	return perLanguage
+}
+
+// resolveRunTag returns the catalog tag that names the same language as code.
+// The sample code `ml` names the catalog tag `ml-IN`, so both spellings share
+// one work directory. A code the catalog does not extend stays as it is. So
+// does an ambiguous short code such as `en`, which names four catalog tags.
+func resolveRunTag(code string) string {
+	match := ""
+	for _, tag := range tts.CommittedLanguages() {
+		if tag == code {
+			return code
+		}
+		if !sameRunLanguage(tag, code) {
+			continue
+		}
+		if match != "" {
+			return code
+		}
+		match = tag
+	}
+	if match != "" {
+		return match
+	}
+	return code
+}
+
+// rawCodeWorkDir returns an existing language directory that holds a record
+// for the same language under another spelling. The sample code `ml` and the
+// catalog tag `ml-IN` wrote separate directories before the tag naming, so a
+// resume must read the one that holds the records.
+func rawCodeWorkDir(flat, perLanguage, language string) string {
+	dirs, err := filepath.Glob(filepath.Join(flat, "*"))
+	if err != nil {
+		return ""
+	}
+	for _, dir := range dirs {
+		if dir == perLanguage || !holdsRecord(dir) {
+			continue
+		}
+		if holdsRecordFor(dir, language) {
+			return dir
+		}
+	}
+	return ""
+}
+
+// holdsRecord reports whether dir holds any resume record.
+func holdsRecord(dir string) bool {
+	records, err := filepath.Glob(filepath.Join(dir, "seg_*_result.json"))
+	return err == nil && len(records) > 0
+}
+
+// holdsRecordFor reports whether dir holds a resume record written for
+// language. A record is what a resumed run reads, so a take alone does not
+// count. The flat directory can hold records for several languages, because it
+// preceded the per-language layout.
+func holdsRecordFor(dir, language string) bool {
+	records, err := filepath.Glob(filepath.Join(dir, "seg_*_result.json"))
+	if err != nil {
+		return false
+	}
+	for _, record := range records {
+		if sameRunLanguage(recordLanguage(record), language) {
+			return true
+		}
+	}
+	return false
+}
+
+// recordLanguage reads the language one resume record names.
+// An unreadable record names no language.
+func recordLanguage(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var record struct {
+		Language string `json:"language"`
+	}
+	if json.Unmarshal(data, &record) != nil {
+		return ""
+	}
+	return record.Language
+}
+
+// sameRunLanguage reports whether two codes name the same language.
+// The catalog code `ml` and the tag `ml-IN` name one language, so a subtag
+// prefix counts. Two sibling locales such as `pt-BR` and `pt-PT` do not.
+func sameRunLanguage(first, second string) bool {
+	if first == second {
+		return true
+	}
+	return strings.HasPrefix(first, second+"-") || strings.HasPrefix(second, first+"-")
 }
 
 // resolveProjectMedia finds the source video and the optional music track.

@@ -21,6 +21,7 @@ func TestUploadHandlerStoresCompleteProject(t *testing.T) {
 	req := uploadRequest(t, func(form *multipart.Writer) {
 		writeUploadFile(t, form, "video", "../../launch.MP4", video)
 		writeUploadFile(t, form, "music", "../score.WAV", music)
+		writeUploadField(t, form, "source_language", "en-US")
 		writeUploadField(t, form, "language", "ml")
 	})
 	recorder := httptest.NewRecorder()
@@ -39,6 +40,9 @@ func TestUploadHandlerStoresCompleteProject(t *testing.T) {
 	}
 	if len(upload.ID) != 32 {
 		t.Fatalf("project id length = %d, want 32", len(upload.ID))
+	}
+	if upload.SourceLanguage != "en-US" {
+		t.Fatalf("source language = %q, want en-US", upload.SourceLanguage)
 	}
 	if upload.Language != "ml" {
 		t.Fatalf("language = %q, want ml", upload.Language)
@@ -76,6 +80,56 @@ func TestUploadHandlerStoresCompleteProject(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339, summaries[0].CreatedAt); err != nil {
 		t.Fatalf("summary created_at = %q, want RFC 3339: %v", summaries[0].CreatedAt, err)
 	}
+	record := readUploadRecord(t, storage, upload.ID)
+	if record.SourceLanguage != "en-US" || record.Language != "ml" {
+		t.Fatalf("stored record languages = %q to %q, want en-US to ml", record.SourceLanguage, record.Language)
+	}
+}
+
+// TestUploadHandlerAcceptsMissingSourceLanguage proves an upload that names no
+// source language still stores a record. A record written before T7.5b carries
+// none, so the read paths must keep working with an empty value.
+func TestUploadHandlerAcceptsMissingSourceLanguage(t *testing.T) {
+	storage := t.TempDir()
+	handler := NewUploadHandler(storage)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, uploadRequest(t, func(form *multipart.Writer) {
+		writeUploadFile(t, form, "video", "clip.mp4", []byte("video"))
+		writeUploadField(t, form, "language", "ml")
+	}))
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	var upload Upload
+	if err := json.NewDecoder(recorder.Body).Decode(&upload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if upload.SourceLanguage != "" {
+		t.Fatalf("source language = %q, want empty", upload.SourceLanguage)
+	}
+	record := readUploadRecord(t, storage, upload.ID)
+	if record.SourceLanguage != "" {
+		t.Fatalf("stored source language = %q, want empty", record.SourceLanguage)
+	}
+	if record.Language != "ml" {
+		t.Fatalf("stored language = %q, want ml", record.Language)
+	}
+}
+
+// readUploadRecord reads the persisted record of one project.
+func readUploadRecord(t *testing.T, storage, id string) uploadRecord {
+	t.Helper()
+	payload, err := os.ReadFile(filepath.Join(storage, id, uploadRecordName))
+	if err != nil {
+		t.Fatalf("read upload record: %v", err)
+	}
+	var record uploadRecord
+	if err := json.Unmarshal(payload, &record); err != nil {
+		t.Fatalf("decode upload record: %v", err)
+	}
+	return record
 }
 
 func TestUploadHandlerCleansUpRejectedUploads(t *testing.T) {

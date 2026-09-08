@@ -658,19 +658,23 @@ func (c *runnerTestTTSClient) SynthesizeSpeech(_ context.Context, req *texttospe
 
 // TestPipelineRunnerLanguageWiring proves the runner resolves each target
 // language onto its tag, builds the synthesizer with that tag, and carries the
-// tag to Cloud TTS and the display name to the translator. One case uses the
-// create screen code `ml`, whose tag `ml-IN` a regression could hardcode. The
-// other uses `es-ES`, whose tag differs from that constant.
+// tag to Cloud TTS and the display names to the translator. One case uses the
+// create screen code `ml`, whose tag `ml-IN` a regression could hardcode. One
+// uses the catalog code `ml-IN`, which must name Malayalam. One uses `es-ES`,
+// whose tag differs from that constant.
 func TestPipelineRunnerLanguageWiring(t *testing.T) {
 	cases := []struct {
-		name      string
-		language  string
-		tag       string
-		target    string
-		voiceName string
+		name       string
+		language   string
+		tag        string
+		target     string
+		source     string
+		sourceName string
+		voiceName  string
 	}{
-		{name: "create screen code", language: "ml", tag: "ml-IN", target: "Malayalam", voiceName: "ml-IN-Chirp3-HD-Achernar"},
-		{name: "full tag", language: "es-ES", tag: "es-ES", target: "es-ES", voiceName: "es-ES-Chirp3-HD-Achernar"},
+		{name: "create screen code", language: "ml", tag: "ml-IN", target: "Malayalam", source: "en-US", sourceName: "English", voiceName: "ml-IN-Chirp3-HD-Achernar"},
+		{name: "catalog code", language: "ml-IN", tag: "ml-IN", target: "Malayalam", source: "en-US", sourceName: "English", voiceName: "ml-IN-Chirp3-HD-Achernar"},
+		{name: "full tag", language: "es-ES", tag: "es-ES", target: "Spanish", source: "en-US", sourceName: "English", voiceName: "es-ES-Chirp3-HD-Achernar"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -708,10 +712,11 @@ func TestPipelineRunnerLanguageWiring(t *testing.T) {
 
 			var events []api.ProgressEvent
 			_, err = runner.Run(context.Background(), api.RunRequest{
-				DubID:    "dub-language",
-				Language: tc.language,
-				Source:   source,
-				WorkDir:  workDir,
+				DubID:          "dub-language",
+				Language:       tc.language,
+				SourceLanguage: tc.source,
+				Source:         source,
+				WorkDir:        workDir,
 			}, func(event api.ProgressEvent) { events = append(events, event) })
 			if err != nil {
 				t.Fatalf("Run: %v", err)
@@ -726,6 +731,9 @@ func TestPipelineRunnerLanguageWiring(t *testing.T) {
 			}
 			if got := translator.requests[0].TargetLanguageName; got != tc.target {
 				t.Errorf("TranslateRequest.TargetLanguageName = %q, want %s", got, tc.target)
+			}
+			if got := translator.requests[0].SourceLanguageName; got != tc.sourceName {
+				t.Errorf("TranslateRequest.SourceLanguageName = %q, want %s", got, tc.sourceName)
 			}
 			if client.voice == nil {
 				t.Fatal("synthesizer sent no voice to Cloud TTS")
@@ -746,6 +754,38 @@ func TestPipelineRunnerLanguageWiring(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLanguageNamesCoverCatalog proves every committed catalog code resolves
+// to a display name rather than to its own code. A code that falls back to
+// itself reaches the translation prompt as a code.
+func TestLanguageNamesCoverCatalog(t *testing.T) {
+	for _, code := range tts.CommittedLanguages() {
+		name := resolveLanguageName(code)
+		if name == "" || name == code {
+			t.Errorf("resolveLanguageName(%q) = %q, want a display name", code, name)
+		}
+	}
+	cases := []struct {
+		code string
+		name string
+	}{
+		{code: "ml-IN", name: "Malayalam"},
+		{code: "ml", name: "Malayalam"},
+		{code: "en", name: "English"},
+		{code: "en-US", name: "English"},
+	}
+	for _, tc := range cases {
+		if got := resolveLanguageName(tc.code); got != tc.name {
+			t.Errorf("resolveLanguageName(%q) = %q, want %q", tc.code, got, tc.name)
+		}
+	}
+	if got := resolveLanguageName(""); got != "" {
+		t.Errorf("resolveLanguageName(\"\") = %q, want empty", got)
+	}
+	if known, err := resolveRunLanguage("ml-IN"); err != nil || known != (runLanguage{tag: "ml-IN", name: "Malayalam"}) {
+		t.Errorf("resolveRunLanguage(ml-IN) = %+v, %v, want the Malayalam tag and name", known, err)
 	}
 }
 

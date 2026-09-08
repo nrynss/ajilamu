@@ -80,11 +80,172 @@ func TestRunStartAnswersAccepted(t *testing.T) {
 		if want := filepath.Join(storage, "dub-accept", "source.mp4"); req.Source != want {
 			t.Errorf("recorded source = %q, want %q", req.Source, want)
 		}
-		if want := filepath.Join(storage, "dub-accept", "work"); req.WorkDir != want {
+		if want := filepath.Join(storage, "dub-accept", "work", "ml-IN"); req.WorkDir != want {
+			t.Errorf("recorded work dir = %q, want %q", req.WorkDir, want)
+		}
+		if req.SourceLanguage != "" {
+			t.Errorf("recorded source language = %q, want empty for a project with no record", req.SourceLanguage)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the recorder never saw the finished run")
+	}
+}
+
+// TestRunStartCarriesStoredLanguages proves the run request reads the source
+// language from the upload record and gives each language its own work
+// directory, so a second language cannot overwrite the first language's takes.
+func TestRunStartCarriesStoredLanguages(t *testing.T) {
+	storage := t.TempDir()
+	writeProjectSource(t, storage, "dub-languages")
+	writeProjectRecord(t, storage, "dub-languages", "en-US", "ml")
+	recorded := make(chan api.RunRequest, 1)
+	runner := runFunc(func(context.Context, api.RunRequest, func(api.ProgressEvent)) (api.RunResult, error) {
+		return api.RunResult{}, nil
+	})
+	recorder := recordFunc(func(_ context.Context, req api.RunRequest, _ api.RunResult) error {
+		recorded <- req
+		return nil
+	})
+	base := newRunTestServer(t, api.ServerOptions{Runner: runner, Recorder: recorder, StorageDir: storage})
+
+	response := postRun(t, base, "dub-languages", "language=ml-IN")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", response.StatusCode)
+	}
+
+	select {
+	case req := <-recorded:
+		if req.SourceLanguage != "en-US" {
+			t.Errorf("recorded source language = %q, want en-US", req.SourceLanguage)
+		}
+		if req.Language != "ml-IN" {
+			t.Errorf("recorded language = %q, want ml-IN", req.Language)
+		}
+		if want := filepath.Join(storage, "dub-languages", "work", "ml-IN"); req.WorkDir != want {
 			t.Errorf("recorded work dir = %q, want %q", req.WorkDir, want)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the recorder never saw the finished run")
+	}
+}
+
+// TestRunStartResumesFlatWorkDir proves a run falls back to the flat work
+// directory when the language directory holds no record. A run interrupted
+// before the per-language layout left its records in the flat directory, so a
+// resume must read them there.
+func TestRunStartResumesFlatWorkDir(t *testing.T) {
+	cases := []struct {
+		name     string
+		language string
+		record   string
+		want     string
+	}{
+		{name: "catalog code", language: "ml-IN", record: "ml-IN", want: "work"},
+		{name: "sample code", language: "ml", record: "ml-IN", want: "work"},
+		{name: "other language", language: "ml-IN", record: "ta-IN", want: filepath.Join("work", "ml-IN")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			storage := t.TempDir()
+			writeProjectSource(t, storage, "dub-resume")
+			writeProjectRecord(t, storage, "dub-resume", "en-US", "ml-IN")
+			writeSegmentRecordFile(t, storage, "dub-resume", "work", tc.record)
+
+			got := startedWorkDir(t, storage, "dub-resume", tc.language)
+			t.Logf("request language=%s flat record=%s work dir=%s", tc.language, tc.record, got)
+			if want := filepath.Join(storage, "dub-resume", tc.want); got != want {
+				t.Errorf("recorded work dir = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestRunStartPrefersLanguageWorkDir proves the language directory wins when
+// both directories hold a record. The flat directory is only a fallback.
+func TestRunStartPrefersLanguageWorkDir(t *testing.T) {
+	storage := t.TempDir()
+	writeProjectSource(t, storage, "dub-both")
+	writeProjectRecord(t, storage, "dub-both", "en-US", "ml-IN")
+	writeSegmentRecordFile(t, storage, "dub-both", "work", "ml-IN")
+	writeSegmentRecordFile(t, storage, "dub-both", filepath.Join("work", "ml-IN"), "ml-IN")
+
+	got := startedWorkDir(t, storage, "dub-both", "ml-IN")
+	t.Logf("both directories hold a record, work dir=%s", got)
+	if want := filepath.Join(storage, "dub-both", "work", "ml-IN"); got != want {
+		t.Errorf("recorded work dir = %q, want %q", got, want)
+	}
+}
+
+// TestRunStartReusesRawCodeWorkDir proves a resume reads the directory an
+// earlier run named from the raw code. The sample code `ml` and the catalog
+// tag `ml-IN` wrote separate directories before the tag naming, so a resume
+// that switches spelling must read the records the earlier run left.
+func TestRunStartReusesRawCodeWorkDir(t *testing.T) {
+	storage := t.TempDir()
+	writeProjectSource(t, storage, "dub-raw-code")
+	writeProjectRecord(t, storage, "dub-raw-code", "en-US", "ml")
+	writeSegmentRecordFile(t, storage, "dub-raw-code", filepath.Join("work", "ml"), "ml")
+
+	got := startedWorkDir(t, storage, "dub-raw-code", "ml-IN")
+	t.Logf("record in work/ml, resume language=ml-IN, work dir=%s", got)
+	if want := filepath.Join(storage, "dub-raw-code", "work", "ml"); got != want {
+		t.Errorf("recorded work dir = %q, want %q", got, want)
+	}
+}
+
+// startedWorkDir starts one run and returns the work directory its request
+// carried.
+func startedWorkDir(t *testing.T, storage, dubID, language string) string {
+	t.Helper()
+	recorded := make(chan api.RunRequest, 1)
+	runner := runFunc(func(context.Context, api.RunRequest, func(api.ProgressEvent)) (api.RunResult, error) {
+		return api.RunResult{}, nil
+	})
+	recorder := recordFunc(func(_ context.Context, req api.RunRequest, _ api.RunResult) error {
+		recorded <- req
+		return nil
+	})
+	base := newRunTestServer(t, api.ServerOptions{Runner: runner, Recorder: recorder, StorageDir: storage})
+
+	response := postRun(t, base, dubID, "language="+language)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", response.StatusCode)
+	}
+	select {
+	case req := <-recorded:
+		return req.WorkDir
+	case <-time.After(5 * time.Second):
+		t.Fatal("the recorder never saw the finished run")
+		return ""
+	}
+}
+
+// TestRunStartRejectsUnsafeLanguage proves a language that is not a safe path
+// segment answers 400 and starts no run. The language names a work directory,
+// so a separator must not escape the project directory.
+func TestRunStartRejectsUnsafeLanguage(t *testing.T) {
+	storage := t.TempDir()
+	writeProjectSource(t, storage, "dub-unsafe")
+	var calls atomic.Int64
+	runner := runFunc(func(context.Context, api.RunRequest, func(api.ProgressEvent)) (api.RunResult, error) {
+		calls.Add(1)
+		return api.RunResult{}, nil
+	})
+	base := newRunTestServer(t, api.ServerOptions{
+		Runner:     runner,
+		Recorder:   recordFunc(func(context.Context, api.RunRequest, api.RunResult) error { return nil }),
+		StorageDir: storage,
+	})
+
+	response := postRun(t, base, "dub-unsafe", "language=../escape")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", response.StatusCode)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("the runner started %d times for an unsafe language, want 0", calls.Load())
 	}
 }
 
@@ -394,6 +555,42 @@ func writeProjectSource(t *testing.T, storage, dubID string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "source.mp4"), []byte("source"), 0o644); err != nil {
 		t.Fatalf("write source video: %v", err)
+	}
+}
+
+// writeProjectRecord writes the upload record of one project. An empty source
+// language stands for a record written before T7.5b.
+func writeProjectRecord(t *testing.T, storage, dubID, sourceLanguage, language string) {
+	t.Helper()
+	record := map[string]string{
+		"id":              dubID,
+		"title":           "clip.mp4",
+		"source_language": sourceLanguage,
+		"language":        language,
+		"created_at":      "2026-09-09T00:00:00Z",
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal project record: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(storage, dubID, "project.json"), payload, 0o644); err != nil {
+		t.Fatalf("write project record: %v", err)
+	}
+}
+
+// writeSegmentRecordFile writes one resume record in a work directory.
+func writeSegmentRecordFile(t *testing.T, storage, dubID, workDir, language string) {
+	t.Helper()
+	dir := filepath.Join(storage, dubID, workDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create work directory: %v", err)
+	}
+	payload, err := json.Marshal(map[string]string{"language": language})
+	if err != nil {
+		t.Fatalf("marshal resume record: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "seg_1_result.json"), payload, 0o644); err != nil {
+		t.Fatalf("write resume record: %v", err)
 	}
 }
 

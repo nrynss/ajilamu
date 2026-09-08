@@ -187,7 +187,7 @@ func TestWorkspaceRouteServesAssembledDub(t *testing.T) {
 	handler := api.WorkspaceHandlerFrom(
 		readyWorkspaceReader(),
 		history,
-		func(string) (string, string, bool) { return "Creator video.mp4", "", true },
+		func(string) (string, string, string, bool) { return "Creator video.mp4", "", "", true },
 		nil,
 		nil,
 	)
@@ -263,7 +263,7 @@ func TestWorkspaceRouteServesEmptyDubForStoredProject(t *testing.T) {
 	handler := api.WorkspaceHandlerFrom(
 		reader,
 		nil,
-		func(string) (string, string, bool) { return "Fresh upload.mp4", "2026-09-03T00:00:00Z", true },
+		func(string) (string, string, string, bool) { return "Fresh upload.mp4", "2026-09-03T00:00:00Z", "", true },
 		nil,
 		nil,
 	)
@@ -306,7 +306,7 @@ func TestWorkspaceRouteAnswersNotFoundForUnknownProject(t *testing.T) {
 	handler := api.WorkspaceHandlerFrom(
 		&standInWorkspaceReader{},
 		nil,
-		func(string) (string, string, bool) { return "", "", false },
+		func(string) (string, string, string, bool) { return "", "", "", false },
 		nil,
 		nil,
 	)
@@ -377,7 +377,7 @@ func TestWorkspaceRouteDerivesReadiness(t *testing.T) {
 		{"every take fits", []api.LanguageTrack{fitting}, api.ReadinessReady},
 	} {
 		reader := &standInWorkspaceReader{tracks: test.tracks, languages: []string{"ml"}}
-		handler := api.WorkspaceHandlerFrom(reader, nil, func(string) (string, string, bool) { return "Title", "", true }, nil, nil)
+		handler := api.WorkspaceHandlerFrom(reader, nil, func(string) (string, string, string, bool) { return "Title", "", "", true }, nil, nil)
 		response := serveWorkspace(t, handler, "dub-1")
 		var dub api.Dub
 		decodeHistoryBody(t, response, &dub)
@@ -411,7 +411,7 @@ func TestWorkspaceReadinessNeedsATakeForEverySegment(t *testing.T) {
 		{"one rendered line for two segments", partial, api.ReadinessReview},
 		{"both segments rendered", complete, api.ReadinessReady},
 	} {
-		handler := api.WorkspaceHandlerFrom(test.reader, history(), func(string) (string, string, bool) { return "Title", "", true }, nil, nil)
+		handler := api.WorkspaceHandlerFrom(test.reader, history(), func(string) (string, string, string, bool) { return "Title", "", "", true }, nil, nil)
 		response := serveWorkspace(t, handler, "dub-1")
 		var dub api.Dub
 		raw := decodeHistoryBody(t, response, &dub)
@@ -449,7 +449,7 @@ func TestWorkspaceReadinessReportsRunningWhileARunHoldsTheDub(t *testing.T) {
 	} {
 		reader := &standInWorkspaceReader{tracks: test.tracks, languages: []string{"ml"}}
 		active := func(string) bool { return test.active }
-		handler := api.WorkspaceHandlerFrom(reader, nil, func(string) (string, string, bool) { return "Title", "", true }, active, nil)
+		handler := api.WorkspaceHandlerFrom(reader, nil, func(string) (string, string, string, bool) { return "Title", "", "", true }, active, nil)
 		response := serveWorkspace(t, handler, "dub-1")
 		var dub api.Dub
 		raw := decodeHistoryBody(t, response, &dub)
@@ -478,7 +478,7 @@ func TestWorkspaceRouteReportsRunningThroughTheServer(t *testing.T) {
 	})
 	base := newRunTestServer(t, api.ServerOptions{
 		Workspace:  readyWorkspaceReader(),
-		Project:    func(string) (string, string, bool) { return "Live project.mp4", "", true },
+		Project:    func(string) (string, string, string, bool) { return "Live project.mp4", "", "", true },
 		Runner:     runner,
 		Recorder:   recordFunc(func(context.Context, api.RunRequest, api.RunResult) error { return nil }),
 		StorageDir: storage,
@@ -575,5 +575,79 @@ func TestWorkspaceRouteFillsTimestampsFromUploadRecord(t *testing.T) {
 	t.Logf("response: %s", raw)
 	if dub.CreatedAt != stored.CreatedAt || dub.UpdatedAt != stored.CreatedAt {
 		t.Errorf("timestamps = %q / %q, want the record timestamp %q", dub.CreatedAt, dub.UpdatedAt, stored.CreatedAt)
+	}
+}
+
+// TestWorkspaceRouteCarriesStoredSourceLanguage proves the route serves the
+// film language the upload record stores, not the empty field T7.5 shipped.
+func TestWorkspaceRouteCarriesStoredSourceLanguage(t *testing.T) {
+	storage := t.TempDir()
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	video, err := form.CreateFormFile("video", "stored.mp4")
+	if err != nil {
+		t.Fatalf("create video part: %v", err)
+	}
+	if _, err := video.Write([]byte("video bytes")); err != nil {
+		t.Fatalf("write video part: %v", err)
+	}
+	if err := form.WriteField("source_language", "en-US"); err != nil {
+		t.Fatalf("write source language field: %v", err)
+	}
+	if err := form.WriteField("language", "ml-IN"); err != nil {
+		t.Fatalf("write language field: %v", err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatalf("close form: %v", err)
+	}
+	uploadRequest := httptest.NewRequest(http.MethodPost, "/api/dubs/new", &body)
+	uploadRequest.Header.Set("Content-Type", form.FormDataContentType())
+	uploadResponse := httptest.NewRecorder()
+	api.NewUploadHandler(storage).ServeHTTP(uploadResponse, uploadRequest)
+	if uploadResponse.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d, want 201: %s", uploadResponse.Code, uploadResponse.Body.String())
+	}
+	var upload struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(uploadResponse.Body).Decode(&upload); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+
+	reader := &standInWorkspaceReader{}
+	handler := api.WorkspaceHandlerFrom(reader, nil, api.UploadProjectLookup(storage), nil, nil)
+	response := serveWorkspace(t, handler, upload.ID)
+	var dub api.Dub
+	raw := decodeHistoryBody(t, response, &dub)
+	t.Logf("response: %s", raw)
+	if dub.SourceLanguage != "en-US" {
+		t.Errorf("source_language = %q, want en-US", dub.SourceLanguage)
+	}
+}
+
+// TestWorkspaceRouteLoadsRecordWithoutSourceLanguage proves a record written
+// before T7.5b still loads. It carries no source_language key at all.
+func TestWorkspaceRouteLoadsRecordWithoutSourceLanguage(t *testing.T) {
+	storage := t.TempDir()
+	dir := filepath.Join(storage, "older-record")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create project directory: %v", err)
+	}
+	record := []byte(`{"id":"older-record","title":"Older.mp4","language":"ml","created_at":"2026-09-01T00:00:00Z"}`)
+	if err := os.WriteFile(filepath.Join(dir, "project.json"), record, 0o644); err != nil {
+		t.Fatalf("write older record: %v", err)
+	}
+
+	reader := &standInWorkspaceReader{}
+	handler := api.WorkspaceHandlerFrom(reader, nil, api.UploadProjectLookup(storage), nil, nil)
+	response := serveWorkspace(t, handler, "older-record")
+	var dub api.Dub
+	raw := decodeHistoryBody(t, response, &dub)
+	t.Logf("response: %s", raw)
+	if dub.Title != "Older.mp4" {
+		t.Errorf("title = %q, want Older.mp4", dub.Title)
+	}
+	if dub.SourceLanguage != "" {
+		t.Errorf("source_language = %q, want empty", dub.SourceLanguage)
 	}
 }

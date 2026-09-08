@@ -34,6 +34,9 @@ func TestSampleHandlerCreatesListedProject(t *testing.T) {
 	if upload.Language != sampleLanguage {
 		t.Fatalf("language = %q, want %q", upload.Language, sampleLanguage)
 	}
+	if upload.SourceLanguage != sampleSourceLanguage {
+		t.Fatalf("source language = %q, want %q", upload.SourceLanguage, sampleSourceLanguage)
+	}
 	if upload.Video.Name != sampleTitle {
 		t.Fatalf("video name = %q, want %q", upload.Video.Name, sampleTitle)
 	}
@@ -69,6 +72,10 @@ func TestSampleHandlerCreatesListedProject(t *testing.T) {
 	}
 	if got := strings.Join(summaries[0].Languages, ","); got != sampleLanguage {
 		t.Fatalf("summary languages = %q, want %q", got, sampleLanguage)
+	}
+	record := readUploadRecord(t, storage, upload.ID)
+	if record.SourceLanguage != "en" || record.Language != "ml" {
+		t.Fatalf("stored sample languages = %q to %q, want en to ml", record.SourceLanguage, record.Language)
 	}
 }
 

@@ -405,13 +405,68 @@ type runLanguage struct {
 	name string
 }
 
-// createScreenLanguages maps the target language codes the create screen
-// offers today onto their BCP-47 tag and display name.
-//
-// Deletion point: T7.7 replaces this table with the fetched Cloud TTS
-// catalog, and the create screen sends a code the catalog already names.
+// createScreenLanguages maps the language codes the catalog serves onto their
+// BCP-47 tag and display name. The create screen sends catalog codes, so the
+// runner names the target and the source in words rather than in code. The
+// sample keeps the shorter spellings `ml` and `en`, which the spec mandates.
+// Any other well formed code falls back to itself, so the runner never
+// invents a name.
 var createScreenLanguages = map[string]runLanguage{
-	"ml": {tag: "ml-IN", name: "Malayalam"},
+	"ar-XA":  {tag: "ar-XA", name: "Arabic"},
+	"bg-BG":  {tag: "bg-BG", name: "Bulgarian"},
+	"bn-IN":  {tag: "bn-IN", name: "Bengali"},
+	"cmn-CN": {tag: "cmn-CN", name: "Mandarin Chinese"},
+	"cs-CZ":  {tag: "cs-CZ", name: "Czech"},
+	"da-DK":  {tag: "da-DK", name: "Danish"},
+	"de-DE":  {tag: "de-DE", name: "German"},
+	"el-GR":  {tag: "el-GR", name: "Greek"},
+	"en":     {tag: "en-US", name: "English"},
+	"en-AU":  {tag: "en-AU", name: "English"},
+	"en-GB":  {tag: "en-GB", name: "English"},
+	"en-IN":  {tag: "en-IN", name: "English"},
+	"en-US":  {tag: "en-US", name: "English"},
+	"es-ES":  {tag: "es-ES", name: "Spanish"},
+	"es-US":  {tag: "es-US", name: "Spanish"},
+	"et-EE":  {tag: "et-EE", name: "Estonian"},
+	"fi-FI":  {tag: "fi-FI", name: "Finnish"},
+	"fr-CA":  {tag: "fr-CA", name: "French"},
+	"fr-FR":  {tag: "fr-FR", name: "French"},
+	"gu-IN":  {tag: "gu-IN", name: "Gujarati"},
+	"he-IL":  {tag: "he-IL", name: "Hebrew"},
+	"hi-IN":  {tag: "hi-IN", name: "Hindi"},
+	"hr-HR":  {tag: "hr-HR", name: "Croatian"},
+	"hu-HU":  {tag: "hu-HU", name: "Hungarian"},
+	"id-ID":  {tag: "id-ID", name: "Indonesian"},
+	"it-IT":  {tag: "it-IT", name: "Italian"},
+	"ja-JP":  {tag: "ja-JP", name: "Japanese"},
+	"kn-IN":  {tag: "kn-IN", name: "Kannada"},
+	"ko-KR":  {tag: "ko-KR", name: "Korean"},
+	"lt-LT":  {tag: "lt-LT", name: "Lithuanian"},
+	"lv-LV":  {tag: "lv-LV", name: "Latvian"},
+	"ml":     {tag: "ml-IN", name: "Malayalam"},
+	"ml-IN":  {tag: "ml-IN", name: "Malayalam"},
+	"mr-IN":  {tag: "mr-IN", name: "Marathi"},
+	"nb-NO":  {tag: "nb-NO", name: "Norwegian"},
+	"nl-BE":  {tag: "nl-BE", name: "Dutch"},
+	"nl-NL":  {tag: "nl-NL", name: "Dutch"},
+	"pa-IN":  {tag: "pa-IN", name: "Punjabi"},
+	"pl-PL":  {tag: "pl-PL", name: "Polish"},
+	"pt-BR":  {tag: "pt-BR", name: "Portuguese"},
+	"ro-RO":  {tag: "ro-RO", name: "Romanian"},
+	"ru-RU":  {tag: "ru-RU", name: "Russian"},
+	"sk-SK":  {tag: "sk-SK", name: "Slovak"},
+	"sl-SI":  {tag: "sl-SI", name: "Slovenian"},
+	"sr-RS":  {tag: "sr-RS", name: "Serbian"},
+	"sv-SE":  {tag: "sv-SE", name: "Swedish"},
+	"sw-KE":  {tag: "sw-KE", name: "Swahili"},
+	"ta-IN":  {tag: "ta-IN", name: "Tamil"},
+	"te-IN":  {tag: "te-IN", name: "Telugu"},
+	"th-TH":  {tag: "th-TH", name: "Thai"},
+	"tr-TR":  {tag: "tr-TR", name: "Turkish"},
+	"uk-UA":  {tag: "uk-UA", name: "Ukrainian"},
+	"ur-IN":  {tag: "ur-IN", name: "Urdu"},
+	"vi-VN":  {tag: "vi-VN", name: "Vietnamese"},
+	"yue-HK": {tag: "yue-HK", name: "Cantonese"},
 }
 
 // resolveRunLanguage resolves the target language of one run. A code the
@@ -430,6 +485,21 @@ func resolveRunLanguage(code string) (runLanguage, error) {
 		return runLanguage{}, fmt.Errorf("the run cannot use %q as a target language: %w", code, err)
 	}
 	return runLanguage{tag: code, name: code}, nil
+}
+
+// resolveLanguageName names a language in words when the runner knows it.
+// Any other code falls back to itself, so the pipeline never receives an
+// invented name. An empty code stays empty, which the pipeline reads as an
+// unknown source language.
+func resolveLanguageName(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return ""
+	}
+	if known, ok := createScreenLanguages[code]; ok {
+		return known.name
+	}
+	return code
 }
 
 // pipelineRunner adapts the fit pipeline and the assembler onto api.PipelineRunner.
@@ -521,8 +591,7 @@ func (p *pipelineRunner) Run(ctx context.Context, req api.RunRequest, emit func(
 		Synthesizer:        synthesizer,
 		Language:           language.tag,
 		TargetLanguageName: language.name,
-		// SourceLanguageName stays empty until T7.5b carries the upload record.
-		SourceLanguageName: "",
+		SourceLanguageName: resolveLanguageName(req.SourceLanguage),
 		WorkDir:            req.WorkDir,
 		Recorder:           charges,
 		ProgressFn:         fit.ProgressFunc(emit),

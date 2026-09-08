@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	sampleLanguage = "ml"
-	sampleTitle    = "NASA 75-second clip"
+	sampleSourceLanguage = "en"
+	sampleLanguage       = "ml"
+	sampleTitle          = "NASA 75-second clip"
 )
 
 // SampleHandler creates a durable project from the committed NASA clip.
@@ -78,8 +79,9 @@ func (h *SampleHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	upload := Upload{
-		ID:       id,
-		Language: sampleLanguage,
+		ID:             id,
+		SourceLanguage: sampleSourceLanguage,
+		Language:       sampleLanguage,
 		Video: UploadFile{
 			Name:  name,
 			Path:  videoPath,

@@ -27,9 +27,10 @@ type WorkspaceReader interface {
 }
 
 // ProjectLookup returns the stored upload record for one project id.
-// It reports the title and the record creation time. The last result is
-// false when no upload record exists.
-type ProjectLookup func(id string) (title, createdAt string, ok bool)
+// It reports the title, the record creation time, and the stored source
+// language. The last result is false when no upload record exists. A record
+// written before T7.5b carries no source language, so that value is empty.
+type ProjectLookup func(id string) (title, createdAt, sourceLanguage string, ok bool)
 
 // RunActive reports whether a run is in flight for one project id.
 // The server supplies it from the run registry, which this package does
@@ -112,9 +113,10 @@ func assembleWorkspace(ctx context.Context, reader WorkspaceReader, history Hist
 
 	title := ""
 	recordCreatedAt := ""
+	sourceLanguage := ""
 	stored := false
 	if lookup != nil {
-		title, recordCreatedAt, stored = lookup(dubID)
+		title, recordCreatedAt, sourceLanguage, stored = lookup(dubID)
 	}
 	if !stored && len(commits) == 0 && len(languages) == 0 && len(tracks) == 0 {
 		return nil, nil
@@ -134,16 +136,17 @@ func assembleWorkspace(ctx context.Context, reader WorkspaceReader, history Hist
 		updatedAt = recordCreatedAt
 	}
 	return &Dub{
-		ID:        dubID,
-		Title:     title,
-		Readiness: workspaceReadiness(tracks, segments, running),
-		Segments:  segments,
-		Languages: tracks,
-		Charges:   wholePass,
-		Total:     total,
-		Commits:   commits,
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
+		ID:             dubID,
+		Title:          title,
+		SourceLanguage: sourceLanguage,
+		Readiness:      workspaceReadiness(tracks, segments, running),
+		Segments:       segments,
+		Languages:      tracks,
+		Charges:        wholePass,
+		Total:          total,
+		Commits:        commits,
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
 	}, nil
 }
 
@@ -232,22 +235,23 @@ func workspaceReadiness(tracks []LanguageTrack, segments []Segment, running bool
 }
 
 // UploadProjectLookup reads the stored upload record for one project id.
-// It returns the same title and timestamp ListUploadSummaries reads, so the
-// workspace and the index agree on a stored project.
+// It returns the same title, source language, and timestamp
+// ListUploadSummaries reads, so the workspace and the index agree on a stored
+// project.
 func UploadProjectLookup(storageDir string) ProjectLookup {
-	return func(id string) (string, string, bool) {
+	return func(id string) (string, string, string, bool) {
 		if storageDir == "" || !safeProjectID(id) {
-			return "", "", false
+			return "", "", "", false
 		}
 		payload, err := os.ReadFile(filepath.Join(storageDir, id, uploadRecordName))
 		if err != nil {
-			return "", "", false
+			return "", "", "", false
 		}
 		var record uploadRecord
 		if err := json.Unmarshal(payload, &record); err != nil || record.ID == "" {
-			return "", "", false
+			return "", "", "", false
 		}
-		return record.Title, record.CreatedAt, true
+		return record.Title, record.CreatedAt, record.SourceLanguage, true
 	}
 }
 
