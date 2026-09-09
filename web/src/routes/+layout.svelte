@@ -142,7 +142,15 @@
 </svelte:head>
 
 <header class="chrome">
-  <a class="brand" href="/" aria-label="Ajilamu projects">Ajilamu</a>
+  <a class="brand" href="/" aria-label="Ajilamu projects">
+    <img
+      class="wordmark"
+      src={theme === "dark" ? "/brand/original-dark.svg" : "/brand/original-light.svg"}
+      alt=""
+      width="589"
+      height="194"
+    />
+  </a>
   {#if chromeStatus}
     <div class="project-status {chromeStatusClass}" aria-label="Workspace readiness">
       <span class="status-dot" aria-hidden="true"></span>
@@ -175,10 +183,14 @@
   }
 
   .brand {
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: -0.01em;
+    display: block;
     text-decoration: none;
+  }
+
+  .wordmark {
+    display: block;
+    height: 26px;
+    width: auto;
   }
 
   .project-status {
