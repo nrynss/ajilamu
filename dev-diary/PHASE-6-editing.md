@@ -382,7 +382,7 @@ requires:   T6.7, T5.7
 fixture-ok: yes
 size:       S · mid
 owns:       web/src/routes/d/[id]/+page.svelte, web/src/lib/fixture.ts
-status:     blocked
+status:     done
 ```
 The P6 close review recorded this in its notes. The fixture dub at `/d/fixture` has no ledger,
 so every boundary drag, speaker change, text edit and command confirmation posts to
@@ -937,5 +937,22 @@ Fresh review `adversarial-review/t6.6a-round1.md` approves with zero findings at
 An independent real-agent HTTP probe measured two model calls, one MCP read and zero writer calls.
 Its token arithmetic reconciled to 16650 nanodollars. Startup probes and scoped Go and Node 26 checks passed.
 
-T6.6b remains unstarted until T6.7a passes its required durable-ledger acceptance check and
-lands. That task retains ownership of the shared workspace page.
+T6.6b stayed unstarted until T6.7a landed. The workspace page is now free.
+
+### T6.7a landed 2026-09-09
+
+The fixture workspace is read-only. `isFixtureID` disables the four editor fieldsets and
+shows `This offline fixture cannot save an edit.` No edit request leaves `/d/fixture`.
+A real project still writes one T6.7 commit on a boundary drag.
+
+Fresh review `adversarial-review/t6.7a-round2.md` approves with zero findings at every
+severity. Round 1's blocker B1 is closed. SQL before a trusted drag read 1 commit, 0
+actions and 3 snapshots. SQL after read 2 commits, 1 `boundary_nudged` action and the
+changed bounds. A reload kept `0:00.000 to 0:01.500`. All three fixture aliases sent
+zero non-GET requests.
+
+The workspace page is free. T6.6b can start.
+
+Two notes sit outside this task. The fixture page still posts `/api/dubs/fixture/run`.
+The four sentences also move a picture-area collapse that base already hits at a
+shorter viewport. Neither is a T6.7a finding.

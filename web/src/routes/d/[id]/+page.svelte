@@ -111,7 +111,10 @@
   const runStartFailedSentence = "We could not reach the server, so the dubbing run did not start."
   const runStartGenericSentence = "The dubbing run did not start, so nothing is processing."
 
+  const fixtureReadOnlySentence = "This offline fixture cannot save an edit."
+
   let projectID = $derived(page.params.id ?? "fixture")
+  let readOnly = $derived(isFixtureID(projectID))
   let initialDub: Dub | undefined
   let initialState: PanelViewState
   if (page.url.searchParams.get("panel") === "loading") {
@@ -305,6 +308,7 @@
   }
 
   async function handleBoundaryChange(change: BoundaryChange): Promise<void> {
+    if (readOnly) return
     if (!dub) return
     commandPreview = undefined
     lineNote = ""
@@ -329,6 +333,7 @@
   // recordEdit sends one confirmed edit to the ledger write path. It returns
   // the saved segment, or an honest sentence when the write failed.
   async function recordEdit(request: EditRequest): Promise<{ segment: EditSegment } | { error: string }> {
+    if (readOnly) return { error: fixtureReadOnlySentence }
     const body: Record<string, unknown> = { kind: request.kind, language: request.language }
     if (request.segmentId !== undefined) body.segment_id = request.segmentId
     if (request.startMs !== undefined) body.start_ms = request.startMs
@@ -398,6 +403,7 @@
   }
 
   async function handleSpeakerChange(change: SpeakerChange): Promise<SpeakerChangeResult> {
+    if (readOnly) return { error: fixtureReadOnlySentence }
     const currentDub = dub
     if (!currentDub) return { error: "This workspace is not ready for a re-render." }
     commandPreview = undefined
@@ -420,6 +426,7 @@
   }
 
   async function rerenderLine(request: LineRerenderRequest): Promise<TextRerenderReply> {
+    if (readOnly) return { error: fixtureReadOnlySentence }
     const currentDub = dub
     if (!currentDub) return { error: "This workspace is not ready for a re-render." }
     if (!request.language) return { error: "This project has no target language, so the line cannot re-render." }
@@ -548,6 +555,7 @@
   }
 
   async function previewCommand(command: string): Promise<CommandIntent | CommandParseFailure> {
+    if (readOnly) return { error: fixtureReadOnlySentence }
     const currentDub = dub
     if (!currentDub) return { error: "This timeline is not ready for editing." }
 
@@ -574,6 +582,7 @@
   }
 
   async function confirmCommand(intent: CommandIntent): Promise<void> {
+    if (readOnly) return
     const currentDub = dub
     const previewResult = commandPreview
     if (!currentDub || !previewResult || previewResult.command !== intent.command) {
@@ -928,31 +937,43 @@
         {/if}
 
         <section class="editor" aria-label="Timeline editor">
-          <CommandBar bind:this={commandBar} parse={previewCommand} onconfirm={confirmCommand} />
+          <fieldset class="edit-control" disabled={readOnly} aria-label="Editor command" aria-describedby={readOnly ? "command-read-only" : undefined}>
+            {#if readOnly}<p class="read-only-note" id="command-read-only">{fixtureReadOnlySentence}</p>{/if}
+            <CommandBar bind:this={commandBar} parse={previewCommand} onconfirm={confirmCommand} />
+          </fieldset>
           {#if selectedRow}
             <div class="editor-panels">
-              {#key boundaryRevision}
-                <Boundary
+              <fieldset class="edit-control" disabled={readOnly} aria-label="Line boundary" aria-describedby={readOnly ? "boundary-read-only" : undefined}>
+                {#if readOnly}<p class="read-only-note" id="boundary-read-only">{fixtureReadOnlySentence}</p>{/if}
+                {#key boundaryRevision}
+                  <Boundary
+                    segment={selectedRow.segment}
+                    segments={dub.segments}
+                    takes={selectedRow.line?.takes ?? []}
+                    timelineDurationMs={sharedPictureDurationMs}
+                    onchange={handleBoundaryChange}
+                  />
+                {/key}
+              </fieldset>
+              <fieldset class="edit-control" disabled={readOnly} aria-label="Line speaker" aria-describedby={readOnly ? "speaker-read-only" : undefined}>
+                {#if readOnly}<p class="read-only-note" id="speaker-read-only">{fixtureReadOnlySentence}</p>{/if}
+                <Speaker
                   segment={selectedRow.segment}
                   segments={dub.segments}
                   takes={selectedRow.line?.takes ?? []}
-                  timelineDurationMs={sharedPictureDurationMs}
-                  onchange={handleBoundaryChange}
+                  onchange={handleSpeakerChange}
                 />
-              {/key}
-              <Speaker
-                segment={selectedRow.segment}
-                segments={dub.segments}
-                takes={selectedRow.line?.takes ?? []}
-                onchange={handleSpeakerChange}
-              />
-              <Text
-                segment={selectedRow.segment}
-                line={selectedRow.line}
-                language={activeLanguage}
-                sourceLanguage={dub.source_language}
-                onrerender={rerenderLine}
-              />
+              </fieldset>
+              <fieldset class="edit-control text-control" disabled={readOnly} aria-label="Line text" aria-describedby={readOnly ? "text-read-only" : undefined}>
+                {#if readOnly}<p class="read-only-note" id="text-read-only">{fixtureReadOnlySentence}</p>{/if}
+                <Text
+                  segment={selectedRow.segment}
+                  line={selectedRow.line}
+                  language={activeLanguage}
+                  sourceLanguage={dub.source_language}
+                  onrerender={rerenderLine}
+                />
+              </fieldset>
             </div>
           {/if}
           {#if selectedRow}
@@ -1247,7 +1268,27 @@
     padding: 12px 16px;
   }
 
-  .editor-panels :global(.text-editor) {
+  .edit-control {
+    border: 0;
+    margin: 0;
+    min-width: 0;
+    padding: 0;
+  }
+
+  .edit-control:disabled :global(button),
+  .edit-control:disabled :global(input),
+  .edit-control:disabled :global(textarea) {
+    pointer-events: none;
+  }
+
+  .read-only-note {
+    color: var(--dim);
+    font-size: 11.5px;
+    margin: 0;
+    padding: 8px 12px;
+  }
+
+  .text-control {
     grid-column: 1 / -1;
   }
 
