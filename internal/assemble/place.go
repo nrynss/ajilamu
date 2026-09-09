@@ -3,6 +3,7 @@ package assemble
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -36,6 +37,30 @@ const Crossfade = 40 * time.Millisecond
 
 // voicedFloor treats samples below about -40 dB as silence.
 const voicedFloor = 0.01
+
+// ErrClipOutsideBed reports a clip whose start lies at or past the bed end.
+// The assembler refuses such a clip because it has no position on the bed.
+// The caller decides what that refusal means for the run.
+var ErrClipOutsideBed = errors.New("clip starts after the bed")
+
+// OutsideBedError names every clip the bed cannot hold.
+type OutsideBedError struct {
+	// SegmentIDs lists the clips that start at or past the bed end.
+	SegmentIDs []int
+}
+
+// Error names the refused clips. A single clip keeps the original sentence.
+func (e *OutsideBedError) Error() string {
+	if len(e.SegmentIDs) == 1 {
+		return fmt.Sprintf("segment %d starts after the bed", e.SegmentIDs[0])
+	}
+	return fmt.Sprintf("segments %v start after the bed", e.SegmentIDs)
+}
+
+// Is matches the sentinel, so errors.Is reports the refusal kind.
+func (e *OutsideBedError) Is(target error) bool {
+	return target == ErrClipOutsideBed
+}
 
 // Clip is one take and the segment that owns its slot.
 type Clip struct {
@@ -99,6 +124,9 @@ func (b Bed) Place(ctx context.Context, clips []Clip, output string) (Placement,
 	if err != nil {
 		return Placement{}, err
 	}
+	if outside := clipsOutsideBed(sorted, b.Format.SampleRate, bedFrames); len(outside) > 0 {
+		return Placement{}, &OutsideBedError{SegmentIDs: outside}
+	}
 	work, err := os.MkdirTemp(filepath.Dir(output), ".assemble-place-*")
 	if err != nil {
 		return Placement{}, err
@@ -121,9 +149,6 @@ func (b Bed) Place(ctx context.Context, clips []Clip, output string) (Placement,
 		}
 		voiced := voicedFrames(samples, b.Format.Channels)
 		delay := msFrames(clip.Segment.StartMs, b.Format.SampleRate)
-		if delay >= bedFrames {
-			return Placement{}, fmt.Errorf("segment %d starts after the bed", clip.Segment.ID)
-		}
 		next := bedFrames
 		if i+1 < len(sorted) {
 			next = msFrames(sorted[i+1].Segment.StartMs, b.Format.SampleRate)
@@ -405,6 +430,18 @@ func clipFiles(clips []Clip) []string {
 
 func msFrames(ms int64, rate int) int {
 	return int(math.Round(float64(ms) * float64(rate) / 1000.0))
+}
+
+// clipsOutsideBed returns the ids of clips that start at or past the bed end.
+// msFrames rounds like the placement loop, so the guard and the mix agree.
+func clipsOutsideBed(sorted []Clip, rate, bedFrames int) []int {
+	var outside []int
+	for _, clip := range sorted {
+		if msFrames(clip.Segment.StartMs, rate) >= bedFrames {
+			outside = append(outside, clip.Segment.ID)
+		}
+	}
+	return outside
 }
 
 func framesFor(d time.Duration, rate int) int {

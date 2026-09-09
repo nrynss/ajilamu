@@ -2362,3 +2362,112 @@ func TestPipelineDiscardsOrphanLaterAttemptTakesWithoutRecord(t *testing.T) {
 		})
 	}
 }
+
+// TestPipelineFlagsSegmentOutsideFilm proves one bad segmentation never
+// fails the run. A segment that starts past the film is flagged and never
+// rendered. A segment that ends past the film is clamped and flagged. The
+// run still finishes with the placeable lines.
+func TestPipelineFlagsSegmentOutsideFilm(t *testing.T) {
+	workDir := t.TempDir()
+	segments := []types.Segment{
+		{ID: 1, StartMs: 0, EndMs: 2000, Text: "first", Speaker: types.Speaker{Name: "Suni Williams"}, Emotion: "Warm"},
+		{ID: 2, StartMs: 106420, EndMs: 114880, Text: "past the film", Speaker: types.Speaker{Name: "Suni Williams"}, Emotion: "Calm"},
+		{ID: 3, StartMs: 5000, EndMs: 9000, Text: "ends past the film", Speaker: types.Speaker{Name: "Suni Williams"}, Emotion: "Warm"},
+	}
+
+	ledger := cost.NewLedger()
+	trans := newMockPipelineTranslator(ledger)
+	synth := newMockPipelineSynthesizer("", ledger)
+	synth.durations[1] = []time.Duration{2 * time.Second}
+	synth.durations[3] = []time.Duration{3 * time.Second}
+
+	collector := &eventCollector{}
+	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+		Segments:           segments,
+		SourceDuration:     8 * time.Second,
+		Translator:         trans,
+		Synthesizer:        synth,
+		WorkDir:            workDir,
+		Recorder:           ledger,
+		Listener:           collector,
+	}
+
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunPipeline failed: %v", err)
+	}
+
+	if len(res.FlaggedSegments) != 2 || res.FlaggedSegments[0] != 2 || res.FlaggedSegments[1] != 3 {
+		t.Fatalf("flagged segments = %v, want [2 3]", res.FlaggedSegments)
+	}
+
+	outside, ok := res.Line(2)
+	if !ok {
+		t.Fatal("missing line 2 in results")
+	}
+	if !outside.Flagged || len(outside.Attempts) != 0 || outside.ChosenTake.File != "" {
+		t.Errorf("line 2 = flagged %t attempts %d take %q, want flagged with no take",
+			outside.Flagged, len(outside.Attempts), outside.ChosenTake.File)
+	}
+
+	clamped, ok := res.Line(3)
+	if !ok {
+		t.Fatal("missing line 3 in results")
+	}
+	if !clamped.Flagged {
+		t.Error("line 3 = unflagged, want a flagged clamped line")
+	}
+	if clamped.Segment.EndMs != 8000 {
+		t.Errorf("line 3 end = %dms, want the film end 8000ms", clamped.Segment.EndMs)
+	}
+	if len(clamped.Attempts) != 1 {
+		t.Errorf("line 3 attempts = %d, want one rendered attempt", len(clamped.Attempts))
+	}
+
+	first, ok := res.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in results")
+	}
+	if first.Flagged || len(first.Attempts) != 1 {
+		t.Errorf("line 1 = flagged %t attempts %d, want an unaffected single attempt",
+			first.Flagged, len(first.Attempts))
+	}
+
+	if len(res.Segments) != 3 || res.Segments[2].EndMs != 8000 {
+		t.Errorf("result segments = %+v, want the clamped film end on line 3", res.Segments)
+	}
+
+	for _, req := range synth.requests {
+		if req.SegmentID == 2 {
+			t.Errorf("synthesizer rendered the excluded line 2 at %s", req.OutPath)
+		}
+	}
+	if len(synth.requests) != 2 {
+		t.Errorf("synthesizer calls = %d, want 2 for the placeable lines", len(synth.requests))
+	}
+	for _, charge := range ledger.Charges() {
+		if charge.TakeID == 2 {
+			t.Errorf("line 2 billed a %s charge despite exclusion", charge.Kind)
+		}
+	}
+
+	events := collector.Events()
+	last := events[len(events)-1]
+	if last.Type != api.EventDone {
+		t.Fatalf("last event type = %s, want done", last.Type)
+	}
+	if !strings.Contains(last.Sentence, "2 flagged lines") {
+		t.Errorf("done sentence = %q, want two flagged lines", last.Sentence)
+	}
+	named := false
+	for _, event := range events {
+		if event.SegmentID == 2 && strings.Contains(event.Sentence, "outside the film") {
+			named = true
+		}
+	}
+	if !named {
+		t.Error("no event named the excluded line")
+	}
+}

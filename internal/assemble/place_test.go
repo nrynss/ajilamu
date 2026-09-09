@@ -2,6 +2,7 @@ package assemble
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"os/exec"
@@ -412,4 +413,39 @@ func silenceIntervals(t *testing.T, path string) [][2]float64 {
 		}
 	}
 	return intervals
+}
+
+// TestPlaceRefusesClipOutsideBed proves the assembler still refuses a clip
+// that starts past the bed. The refusal is typed and names the clip, so a
+// caller can drop that clip and finish the run instead of failing it.
+func TestPlaceRefusesClipOutsideBed(t *testing.T) {
+	dir := t.TempDir()
+	bed := synthBed(t, dir, 1)
+	take := synthTone(t, filepath.Join(dir, "take.wav"), 440, 0.2)
+	inside := Clip{Segment: types.Segment{ID: 1, StartMs: 0, EndMs: 200}, File: take}
+	outside := Clip{Segment: types.Segment{ID: 2, StartMs: 1500, EndMs: 2000}, File: take}
+
+	output := filepath.Join(dir, "speech.wav")
+	_, err := bed.Place(t.Context(), []Clip{inside, outside}, output)
+	if !errors.Is(err, ErrClipOutsideBed) {
+		t.Fatalf("Place error = %v, want ErrClipOutsideBed", err)
+	}
+	var refused *OutsideBedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("Place error = %T, want *OutsideBedError", err)
+	}
+	if len(refused.SegmentIDs) != 1 || refused.SegmentIDs[0] != 2 {
+		t.Fatalf("refused segments = %v, want [2]", refused.SegmentIDs)
+	}
+	if got, want := err.Error(), "segment 2 starts after the bed"; got != want {
+		t.Fatalf("Place sentence = %q, want %q", got, want)
+	}
+
+	placed, err := bed.Place(t.Context(), []Clip{inside}, output)
+	if err != nil {
+		t.Fatalf("Place without the refused clip: %v", err)
+	}
+	if len(placed.Events) != 1 || placed.Events[0].SegmentID != 1 {
+		t.Fatalf("placed events = %+v, want segment 1 alone", placed.Events)
+	}
 }

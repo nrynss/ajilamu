@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nrynss/ajilamu/internal/api"
 	"github.com/nrynss/ajilamu/internal/cost"
@@ -375,6 +376,11 @@ type PipelineConfig struct {
 
 	// Segments provides pre-segmented dialogue lines when Segmenter is omitted.
 	Segments []types.Segment
+
+	// SourceDuration is the length of the source film. The loop flags a
+	// segment that lies outside it and renders nothing for that segment.
+	// Zero means the length is unknown, so the loop validates no segment.
+	SourceDuration time.Duration
 
 	// Translator converts dialogue lines into the target language.
 	Translator gemini.Translator
@@ -858,9 +864,35 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 		return nil, ErrNoSegments
 	}
 
+	// A segment outside the film cannot be placed. The loop flags such a
+	// segment and renders nothing for it, so one bad segmentation never
+	// fails the run. A segment that starts inside the film but ends past
+	// it is clamped to the film end and flagged.
+	filmMs := p.cfg.SourceDuration.Milliseconds()
+	outside := make(map[int]bool)
+	clamped := make(map[int]bool)
+	if filmMs > 0 {
+		// Copy first, so the caller's segment slice keeps its own bounds.
+		bounded := make([]types.Segment, len(segments))
+		copy(bounded, segments)
+		segments = bounded
+		for i := range segments {
+			switch {
+			case segments[i].StartMs >= filmMs:
+				outside[segments[i].ID] = true
+			case segments[i].EndMs > filmMs:
+				clamped[segments[i].ID] = true
+				segments[i].EndMs = filmMs
+			}
+		}
+	}
+
 	// Verify distinct speaker voice assignments.
 	assignedVoices := make(map[string]tts.Voice)
 	for _, seg := range segments {
+		if outside[seg.ID] {
+			continue
+		}
 		if seg.Speaker.Name == "" {
 			err := fmt.Errorf("%w: segment %d", ErrMissingSpeaker, seg.ID)
 			emitter.emit(api.ProgressEvent{
@@ -954,6 +986,22 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 			return nil, err
 		}
 
+		if outside[seg.ID] {
+			flaggedIDs = append(flaggedIDs, seg.ID)
+			results = append(results, LineResult{
+				Segment:          seg,
+				Flagged:          true,
+				NotificationCopy: fmt.Sprintf("Line %d lies outside the film and needs creator review.", seg.ID),
+			})
+			emitter.emit(api.ProgressEvent{
+				Type:      api.EventProgress,
+				Stage:     api.StageSegmenting,
+				Sentence:  fmt.Sprintf("Line %d lies outside the film, so the run left it out and flagged it.", seg.ID),
+				SegmentID: seg.ID,
+			})
+			continue
+		}
+
 		rewriteCfg := RewriteConfig{
 			Translator:  wrappedTranslator,
 			Synthesizer: wrappedSynthesizer,
@@ -963,7 +1011,7 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 			MaxAttempts: p.cfg.MaxAttempts,
 		}
 
-		res, err := p.repairSegment(ctx, seg, rewriteCfg)
+		res, err := p.repairSegment(ctx, seg, rewriteCfg, clamped[seg.ID])
 		if err != nil {
 			emitter.emit(api.ProgressEvent{
 				Type:      api.EventError,
@@ -1036,7 +1084,9 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 // synthesis that produced it. Every other recorded line replays its stored
 // result, because RepairLine cannot consume that take. A line with no usable
 // record renders fresh after the loop clears every take that no record owns.
-func (p *Pipeline) repairSegment(ctx context.Context, seg types.Segment, cfg RewriteConfig) (LineResult, error) {
+// A clamped line ends past the film, so the loop flags it after the repair
+// and stores that flag in the resume record.
+func (p *Pipeline) repairSegment(ctx context.Context, seg types.Segment, cfg RewriteConfig, clamped bool) (LineResult, error) {
 	attempts := cfg.MaxAttempts
 	if attempts <= 0 {
 		attempts = DefaultMaxAttempts
@@ -1060,6 +1110,15 @@ func (p *Pipeline) repairSegment(ctx context.Context, seg types.Segment, cfg Rew
 	res, err := RepairLine(ctx, seg, cfg)
 	if err != nil {
 		return LineResult{}, err
+	}
+	if clamped {
+		res.Flagged = true
+		note := fmt.Sprintf("Line %d ends past the film, so the run clamped it to the film end.", seg.ID)
+		if res.NotificationCopy == "" {
+			res.NotificationCopy = note
+		} else {
+			res.NotificationCopy = note + " " + res.NotificationCopy
+		}
 	}
 	if p.cfg.WorkDir != "" {
 		if err := writeSegmentRecord(p.cfg.WorkDir, p.cfg.Language, res); err != nil {

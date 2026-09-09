@@ -26,6 +26,7 @@ import (
 	"github.com/nrynss/ajilamu/internal/fixtures"
 	"github.com/nrynss/ajilamu/internal/gemini"
 	"github.com/nrynss/ajilamu/internal/ledger"
+	"github.com/nrynss/ajilamu/internal/media"
 	"github.com/nrynss/ajilamu/internal/tts"
 )
 
@@ -627,6 +628,10 @@ func (p *pipelineRunner) Run(ctx context.Context, req api.RunRequest, emit func(
 	if err != nil {
 		return api.RunResult{}, fmt.Errorf("read the source video: %w", err)
 	}
+	film, err := media.Duration(ctx, req.Source)
+	if err != nil {
+		return api.RunResult{}, fmt.Errorf("probe the source duration: %w", err)
+	}
 	emit(api.ProgressEvent{
 		Type:     api.EventProgress,
 		Stage:    api.StageSegmenting,
@@ -636,6 +641,7 @@ func (p *pipelineRunner) Run(ctx context.Context, req api.RunRequest, emit func(
 	result, err := fit.RunPipeline(ctx, fit.PipelineConfig{
 		Segmenter:          p.segmenter,
 		InputMedia:         &gemini.Input{Data: source, MIMEType: mediaType(req.Source)},
+		SourceDuration:     film,
 		Translator:         p.translator,
 		Synthesizer:        synthesizer,
 		Language:           language.tag,
@@ -815,7 +821,7 @@ func assembleRun(ctx context.Context, req api.RunRequest, result *fit.PipelineRe
 		Language:         req.Language,
 		TotalNanodollars: result.TotalCost,
 	})
-	placement, err := bed.Place(ctx, clips, filepath.Join(req.WorkDir, "speech.wav"))
+	placement, err := placeTakes(ctx, bed, clips, filepath.Join(req.WorkDir, "speech.wav"), result, emit, req.Language)
 	if err != nil {
 		return fmt.Errorf("place the takes: %w", err)
 	}
@@ -841,6 +847,71 @@ func assembleRun(ctx context.Context, req api.RunRequest, result *fit.PipelineRe
 		return fmt.Errorf("export the dubbed film: %w", err)
 	}
 	return nil
+}
+
+// placeTakes places the clips and drops any clip the bed refuses.
+// The bed refuses a clip that starts at or past its end, which is correct.
+// One bad segmentation must not fail the run, so the loop drops that clip,
+// flags its line, and places the rest. The workspace still names the line.
+func placeTakes(ctx context.Context, bed assemble.Bed, clips []assemble.Clip, output string, result *fit.PipelineResult, emit func(api.ProgressEvent), language string) (assemble.Placement, error) {
+	dropped := make(map[int]bool, len(clips))
+	for {
+		placement, err := bed.Place(ctx, clips, output)
+		if err == nil {
+			return placement, nil
+		}
+		var outside *assemble.OutsideBedError
+		if !errors.As(err, &outside) {
+			return assemble.Placement{}, err
+		}
+		progressed := false
+		for _, id := range outside.SegmentIDs {
+			if dropped[id] {
+				continue
+			}
+			dropped[id] = true
+			progressed = true
+			clips = dropClip(clips, id)
+			flagLine(result, id)
+			emit(api.ProgressEvent{
+				Type:             api.EventProgress,
+				Stage:            api.StageAssembling,
+				Sentence:         fmt.Sprintf("Line %d lies outside the film, so the mix leaves it out.", id),
+				SegmentID:        id,
+				Language:         language,
+				TotalNanodollars: result.TotalCost,
+			})
+		}
+		if !progressed {
+			return assemble.Placement{}, err
+		}
+	}
+}
+
+// dropClip removes one segment's clip from the placement list.
+func dropClip(clips []assemble.Clip, segmentID int) []assemble.Clip {
+	kept := clips[:0]
+	for _, clip := range clips {
+		if clip.Segment.ID != segmentID {
+			kept = append(kept, clip)
+		}
+	}
+	return kept
+}
+
+// flagLine adds one segment to the run's flagged list once and marks its line.
+func flagLine(result *fit.PipelineResult, segmentID int) {
+	for i := range result.Lines {
+		if result.Lines[i].Segment.ID == segmentID {
+			result.Lines[i].Flagged = true
+		}
+	}
+	for _, id := range result.FlaggedSegments {
+		if id == segmentID {
+			return
+		}
+	}
+	result.FlaggedSegments = append(result.FlaggedSegments, segmentID)
 }
 
 // peakReader sketches one take file for the timeline.

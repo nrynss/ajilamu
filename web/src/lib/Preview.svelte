@@ -253,7 +253,11 @@
     background: var(--sunken);
     border-radius: var(--radius-container);
     box-shadow: 0 8px 22px rgb(0 0 0 / 12%);
+    height: clamp(160px, 30vh, 420px);
+    margin-inline: auto;
+    max-width: 100%;
     overflow: hidden;
+    width: auto;
   }
 
   video {

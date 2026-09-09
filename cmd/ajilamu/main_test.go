@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +27,7 @@ import (
 
 	"github.com/nrynss/ajilamu/internal/agent"
 	"github.com/nrynss/ajilamu/internal/api"
+	"github.com/nrynss/ajilamu/internal/assemble"
 	"github.com/nrynss/ajilamu/internal/config"
 	"github.com/nrynss/ajilamu/internal/cost"
 	"github.com/nrynss/ajilamu/internal/fit"
@@ -1928,5 +1932,234 @@ func TestLineCostStoresEveryAttempt(t *testing.T) {
 	}
 	if singleLine := workspaceLine(t, tracks, 2); len(singleLine.Takes) != 1 {
 		t.Errorf("workspace line 2 takes = %d, want 1", len(singleLine.Takes))
+	}
+}
+
+// TestRunFlagsSegmentOutsideFilm proves the live failure cannot repeat. A
+// stubbed segmenter returns one line past the source film, and the run still
+// reaches done, flags that line, exports the film, and persists the placeable
+// takes and their charges. Before the fix the same run failed with
+// "starts after the bed" and persisted nothing.
+func TestRunFlagsSegmentOutsideFilm(t *testing.T) {
+	storage := t.TempDir()
+	const dubID = "dub-out-of-range"
+	projectDir := filepath.Join(storage, dubID)
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("create project directory: %v", err)
+	}
+	source := filepath.Join(projectDir, "source.mp4")
+	synthAssemblyFilm(t, source)
+
+	router := &chargeRouter{}
+	segmenter := &chargeWiringSegmenter{rec: router, segments: []types.Segment{
+		{ID: 1, StartMs: 0, EndMs: 2000, Text: "source one", Speaker: types.Speaker{Name: "Suni Williams"}},
+		{ID: 2, StartMs: 106420, EndMs: 114880, Text: "past the film", Speaker: types.Speaker{Name: "Suni Williams"}},
+	}}
+	translator := &chargeWiringTranslator{rec: router}
+	runner := newChargeRoutedRunner(router, segmenter, translator,
+		func(_ string, rec tts.ChargeRecorder) (tts.Synthesizer, error) {
+			return &chargeWiringSynthesizer{rec: rec}, nil
+		})
+
+	client, captured := standInClickHouse(t, "")
+	defer client.Close()
+	recorder := newRunRecorder(client, "gemini-3.8-flash", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	var logs bytes.Buffer
+	server, err := api.NewServer(&config.Config{Env: "development"}, api.ServerOptions{
+		Runner:     runner,
+		Recorder:   recorder,
+		StorageDir: storage,
+		Logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	response, err := http.Post(httpServer.URL+"/api/dubs/"+dubID+"/run?language=ml", "text/plain", nil)
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", response.StatusCode)
+	}
+
+	streamResponse, err := http.Get(httpServer.URL + "/api/dubs/" + dubID + "/events")
+	if err != nil {
+		t.Fatalf("read event stream: %v", err)
+	}
+	stream, err := io.ReadAll(streamResponse.Body)
+	streamResponse.Body.Close()
+	if err != nil {
+		t.Fatalf("read event body: %v", err)
+	}
+	t.Logf("event stream:\n%s", stream)
+	t.Logf("server log:\n%s", logs.String())
+
+	if !strings.Contains(string(stream), `"type":"done"`) {
+		t.Fatal("event stream misses the done terminal event")
+	}
+	if strings.Contains(string(stream), `"type":"error"`) {
+		t.Fatal("event stream carries an error terminal event")
+	}
+	if !strings.Contains(string(stream), "1 flagged line") {
+		t.Error("event stream misses the flagged line sentence")
+	}
+	if strings.Contains(logs.String(), "run failed") {
+		t.Errorf("server log reports a failed run: %s", logs.String())
+	}
+
+	export := filepath.Join(projectDir, "work", "ml-IN", assemble.DubbedDucked)
+	if _, err := os.Stat(export); err != nil {
+		t.Fatalf("export missing: %v", err)
+	}
+	seconds := probeMediaSeconds(t, export)
+	if math.Abs(seconds-2.0) > 0.1 {
+		t.Errorf("export duration = %.3fs, want the 2s source", seconds)
+	}
+	t.Logf("ffprobe %s duration = %.3fs", export, seconds)
+
+	requests := captured()
+	takes := insertRows(t, requests, "takes_raw")
+	if len(takes) == 0 {
+		t.Fatal("no take row persisted")
+	}
+	for _, row := range takes {
+		if row["segment_index"] != float64(1) {
+			t.Errorf("take row segment = %#v, want line 1 alone", row["segment_index"])
+		}
+	}
+	charges := insertRows(t, requests, "charges_raw")
+	if len(charges) == 0 {
+		t.Fatal("no charge row persisted")
+	}
+	for _, row := range charges {
+		if row["segment_index"] == float64(2) {
+			t.Errorf("charge row billed the excluded line: %#v", row)
+		}
+	}
+	snapshots := insertRows(t, requests, "timeline_state_raw")
+	named := false
+	for _, row := range snapshots {
+		if row["segment_index"] == float64(2) && row["source_text"] == "past the film" {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("timeline snapshots = %#v, want line 2 named", snapshots)
+	}
+	t.Logf("persisted %d takes, %d charges, %d timeline snapshots", len(takes), len(charges), len(snapshots))
+}
+
+// probeMediaSeconds measures one media file with ffprobe, independently of
+// the run that wrote it.
+func probeMediaSeconds(t *testing.T, path string) float64 {
+	t.Helper()
+	out, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1", path).Output()
+	if err != nil {
+		t.Fatalf("ffprobe %s: %v", path, err)
+	}
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil {
+		t.Fatalf("parse ffprobe duration %q: %v", out, err)
+	}
+	return seconds
+}
+
+// TestRunFlagsSegmentOutsideFilmPin measures the same out-of-range run against
+// a real ClickHouse. It proves the run persisted the placeable takes, their
+// charges, and the flagged line's snapshot after the export finished.
+func TestRunFlagsSegmentOutsideFilmPin(t *testing.T) {
+	if os.Getenv(chargeWiringPinEnv) != "1" {
+		t.Skipf("set %s=1 with the AJILAMU_CHARGE_PIN_* variables to measure a real ClickHouse", chargeWiringPinEnv)
+	}
+	cfg := chargeWiringPinConfigFromEnv(t)
+	workDir := t.TempDir()
+	source := filepath.Join(workDir, "source.mp4")
+	synthAssemblyFilm(t, source)
+
+	router := &chargeRouter{}
+	segmenter := &chargeWiringSegmenter{rec: router, segments: []types.Segment{
+		{ID: 1, StartMs: 0, EndMs: 2000, Text: "source one", Speaker: types.Speaker{Name: "Suni Williams"}},
+		{ID: 2, StartMs: 106420, EndMs: 114880, Text: "past the film", Speaker: types.Speaker{Name: "Suni Williams"}},
+	}}
+	translator := &chargeWiringTranslator{rec: router}
+	runner := newChargeRoutedRunner(router, segmenter, translator,
+		func(_ string, rec tts.ChargeRecorder) (tts.Synthesizer, error) {
+			return &chargeWiringSynthesizer{rec: rec}, nil
+		})
+
+	dubID := "dub-out-of-range-pin-" + time.Now().UTC().Format("20060102150405.000000000")
+	request := api.RunRequest{DubID: dubID, Language: "ml", SourceLanguage: "en-US", Source: source, WorkDir: workDir}
+	var terminal api.ProgressEvent
+	result, err := runner.Run(context.Background(), request, func(event api.ProgressEvent) {
+		if event.Type == api.EventDone || event.Type == api.EventError {
+			terminal = event
+		}
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	t.Logf("terminal event = %s %q", terminal.Type, terminal.Sentence)
+	if terminal.Type != api.EventDone || !strings.Contains(terminal.Sentence, "1 flagged line") {
+		t.Fatalf("terminal event = %s %q, want done with one flagged line", terminal.Type, terminal.Sentence)
+	}
+	if len(result.FlaggedSegments) != 1 || result.FlaggedSegments[0] != 2 {
+		t.Fatalf("flagged segments = %v, want [2]", result.FlaggedSegments)
+	}
+	export := filepath.Join(workDir, assemble.DubbedDucked)
+	t.Logf("ffprobe export duration = %.3fs", probeMediaSeconds(t, export))
+
+	result.ProjectID = request.DubID
+	result.OwnerID = "local"
+	result.CommitID = dubID + "-commit"
+	for i := range result.Takes {
+		result.Takes[i].TakeID = fmt.Sprintf("%s-take-%d", dubID, i)
+	}
+	for i := range result.Timeline {
+		if result.Timeline[i].SegmentIndex == 1 {
+			result.Timeline[i].TakeID = result.Takes[0].TakeID
+		}
+	}
+
+	client, err := ledger.New(&config.Config{
+		ClickHouseHost:     "pin.invalid",
+		ClickHousePort:     8123,
+		ClickHouseUser:     cfg.user,
+		ClickHousePassword: cfg.password,
+		ClickHouseDatabase: cfg.database,
+	}, t.TempDir(), ledger.WithEndpoint("http://"+cfg.addr))
+	if err != nil {
+		t.Fatalf("open pin ledger client: %v", err)
+	}
+	defer client.Close()
+	recorder := newRunRecorder(client, "gemini-3.8-flash", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := recorder.Persist(context.Background(), request, result); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	takes := chargeWiringPinQuery(t, cfg, fmt.Sprintf(
+		"SELECT count(), uniqExact(segment_index), groupArray(DISTINCT segment_index) FROM takes WHERE dub_id='%s'", dubID))
+	t.Logf("takes = %s", takes)
+	if fields := strings.Fields(takes); len(fields) != 3 || fields[0] != "2" || fields[1] != "1" || fields[2] != "[1]" {
+		t.Errorf("takes = %q, want 2 rows on line 1 alone", takes)
+	}
+
+	charges := chargeWiringPinQuery(t, cfg, fmt.Sprintf(
+		"SELECT count(), countIf(segment_index = 2), sum(toInt64(round(cost_usd * 1000000000))) FROM charges WHERE dub_id='%s'", dubID))
+	t.Logf("charges = %s", charges)
+	if fields := strings.Fields(charges); len(fields) != 3 || fields[0] != "8" || fields[1] != "0" || fields[2] != "708000" {
+		t.Errorf("charges = %q, want 8 rows, none on line 2, totalling 708000", charges)
+	}
+
+	timeline := chargeWiringPinQuery(t, cfg, fmt.Sprintf(
+		"SELECT segment_index, source_text FROM timeline_state WHERE dub_id='%s' ORDER BY segment_index", dubID))
+	t.Logf("timeline:\n%s", timeline)
+	if !strings.Contains(timeline, "2\tpast the film") {
+		t.Errorf("timeline = %q, want line 2 named", timeline)
 	}
 }

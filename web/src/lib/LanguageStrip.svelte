@@ -41,7 +41,7 @@
         </button>
       {/each}
     </div>
-    <p class="active" aria-live="polite">Now hearing {labelFor(activeLanguage)}.</p>
+    <p class="active" aria-live="polite">Takes play in {labelFor(activeLanguage)}.</p>
   {:else}
     <p class="empty">No dubbed tracks are ready to play yet.</p>
   {/if}
