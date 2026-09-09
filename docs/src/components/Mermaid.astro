@@ -1,0 +1,88 @@
+---
+// Renders a Mermaid diagram client-side at runtime.
+// Pass the diagram source as the `code` prop.
+interface Props {
+  code: string;
+}
+
+const { code } = Astro.props;
+const id = `mermaid-${Math.random().toString(36).slice(2, 8)}`;
+---
+
+<div class="mermaid-shell" data-mermaid-shell={id}>
+  <pre class="mermaid" id={id}>{code}</pre>
+</div>
+
+<style>
+  .mermaid-shell {
+    max-width: 100%;
+    overflow-x: auto;
+    padding: 1.25rem;
+    margin: 1.5rem 0;
+    border-radius: 0.75rem;
+    background: rgba(12, 17, 29, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(8px);
+  }
+  .mermaid-shell :global(svg) {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+  }
+</style>
+
+<script>
+  import mermaid from 'mermaid';
+
+  let busy = false;
+
+  async function render() {
+    if (busy) return;
+    busy = true;
+
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'dark',
+      themeVariables: {
+        darkMode: true,
+        background: '#080b11',
+        primaryColor: '#1e293b',
+        primaryTextColor: '#f1f5f9',
+        primaryBorderColor: '#f59e0b',
+        lineColor: '#06b6d4',
+        secondaryColor: '#0f172a',
+        tertiaryColor: '#1e1b4b',
+      },
+      securityLevel: 'strict',
+      flowchart: { useMaxWidth: true, curve: 'basis' },
+    });
+
+    const els = Array.from(document.querySelectorAll('pre.mermaid:not([data-done])'));
+    for (const el of els) {
+      el.dataset.done = 'true';
+      const source = el.textContent ?? '';
+      const target = el.parentElement;
+      if (!target) continue;
+      try {
+        target.innerHTML = '<div class="mermaid-rendered"></div>';
+        const uniqueId = `mermaid-svg-${Math.random().toString(36).slice(2, 8)}`;
+        const { svg } = await mermaid.render(uniqueId, source);
+        const box = target.querySelector('.mermaid-rendered');
+        if (box) box.innerHTML = svg;
+      } catch (err) {
+        el.style.display = 'block';
+        el.textContent = `Diagram failed to render: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    busy = false;
+  }
+
+  document.addEventListener('astro:page-load', render);
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    render();
+  } else {
+    document.addEventListener('DOMContentLoaded', render);
+  }
+</script>

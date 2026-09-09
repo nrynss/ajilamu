@@ -1,0 +1,72 @@
+---
+title: Ajilamu
+description: Give a film another tongue, and keep its rhythm.
+template: doc
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components'
+import Mermaid from '../../components/Mermaid.astro'
+
+<div class="hero-badge">Aji Lhamu Mask Drama · Modern Precision Dubbing</div>
+
+# Give a film another tongue, and keep its rhythm.
+
+Ajilamu dubs creator video into another language. It holds every line inside the slot the original speaker left for it. The system measures each synthesized take against its slot, repairs misfits, and records every API cost.
+
+The architecture comprises a Go server, a Svelte 5 workspace, and an append-only ledger in ClickHouse.
+
+---
+
+## The Core Problem
+
+Traditional dubbing either stretches dialogue awkwardly or lets speech drift across mouth movements. Ajilamu treats dialogue timing as a hard physical constraint. Fit is two-sided. A line that underruns breaks lip sync as severely as a line that overruns.
+
+<Mermaid code={`
+flowchart LR
+    A[Source Video] --> B[Gemini 3.8 Flash\nWatch & Segment]
+    B --> C[Gemini 3.8 Flash\nTranslate to Slot]
+    C --> D[Google Cloud Chirp 3 HD\nVoice Synthesis]
+    D --> E[ffprobe\nMeasure Signed Delta]
+    E --> F{Fit Check\nWithin ±8%?}
+    F -- Yes: |Δ| ≤ 8% --> G[ffmpeg atempo\nTime Stretch]
+    F -- No: |Δ| > 8% --> H[Gemini Rewrite\nShorter / Fuller]
+    H --> D
+    G --> I[ffmpeg Mux\nPreserve Audio Bed]
+    I --> J[Dubbed Video]
+
+    classDef default fill:#090d15,stroke:#334155,color:#f1f5f9
+    classDef highlight fill:#1e293b,stroke:#f59e0b,color:#f8fafc
+    classDef accent fill:#082f49,stroke:#06b6d4,color:#38bdf8
+    class B,C,D highlight
+    class E,F,G,H accent
+`} />
+
+---
+
+## Core Capabilities
+
+<CardGrid stagger>
+  <Card title="Two-Sided Fit Loop" icon="setting">
+    Underrun and overrun both break lip sync. Ajilamu measures the signed delta of every take. It time-stretches within 8 percent and triggers targeted Gemini rewrites beyond that threshold.
+  </Card>
+  <Card title="Immutable Ledger" icon="document">
+    Every take, edit, and charge appends to ClickHouse. The system stores waveform peak arrays directly in the database. Creators can inspect history and time-travel to earlier commits.
+  </Card>
+  <Card title="Lossless Audio Bed" icon="star">
+    Original background audio, music, and ambient noise survive everywhere outside dialogue slots. The export preserves source sample rate and channel layout.
+  </Card>
+  <Card title="Nanodollar Precision" icon="seti:graphql">
+    The internal cost engine tracks charges in nanodollars. A 75-second sample dub costs $0.023414 across segmentation, translation, and synthesis calls.
+  </Card>
+</CardGrid>
+
+---
+
+## Explore the Documentation
+
+- **[Getting Started](/ajilamu/getting-started/)**: Discover the origins of the name and the core philosophy.
+- **[Quickstart](/ajilamu/getting-started/quickstart/)**: Clone the repository, configure credentials, and run your first dub locally.
+- **[Pipeline Architecture](/ajilamu/architecture/pipeline/)**: Read how video demux, speech synthesis, and audio muxing cooperate.
+- **[Fit Loop](/ajilamu/architecture/fit-loop/)**: Study the mathematical repair matrix and signed delta thresholds.
+- **[Immutable Ledger](/ajilamu/architecture/ledger/)**: Inspect the ClickHouse schema, DAG commits, and time-travel replay.
+- **[Cost Accounting](/ajilamu/guides/cost-accounting/)**: Review itemized rate cards and billing verification.

@@ -1,0 +1,148 @@
+/* Custom Dark Obsidian Theme for Ajilamu */
+
+:root {
+  --sl-sidebar-width: 17rem;
+  --sl-content-width: 62rem;
+
+  /* Obsidian dark base palette */
+  --sl-color-accent-low: #2e1c0c;
+  --sl-color-accent: #f59e0b;
+  --sl-color-accent-high: #fbbf24;
+  --sl-color-white: #f8fafc;
+  --sl-color-gray-1: #f1f5f9;
+  --sl-color-gray-2: #cbd5e1;
+  --sl-color-gray-3: #94a3b8;
+  --sl-color-gray-4: #64748b;
+  --sl-color-gray-5: #334155;
+  --sl-color-gray-6: #1e293b;
+  --sl-color-black: #080b11;
+  --sl-color-bg: #080b11;
+  --sl-color-bg-nav: rgba(8, 11, 17, 0.85);
+  --sl-color-bg-sidebar: #090d15;
+  --sl-color-hairline: rgba(255, 255, 255, 0.08);
+  --sl-color-hairline-light: rgba(255, 255, 255, 0.12);
+
+  /* Typography */
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+:root[data-theme='dark'] {
+  --sl-color-bg: #080b11;
+  --sl-color-bg-nav: rgba(8, 11, 17, 0.85);
+  --sl-color-bg-sidebar: #090d15;
+}
+
+/* Constrain the right sidebar (Table of Contents) to a clean 14rem width */
+@media (min-width: 72rem) {
+  .right-sidebar-container {
+    width: 14rem !important;
+  }
+
+  .right-sidebar {
+    width: 14rem !important;
+  }
+
+  [data-has-sidebar][data-has-toc] .main-pane {
+    width: calc(100% - 14rem) !important;
+  }
+
+  .right-sidebar-panel .sl-container {
+    max-width: 12rem !important;
+    width: 12rem !important;
+  }
+}
+
+/* Glassmorphic header */
+header.header {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  background-color: rgba(8, 11, 17, 0.85) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Sidebar styling */
+nav.sidebar {
+  background-color: #090d15 !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.06) !important;
+}
+
+/* Glassmorphic cards with hover glow and lift */
+.card, .sl-card {
+  background: rgba(255, 255, 255, 0.02) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 0.75rem !important;
+  backdrop-filter: blur(8px);
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card:hover, .sl-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(245, 158, 11, 0.4) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 14px rgba(245, 158, 11, 0.12);
+}
+
+/* Polished tables with clean borders */
+.sl-markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5rem 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.sl-markdown-content th {
+  background-color: rgba(255, 255, 255, 0.04);
+  color: #f1f5f9;
+  font-weight: 600;
+  text-align: left;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.sl-markdown-content td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: #cbd5e1;
+}
+
+.sl-markdown-content tr:hover td {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* Monospace numeric styling */
+.sl-markdown-content td:is(:has(code), .num) {
+  font-feature-settings: "tnum";
+}
+
+/* Highlights */
+.telemetry {
+  color: #06b6d4;
+  font-family: var(--sl-font-mono);
+}
+
+.copper {
+  color: #f59e0b;
+}
+
+.cyan-badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  background: rgba(6, 182, 212, 0.12);
+  color: #06b6d4;
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  border-radius: 9999px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.amber-badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 9999px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}

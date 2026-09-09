@@ -77,8 +77,8 @@ Nobody reconstructs it from shell history.
 requires:   T8.1
 fixture-ok: no
 size:       M · mid
-owns:       README.md, docs/
-status:     not-started
+owns:       README.md, docs/, .github/workflows/deploy-docs.yml
+status:     done
 ```
 Explain what Ajilamu does, how to run it, how the fit loop repairs in both directions, what the
 ledger records, and what a dub costs.
@@ -140,3 +140,13 @@ schema, and the fix above unblocks it. The repair claim failed because this run'
 output put every attempt outside the stretch budget, so `atempo` never ran. T8.1 stays open
 until a live re-run measures both. T8.2 proceeds at the user's direction, because the deploy
 proof re-runs the same pipeline from a clean instance.
+
+### T8.3 documentation site 2026-09-09
+
+Astro and Starlight documentation site built in `docs/` and deployed to GitHub Pages.
+Adversarial review round one approved with zero residue across all severities.
+
+The site enforces a three-column layout across all pages via `template: doc`.
+A custom theme applies obsidian dark styling with Monpa copper and cyan telemetry accents.
+GitHub Actions workflow `.github/workflows/deploy-docs.yml` publishes to GitHub Pages on master pushes.
+The repository drift audit and all prose constraints pass with zero findings.
