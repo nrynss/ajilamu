@@ -23,7 +23,7 @@ requires:   P2, P3, P5, P7
 fixture-ok: no
 size:       M · frontier
 owns:       (integration, no exclusive paths)
-status:     claimed:t81live
+status:     done
 ```
 Drive the sample button through live services to a finished video. Keep the workspace
 responsive for the whole run.
@@ -173,3 +173,23 @@ and Chirp synthesizes with `roles/aiplatform.user` alone. The mcp unit lacked th
 ClickHouse settings and dialled localhost. Three smaller script defects are recorded.
 
 **Cost.** About $59.42 per month fixed, and about $0.07 of model spend per dub.
+
+### T8.1 closed 2026-09-09
+
+The deployed host carries the proof. Five claims were measured on a live run at
+`https://ajilamu.nryn.dev`.
+
+Claim 1 passes. Segments 3 and 4 repaired by `atempo` at 0.9813 and 0.9844 and landed inside
+their slots. Claim 3 passes. The tail carries audio, measured at -16.9 dB mean on the export
+against -15.4 dB on the source. Claim 4 passes. Speech sits at 0.9968 of unity while the bed
+dips to 0.5078. Claim 5 passes. The charges view holds 56 rows with 56 distinct event keys
+summing to the run-reported 65,330,550 nanodollars.
+
+Claim 2 is partial. Live segmentation returns seven lines, not the baseline's eight, so no
+segment 8 exists. The behaviour the claim protects holds. The short line reports as a miss and
+the length bar names the shortfall, `Line 7 length bar. This take is 0.64 seconds short of the
+slot.`
+
+The baseline does not reproduce line for line, because the live model output differs from the
+2026-09-07 run. The task closes on the behaviour. `t8.1-rerun.md` and `charge-wiring-live.md`
+carry the measurements.

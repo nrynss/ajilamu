@@ -11,7 +11,7 @@ Where a phase document and specification conflict, the specification wins. Recor
 
 Each document provides complete context for an engineer starting cold.
 
-**Current status:** P6 is closed. P8 Ship is in progress. T8.2 deployed the host to Google Compute Engine and T8.3 landed the documentation site. T8.1 stays open pending a live re-run. T8.4 has not started.
+**Current status:** P6 is closed. P8 Ship is in progress. T8.1 closed with live proof on the deployed host. T8.2 deployed to Google Compute Engine and T8.3 landed the documentation site. T8.4 has not started.
 
 ---
 
@@ -195,7 +195,7 @@ Protect this core flow above auxiliary features.
 | P5 | 8 / 8 | Complete. Close review approved with zero residue. See [p5-close-round3.md](adversarial-review/p5-close-round3.md). |
 | P6 | 14 / 14 | Complete. Close round 8 filed one M, which round 8 remediation closed. See [p6-close-round8.md](adversarial-review/p6-close-round8.md). |
 | P7 | 21 / 21 | Complete. Close review approved with zero residue. See [p7-close-round6.md](adversarial-review/p7-close-round6.md). |
-| P8 | 2 / 4 | T8.2 deployed to Google Compute Engine. T8.3 documentation site complete, see [t8.3-round1.md](adversarial-review/t8.3-round1.md). T8.1 open pending a live re-run. T8.4 not started. |
+| P8 | 3 / 4 | T8.1 closed with live proof on the deployed host. T8.2 deployed to Google Compute Engine. T8.3 documentation site complete, see [t8.3-round1.md](adversarial-review/t8.3-round1.md). T8.4 not started. |
 
 **Concept validation:** Complete. Recorded in [observations.md](observations.md) and reviewed in [adversarial-review](adversarial-review/2026-09-07-pipeline-and-claims.md).
 
