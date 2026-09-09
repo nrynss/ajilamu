@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 10 240 240" width="64" height="64" role="img" aria-label="Ajilamu crown emblem">
+  <g id="crown" fill="#c79355">
+   <path d="M150 18 C139 29 138 40 150 48 C162 40 161 29 150 18Z"/>
+   <path d="M118 31 C108 34 111 49 127 54 C128 43 125 35 118 31Z"/>
+   <path d="M182 31 C175 35 172 43 173 54 C189 49 192 34 182 31Z"/>
+   <circle cx="101" cy="53" r="3.5"/><circle cx="199" cy="53" r="3.5"/>
+  </g>
+  <path id="crown-arc" d="M119 66 Q150 52 181 66" fill="none" stroke="#c79355" stroke-width="5" stroke-linecap="round"/>
+  <path id="left-rise" fill="#c79355" d="M151 77 C134 92 123 114 111 138 L78 202 C67 223 55 234 39 241 C66 244 89 231 103 207 L159 94Z"/>
+  <path id="right-fall" fill="#c79355" d="M151 77 C168 94 177 118 186 142 L213 210 C220 228 231 237 247 241 C222 249 199 238 190 216 L144 103Z"/>
+  <path id="sash" fill="#c79355" d="M54 173 C80 147 110 146 146 157 C177 166 202 184 221 176 C231 172 235 163 235 154 C244 169 239 185 226 192 C202 205 174 186 143 178 C109 167 81 164 54 173Z"/>
+  <path id="sash-return" fill="#c79355" d="M55 173 C38 188 38 204 48 212 C38 209 32 200 35 191 C38 182 46 176 55 173Z"/>
+</svg>

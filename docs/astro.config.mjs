@@ -10,6 +10,13 @@ export default defineConfig({
     starlight({
       title: "Ajilamu",
       description: "Give a film another tongue, and keep its rhythm.",
+      logo: {
+        dark: "./src/assets/logo-dark.svg",
+        light: "./src/assets/logo-light.svg",
+        alt: "Ajilamu",
+        replacesTitle: true,
+      },
+      favicon: "/favicon.svg",
       social: [
         {
           icon: "github",
