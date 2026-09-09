@@ -123,9 +123,9 @@ func run() error {
 		StorageDir:   uploadDir,
 		Upload:       api.NewUploadHandler(uploadDir),
 		Sample:       api.NewSampleHandler(uploadDir),
-		Index: api.IndexHandlerFrom(func() []api.DubSummary {
+		Index: api.IndexHandlerWithLedger(func() []api.DubSummary {
 			return append([]api.DubSummary{fixtureSummary}, api.ListUploadSummaries(uploadDir)...)
-		}),
+		}, newIndexLedger(eventLedger), slog.Default()),
 		// T7.4a persists submitted credentials under AJILAMU_DATA_DIR. The
 		// store never returns a value, so the read route reports presence only.
 		Config:           api.ConfigHandler(newConfigSaver(settings)),
@@ -377,6 +377,29 @@ func (w *workspaceReader) Languages(ctx context.Context, dubID string) ([]string
 // ProjectMetadata returns the identity and the timestamps.
 func (w *workspaceReader) ProjectMetadata(ctx context.Context, dubID string) (api.DubSummary, error) {
 	return w.client.ProjectMetadata(ctx, dubID)
+}
+
+// indexLedger adapts the ledger client to the api index interface.
+// The grouped read already returns the wire fact, so the method forwards.
+type indexLedger struct {
+	client *ledger.Client
+}
+
+// The adapter satisfies the index route without internal/api importing internal/ledger.
+var _ api.IndexLedger = (*indexLedger)(nil)
+
+// newIndexLedger returns an adapter for client.
+// A nil client returns a nil interface, so a typed nil never reaches the index route.
+func newIndexLedger(client *ledger.Client) api.IndexLedger {
+	if client == nil {
+		return nil
+	}
+	return &indexLedger{client: client}
+}
+
+// IndexFacts returns the ledger facts for the requested projects.
+func (l *indexLedger) IndexFacts(ctx context.Context, dubIDs []string) (map[string]api.IndexFact, error) {
+	return l.client.IndexFacts(ctx, dubIDs)
 }
 
 // frontendRoot resolves the static build directory. AJILAMU_FRONTEND_DIR wins

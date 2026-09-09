@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -360,4 +361,169 @@ func serveConfigForm(handler http.Handler, values url.Values) *httptest.Response
 
 func jsonDecode(response *httptest.ResponseRecorder, target any) error {
 	return json.NewDecoder(response.Body).Decode(target)
+}
+
+// stubIndexLedger stands in for the grouped ledger read. It records every call
+// so a test can prove the index asks once for the whole row set.
+type stubIndexLedger struct {
+	facts map[string]api.IndexFact
+	err   error
+	calls int
+	ids   [][]string
+}
+
+func (s *stubIndexLedger) IndexFacts(_ context.Context, dubIDs []string) (map[string]api.IndexFact, error) {
+	s.calls++
+	s.ids = append(s.ids, append([]string(nil), dubIDs...))
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.facts, nil
+}
+
+// TestIndexHandlerWithLedgerReportsTheLedgerTruth pins the defect. The ledger
+// holds takes and charges for the first dub, so its index row must read review
+// at the ledger sum. An upload the ledger holds no row for stays pending and
+// free. The handler asks the ledger once for the whole row set.
+func TestIndexHandlerWithLedgerReportsTheLedgerTruth(t *testing.T) {
+	const ledgerDub = "d04a7275133c68a59e16965dc8b23d58"
+	const uploadDub = "bb2c96d89be1cb62dc1ebb87979b95da"
+	ledger := &stubIndexLedger{facts: map[string]api.IndexFact{
+		ledgerDub: {Readiness: api.ReadinessReview, TotalNanodollars: 72309000},
+	}}
+	handler := api.IndexHandlerWithLedger(func() []api.DubSummary {
+		return []api.DubSummary{
+			{ID: ledgerDub, Readiness: api.ReadinessPending, CreatedAt: "2026-09-09T15:33:00Z"},
+			{ID: uploadDub, Readiness: api.ReadinessPending, CreatedAt: "2026-09-09T16:00:00Z"},
+		}
+	}, ledger, nil)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dubs", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	var index api.DubIndex
+	if err := jsonDecode(response, &index); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	rows := indexRowsByID(index.Dubs)
+	if got := rows[ledgerDub]; got.Readiness != api.ReadinessReview || got.TotalNanodollars != 72309000 {
+		t.Errorf("ledger row = %+v, want %s at 72309000", got, api.ReadinessReview)
+	}
+	if got := rows[uploadDub]; got.Readiness != api.ReadinessPending || got.TotalNanodollars != 0 {
+		t.Errorf("upload row = %+v, want %s at 0", got, api.ReadinessPending)
+	}
+	if ledger.calls != 1 {
+		t.Errorf("ledger calls = %d, want 1 for the whole index", ledger.calls)
+	}
+	if len(ledger.ids) != 1 || len(ledger.ids[0]) != 2 {
+		t.Errorf("ledger ids = %v, want one call naming both projects", ledger.ids)
+	}
+}
+
+// TestIndexHandlerWithLedgerRefusesToGuess pins the read failure. A ledger
+// error answers 500 rather than reporting every project as unstarted and free.
+func TestIndexHandlerWithLedgerRefusesToGuess(t *testing.T) {
+	ledger := &stubIndexLedger{err: errors.New("ClickHouse unreachable")}
+	handler := api.IndexHandlerWithLedger(func() []api.DubSummary {
+		return []api.DubSummary{{ID: "d1"}}
+	}, ledger, nil)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/dubs", nil))
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+	if body := response.Body.String(); strings.Contains(body, "ClickHouse") {
+		t.Errorf("body leaks internal text: %q", body)
+	}
+}
+
+// TestIndexAndWorkspaceReadinessAgree pins the shared word. api.DeriveReadiness
+// serves the index and workspaceReadiness serves the workspace, so the two must
+// answer the same word for the same facts. A drift in either rule fails here.
+func TestIndexAndWorkspaceReadinessAgree(t *testing.T) {
+	oneSegment := []api.TimelineEntry{{SegmentIndex: 1}}
+	twoSegments := []api.TimelineEntry{{SegmentIndex: 1}, {SegmentIndex: 2}}
+	commit := []api.Commit{{CommitID: "c1", VersionNumber: 1}}
+	fitting := api.LanguageTrack{Language: "ml", Lines: []api.Line{{SegmentID: 1, Takes: []api.Take{{}}}}}
+	flagged := api.LanguageTrack{Language: "ml", Lines: []api.Line{{SegmentID: 1, Flagged: true, Takes: []api.Take{{}}}}}
+	waiting := api.LanguageTrack{Language: "ml", Lines: []api.Line{{SegmentID: 1}}}
+
+	cases := []struct {
+		name    string
+		tracks  []api.LanguageTrack
+		entries []api.TimelineEntry
+		active  bool
+		facts   api.ReadinessFacts
+		want    string
+	}{
+		{
+			name:    "no take",
+			tracks:  []api.LanguageTrack{waiting},
+			entries: oneSegment,
+			facts:   api.ReadinessFacts{TrackCount: 1, SegmentCount: 1},
+			want:    api.ReadinessPending,
+		},
+		{
+			name:    "flagged line",
+			tracks:  []api.LanguageTrack{flagged},
+			entries: oneSegment,
+			facts:   api.ReadinessFacts{Takes: 1, Rendered: 1, Flagged: true, TrackCount: 1, SegmentCount: 1},
+			want:    api.ReadinessReview,
+		},
+		{
+			name:    "every take fits and every segment covered",
+			tracks:  []api.LanguageTrack{fitting},
+			entries: oneSegment,
+			facts:   api.ReadinessFacts{Takes: 1, Rendered: 1, TrackCount: 1, SegmentCount: 1},
+			want:    api.ReadinessReady,
+		},
+		{
+			name:    "segment with no take",
+			tracks:  []api.LanguageTrack{fitting},
+			entries: twoSegments,
+			facts:   api.ReadinessFacts{Takes: 1, Rendered: 1, TrackCount: 1, SegmentCount: 2},
+			want:    api.ReadinessReview,
+		},
+		{
+			name:    "run in flight",
+			tracks:  []api.LanguageTrack{waiting},
+			entries: oneSegment,
+			active:  true,
+			facts:   api.ReadinessFacts{TrackCount: 1, SegmentCount: 1, Running: true},
+			want:    api.ReadinessRunning,
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			reader := &standInWorkspaceReader{tracks: test.tracks, languages: []string{"ml"}}
+			history := &standInWorkspaceHistory{commits: commit, segments: test.entries}
+			active := func(string) bool { return test.active }
+			handler := api.WorkspaceHandlerFrom(reader, history, func(string) (string, string, string, bool) {
+				return "Title", "", "", true
+			}, active, nil)
+			response := serveWorkspace(t, handler, "dub-1")
+			var dub api.Dub
+			if err := jsonDecode(response, &dub); err != nil {
+				t.Fatalf("decode workspace: %v", err)
+			}
+			got := api.DeriveReadiness(test.facts)
+			if dub.Readiness != got {
+				t.Errorf("workspace = %q, index rule = %q, want one word", dub.Readiness, got)
+			}
+			if got != test.want {
+				t.Errorf("DeriveReadiness = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func indexRowsByID(dubs []api.DubSummary) map[string]api.DubSummary {
+	rows := make(map[string]api.DubSummary, len(dubs))
+	for _, dub := range dubs {
+		rows[dub.ID] = dub
+	}
+	return rows
 }

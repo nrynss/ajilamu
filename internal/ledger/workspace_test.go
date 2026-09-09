@@ -617,3 +617,83 @@ func TestWorkspaceTakesRecoversAtempoStretch(t *testing.T) {
 		t.Error("takes statement does not select repair_detail")
 	}
 }
+
+// indexPayloads is the grouped index answer for one project that holds takes
+// and charges. A second project in the same request holds no row at all.
+func indexPayloads() map[string]string {
+	return map[string]string{
+		selectIndexTakes: `{"dub_id":"d1","language":"ml","segment_index":1,"slot_ms":1000,"measured_ms":1000}` + "\n" +
+			`{"dub_id":"d1","language":"ml","segment_index":2,"slot_ms":1000,"measured_ms":500}` + "\n",
+		selectIndexSegmentCounts: `{"dub_id":"d1","language":"ml","segment_count":2}` + "\n",
+		selectIndexTotals:        `{"dub_id":"d1","total_nanodollars":72309000}` + "\n",
+	}
+}
+
+// TestIndexFactsGroupsAcrossProjects pins the grouped read. One project and
+// four projects each cost three statements, because every id rides one bound
+// array parameter. It also pins the readiness rule on the same rows the
+// workspace reads: segment 2 holds only a short take, so the project reads
+// review, and the charge sum rides the same row.
+func TestIndexFactsGroupsAcrossProjects(t *testing.T) {
+	t.Parallel()
+
+	client, captured := workspaceStandIn(t, indexPayloads())
+	ctx := context.Background()
+
+	one, err := client.IndexFacts(ctx, []string{"d1"})
+	if err != nil {
+		t.Fatalf("IndexFacts one: %v", err)
+	}
+	if got := len(captured()); got != 3 {
+		t.Fatalf("one-project request count = %d, want 3", got)
+	}
+	fact, ok := one["d1"]
+	if !ok {
+		t.Fatalf("IndexFacts one = %+v, want a fact for d1", one)
+	}
+	if fact.Readiness != api.ReadinessReview {
+		t.Errorf("readiness = %q, want %s", fact.Readiness, api.ReadinessReview)
+	}
+	if fact.TotalNanodollars != cost.Price(72309000) {
+		t.Errorf("total = %d nanodollars, want 72309000", fact.TotalNanodollars)
+	}
+	if _, ok := one["d2"]; ok {
+		t.Errorf("IndexFacts invented a fact for a project the ledger holds no row for: %+v", one)
+	}
+
+	many, err := client.IndexFacts(ctx, []string{"d1", "d2", "d3", "d4"})
+	if err != nil {
+		t.Fatalf("IndexFacts many: %v", err)
+	}
+	if len(many) != 1 {
+		t.Errorf("IndexFacts many = %+v, want only d1", many)
+	}
+	requests := captured()
+	if len(requests) != 6 {
+		t.Fatalf("two-call request count = %d, want 3 per call", len(requests))
+	}
+	for _, request := range requests[3:] {
+		assertPinnedQuerySettings(t, request)
+		if got := request.params.Get("param_dub_ids"); got != "['d1','d2','d3','d4']" {
+			t.Errorf("param_dub_ids = %q, want the whole id list", got)
+		}
+	}
+}
+
+// TestIndexFactsLeavesAnEmptyProjectListUnqueried pins the short circuit. An
+// index with no project row must not send a statement with an empty id list.
+func TestIndexFactsLeavesAnEmptyProjectListUnqueried(t *testing.T) {
+	t.Parallel()
+
+	client, captured := workspaceStandIn(t, indexPayloads())
+	facts, err := client.IndexFacts(context.Background(), []string{"", ""})
+	if err != nil {
+		t.Fatalf("IndexFacts: %v", err)
+	}
+	if len(facts) != 0 {
+		t.Errorf("facts = %+v, want none", facts)
+	}
+	if got := len(captured()); got != 0 {
+		t.Errorf("request count = %d, want 0", got)
+	}
+}

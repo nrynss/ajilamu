@@ -51,6 +51,27 @@ func TestNewHistoryReaderReturnsNilForNilClient(t *testing.T) {
 	}
 }
 
+// A nil client must stay a nil interface, because a typed nil inside
+// api.IndexLedger would answer 500 on the index route instead of serving the
+// upload rows a clone with no ClickHouse credentials can still read.
+func TestNewIndexLedgerReturnsNilForNilClient(t *testing.T) {
+	if reader := newIndexLedger(nil); reader != nil {
+		t.Fatalf("newIndexLedger(nil) = %T, want nil interface", reader)
+	}
+	client := &ledger.Client{}
+	reader := newIndexLedger(client)
+	if reader == nil {
+		t.Fatal("newIndexLedger(client) = nil, want adapter")
+	}
+	adapter, ok := reader.(*indexLedger)
+	if !ok {
+		t.Fatalf("newIndexLedger(client) = %T, want *indexLedger", reader)
+	}
+	if adapter.client != client {
+		t.Fatal("adapter did not keep the client it was given")
+	}
+}
+
 func TestCommitHistoryMapsLedgerRows(t *testing.T) {
 	rows := []ledger.CommitHistoryRow{
 		{
