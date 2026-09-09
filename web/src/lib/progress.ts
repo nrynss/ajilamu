@@ -73,7 +73,7 @@ export function watchRunProgress(projectID: string, handlers: ProgressHandlers =
   let closed = false
   let terminal = false
   let controller: AbortController | undefined
-  let timer: number | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
 
   function report(phase: ProgressPhase, sentence: string): void {
     handlers.onPhase?.({ phase, sentence })
