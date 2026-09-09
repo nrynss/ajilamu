@@ -124,6 +124,7 @@ func run() error {
 		Edits:        editRecorder,
 		StorageDir:   uploadDir,
 		Upload:       api.NewUploadHandler(uploadDir),
+		Rename:       api.NewRenameHandler(uploadDir),
 		Sample:       api.NewSampleHandler(uploadDir),
 		Index: api.IndexHandlerWithLedger(func() []api.DubSummary {
 			return append([]api.DubSummary{fixtureSummary}, api.ListUploadSummaries(uploadDir)...)

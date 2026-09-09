@@ -165,6 +165,10 @@
   let runSentence = $state("")
   let lineNote = $state("")
   let boundaryRevision = $state(0)
+  let renaming = $state(false)
+  let nameDraft = $state("")
+  let renameNote = $state("")
+  let savingName = $state(false)
 
   // The editor works on one language track. Every timing read and every write
   // uses the active track, so a two-language dub cannot show one track and save
@@ -268,6 +272,56 @@
   function stopTake(): void {
     takeAudio?.pause()
     takeAudio = undefined
+  }
+
+  function startRename(): void {
+    if (readOnly || !dub) return
+    renaming = true
+    nameDraft = dub.title
+    renameNote = ""
+  }
+
+  function cancelRename(): void {
+    renaming = false
+    renameNote = ""
+  }
+
+  // The heading shows the name the server stored, never the raw input, so a
+  // refused name cannot appear as if it saved.
+  async function saveName(event: SubmitEvent): Promise<void> {
+    event.preventDefault()
+    const current = dub
+    if (readOnly || !current || savingName) return
+    savingName = true
+    renameNote = ""
+    try {
+      const response = await fetch(`/api/dubs/${encodeURIComponent(projectID)}/title`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: nameDraft })
+      })
+      if (!response.ok) {
+        renameNote = (await response.text()).trim() || `The name was not saved (${response.status}).`
+        return
+      }
+      const payload: unknown = await response.json().catch(() => undefined)
+      if (!isTitlePayload(payload)) {
+        renameNote = "The saved name answer was incomplete, so the heading is unchanged."
+        return
+      }
+      dub = { ...current, title: payload.title }
+      renaming = false
+    } catch {
+      renameNote = "We could not reach the server, so the name was not saved."
+    } finally {
+      savingName = false
+    }
+  }
+
+  function isTitlePayload(value: unknown): value is { id: string; title: string } {
+    if (typeof value !== "object" || value === null) return false
+    const payload = value as { id?: unknown; title?: unknown }
+    return typeof payload.id === "string" && typeof payload.title === "string"
   }
 
   function togglePlayback(): void {
@@ -925,7 +979,25 @@
     {#if dub}
         <section class="workspace" aria-label={`${dub.title} dubbing workspace`} data-project-id={projectID}>
         <section class="picture-area" aria-label="Picture and playback">
-          <h1 class="project-title">{dub.title}</h1>
+          <div class="title-row">
+            <h1 class="project-title">{dub.title}</h1>
+            {#if !readOnly}
+              <button type="button" class="rename-open" onclick={startRename}>Rename</button>
+            {/if}
+          </div>
+          {#if renaming}
+            <form class="rename-form" onsubmit={saveName}>
+              <label class="rename-label" for="project-name">Project name</label>
+              <input id="project-name" type="text" autocomplete="off" bind:value={nameDraft} />
+              <div class="rename-actions">
+                <button type="submit" class="rename-save" disabled={savingName}>
+                  {savingName ? "Saving…" : "Save name"}
+                </button>
+                <button type="button" class="rename-cancel" onclick={cancelRename}>Cancel</button>
+              </div>
+              {#if renameNote}<p class="rename-note" role="alert">{renameNote}</p>{/if}
+            </form>
+          {/if}
           {#if waitingForDubbing}
             <p class="waiting-note" role="status">{pendingProjectSentence}</p>
           {/if}
@@ -1178,6 +1250,45 @@
     font-size: 14px;
     margin: 0 0 10px;
   }
+
+  .title-row {
+    align-items: center;
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+  }
+
+  .rename-open {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--accent);
+    font-size: 11.5px;
+    padding: 4px 8px;
+  }
+
+  .rename-form {
+    background: var(--raised);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel);
+    display: grid;
+    gap: 6px;
+    margin: 0 0 12px;
+    padding: 10px;
+  }
+
+  .rename-label { color: var(--dim); font-size: 11.5px; }
+
+  .rename-form input {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 6px 8px;
+  }
+
+  .rename-actions { display: flex; gap: 8px; }
+  .rename-save { background: var(--accent); border-color: var(--accent); color: var(--surface); padding: 5px 9px; }
+  .rename-cancel { background: var(--surface); padding: 5px 9px; }
+  .rename-note { color: var(--stop); font-size: 11.5px; margin: 0; }
 
   .waiting-note {
     background: var(--raised);

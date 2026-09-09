@@ -1121,3 +1121,154 @@ func TestServerWithoutMCPServesWorkspaceAndAgentUnavailable(t *testing.T) {
 		}
 	}
 }
+
+// TestServerRoutesProjectNaming proves the mux serves the rename route and
+// that the index and the workspace report the stored name afterwards.
+func TestServerRoutesProjectNaming(t *testing.T) {
+	cfg, err := config.LoadFromMap(map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage := t.TempDir()
+	server, err := api.NewServer(cfg, api.ServerOptions{
+		FrontendRoot: testFrontend(t),
+		StorageDir:   storage,
+		Upload:       api.NewUploadHandler(storage),
+		Rename:       api.NewRenameHandler(storage),
+		Index: api.IndexHandlerFrom(func() []api.DubSummary {
+			return api.ListUploadSummaries(storage)
+		}),
+		Workspace: &standInWorkspaceReader{},
+		Project:   api.UploadProjectLookup(storage),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	id := createNamedProject(t, httpServer.URL, "Festival Cut")
+	if got := indexTitle(t, httpServer.URL, id); got != "Festival Cut" {
+		t.Fatalf("index title = %q, want Festival Cut", got)
+	}
+	if got := workspaceTitle(t, httpServer.URL, id); got != "Festival Cut" {
+		t.Fatalf("workspace title = %q, want Festival Cut", got)
+	}
+
+	// A rename stores plain text, so markup stays literal in both reads.
+	const renamed = `<b>Second</b> Cut`
+	response, err := http.Post(httpServer.URL+"/api/dubs/"+id+"/title", "application/json", strings.NewReader(`{"title":"`+renamed+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("rename status = %d, want 200", response.StatusCode)
+	}
+	if got := indexTitle(t, httpServer.URL, id); got != renamed {
+		t.Fatalf("index title = %q, want %q", got, renamed)
+	}
+	if got := workspaceTitle(t, httpServer.URL, id); got != renamed {
+		t.Fatalf("workspace title = %q, want %q", got, renamed)
+	}
+
+	// A blank rename is refused and both reads keep the stored name.
+	response, err = http.Post(httpServer.URL+"/api/dubs/"+id+"/title", "application/json", strings.NewReader(`{"title":"   "}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusBadRequest || strings.TrimSpace(string(body)) != "A project name cannot be blank." {
+		t.Fatalf("blank rename = %d %q, want 400 with a plain sentence", response.StatusCode, body)
+	}
+	if got := indexTitle(t, httpServer.URL, id); got != renamed {
+		t.Fatalf("index title after blank rename = %q, want %q", got, renamed)
+	}
+}
+
+// createNamedProject uploads one project through the mux and returns its id.
+func createNamedProject(t *testing.T, baseURL, title string) string {
+	t.Helper()
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	video, err := form.CreateFormFile("video", "clip.mp4")
+	if err != nil {
+		t.Fatalf("create video part: %v", err)
+	}
+	if _, err := video.Write([]byte("video bytes")); err != nil {
+		t.Fatalf("write video part: %v", err)
+	}
+	if err := form.WriteField("language", "ml"); err != nil {
+		t.Fatalf("write language field: %v", err)
+	}
+	if err := form.WriteField("title", title); err != nil {
+		t.Fatalf("write title field: %v", err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatalf("close form: %v", err)
+	}
+	response, err := http.Post(baseURL+"/api/dubs/new", form.FormDataContentType(), &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		payload, _ := io.ReadAll(response.Body)
+		t.Fatalf("create status = %d, want 201: %s", response.StatusCode, payload)
+	}
+	var created struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create answer: %v", err)
+	}
+	if created.Title != title {
+		t.Fatalf("create title = %q, want %q", created.Title, title)
+	}
+	return created.ID
+}
+
+// indexTitle reads the title the index route reports for one project.
+func indexTitle(t *testing.T, baseURL, id string) string {
+	t.Helper()
+	response, err := http.Get(baseURL + "/api/dubs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var index api.DubIndex
+	if err := json.NewDecoder(response.Body).Decode(&index); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	for _, dub := range index.Dubs {
+		if dub.ID == id {
+			return dub.Title
+		}
+	}
+	t.Fatalf("index holds no row for %s", id)
+	return ""
+}
+
+// workspaceTitle reads the title the workspace route reports for one project.
+func workspaceTitle(t *testing.T, baseURL, id string) string {
+	t.Helper()
+	response, err := http.Get(baseURL + "/api/dubs/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(response.Body)
+		t.Fatalf("workspace status = %d, want 200: %s", response.StatusCode, payload)
+	}
+	var dub api.Dub
+	if err := json.NewDecoder(response.Body).Decode(&dub); err != nil {
+		t.Fatalf("decode workspace: %v", err)
+	}
+	return dub.Title
+}

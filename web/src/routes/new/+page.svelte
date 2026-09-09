@@ -13,6 +13,7 @@
   const formattedSampleFee = formatSampleCurrency(p2ReferenceNanodollars);
 
   let videoFile = $state<File | null>(null);
+  let projectName = $state("");
   let musicFile = $state<File | null>(null);
   let durationSeconds = $state<number | null>(null);
   let estimateError = $state("");
@@ -121,6 +122,7 @@
     submitError = "";
     const body = new FormData();
     body.append("video", videoFile);
+    body.append("title", projectName);
     if (musicFile) body.append("music", musicFile);
     body.append("source_language", sourceLanguage);
     body.append("language", targetLanguage);
@@ -190,6 +192,16 @@
       <span class="drop-title">{musicFile ? musicFile.name : "Add your music track"}</span>
       <span class="optional">{musicFile ? "It will play cleanly beneath the dub." : "Optional"}</span>
       <input id="music" class="file-picker" name="music" type="file" accept="audio/*" onchange={musicInput} />
+    </label>
+    <label class="name-field" for="project-title">
+      <span class="field-label">Project name</span>
+      <input
+        id="project-title"
+        type="text"
+        autocomplete="off"
+        placeholder="Optional. Blank uses the video file name."
+        bind:value={projectName}
+      />
     </label>
 
     <LanguagePicker
@@ -275,6 +287,17 @@
     grid-template-columns: 1fr auto;
     padding: 13px;
   }
+  .name-field {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-container);
+    display: grid;
+    gap: 6px;
+    padding: 13px;
+  }
+
+  .field-label { font-size: 12px; font-weight: 650; }
+  .name-field input { background: var(--raised); border: 1px solid var(--line); color: var(--text); padding: 7px 9px; }
 
   .dragging { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-q); }
   .drop-title { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }

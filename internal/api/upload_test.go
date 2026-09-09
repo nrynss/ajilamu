@@ -277,3 +277,318 @@ func assertStoredUpload(t *testing.T, storage string, file UploadFile, wantName 
 		t.Fatalf("response bytes = %d, want %d", file.Bytes, len(wantContents))
 	}
 }
+
+// TestUploadHandlerStoresCreatorTitle proves a named upload stores that name
+// in the record the index and the workspace both read.
+func TestUploadHandlerStoresCreatorTitle(t *testing.T) {
+	storage := t.TempDir()
+	recorder := httptest.NewRecorder()
+
+	NewUploadHandler(storage).ServeHTTP(recorder, uploadRequest(t, func(form *multipart.Writer) {
+		writeUploadFile(t, form, "video", "clip.mp4", []byte("video"))
+		writeUploadField(t, form, "language", "ml")
+		writeUploadField(t, form, "title", "  Launch Film  ")
+	}))
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	var upload Upload
+	if err := json.NewDecoder(recorder.Body).Decode(&upload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if upload.Title != "Launch Film" {
+		t.Fatalf("response title = %q, want Launch Film", upload.Title)
+	}
+	record := readUploadRecord(t, storage, upload.ID)
+	if record.Title != "Launch Film" {
+		t.Fatalf("stored title = %q, want Launch Film", record.Title)
+	}
+	summaries := ListUploadSummaries(storage)
+	if len(summaries) != 1 || summaries[0].Title != "Launch Film" {
+		t.Fatalf("index titles = %#v, want one row named Launch Film", summaries)
+	}
+}
+
+// TestUploadHandlerNamesProjectFromVideoWithoutTitle proves the filename
+// fallback survives the naming feature.
+func TestUploadHandlerNamesProjectFromVideoWithoutTitle(t *testing.T) {
+	storage := t.TempDir()
+	recorder := httptest.NewRecorder()
+
+	NewUploadHandler(storage).ServeHTTP(recorder, uploadRequest(t, func(form *multipart.Writer) {
+		writeUploadFile(t, form, "video", "clip.mp4", []byte("video"))
+		writeUploadField(t, form, "language", "ml")
+	}))
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	var upload Upload
+	if err := json.NewDecoder(recorder.Body).Decode(&upload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if upload.Title != "clip.mp4" {
+		t.Fatalf("response title = %q, want clip.mp4", upload.Title)
+	}
+	if record := readUploadRecord(t, storage, upload.ID); record.Title != "clip.mp4" {
+		t.Fatalf("stored title = %q, want clip.mp4", record.Title)
+	}
+}
+
+// TestUploadHandlerKeepsTitleMarkupAsText proves a name is stored as plain
+// text rather than interpreted as markup.
+func TestUploadHandlerKeepsTitleMarkupAsText(t *testing.T) {
+	storage := t.TempDir()
+	recorder := httptest.NewRecorder()
+	const title = `<b>Final</b> & "best" cut`
+
+	NewUploadHandler(storage).ServeHTTP(recorder, uploadRequest(t, func(form *multipart.Writer) {
+		writeUploadFile(t, form, "video", "clip.mp4", []byte("video"))
+		writeUploadField(t, form, "language", "ml")
+		writeUploadField(t, form, "title", title)
+	}))
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	var upload Upload
+	if err := json.NewDecoder(recorder.Body).Decode(&upload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if record := readUploadRecord(t, storage, upload.ID); record.Title != title {
+		t.Fatalf("stored title = %q, want %q", record.Title, title)
+	}
+}
+
+// TestUploadHandlerRejectsOverlongTitle proves a name past the limit is
+// refused before any project is written.
+func TestUploadHandlerRejectsOverlongTitle(t *testing.T) {
+	storage := t.TempDir()
+	recorder := httptest.NewRecorder()
+
+	NewUploadHandler(storage).ServeHTTP(recorder, uploadRequest(t, func(form *multipart.Writer) {
+		writeUploadFile(t, form, "video", "clip.mp4", []byte("video"))
+		writeUploadField(t, form, "language", "ml")
+		writeUploadField(t, form, "title", strings.Repeat("a", maxProjectTitleRunes+1))
+	}))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if got := strings.TrimSpace(recorder.Body.String()); got != tooLongTitleSentence() {
+		t.Fatalf("sentence = %q, want %q", got, tooLongTitleSentence())
+	}
+	entries, err := os.ReadDir(storage)
+	if err != nil {
+		t.Fatalf("read storage: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("rejected upload left storage entries: %#v", entries)
+	}
+}
+
+// TestRenameHandlerStoresNewTitle proves one rename updates the record the
+// index and the workspace read, and leaves every other field alone.
+func TestRenameHandlerStoresNewTitle(t *testing.T) {
+	storage := t.TempDir()
+	id := storeTestUpload(t, storage)
+	before := readUploadRecord(t, storage, id)
+	recorder := httptest.NewRecorder()
+
+	NewRenameHandler(storage).ServeHTTP(recorder, renameRequestFor(t, id, `{"title":"  Festival Cut  "}`))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var answer ProjectTitle
+	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
+		t.Fatalf("decode answer: %v", err)
+	}
+	if answer.ID != id || answer.Title != "Festival Cut" {
+		t.Fatalf("answer = %#v, want id %q named Festival Cut", answer, id)
+	}
+	record := readUploadRecord(t, storage, id)
+	if record.Title != "Festival Cut" {
+		t.Fatalf("stored title = %q, want Festival Cut", record.Title)
+	}
+	if record.Language != before.Language || record.SourceLanguage != before.SourceLanguage || record.CreatedAt != before.CreatedAt {
+		t.Fatalf("rename changed another field: before %#v after %#v", before, record)
+	}
+	summaries := ListUploadSummaries(storage)
+	if len(summaries) != 1 || summaries[0].Title != "Festival Cut" {
+		t.Fatalf("index titles = %#v, want one row named Festival Cut", summaries)
+	}
+}
+
+// TestRenameHandlerKeepsMarkupAsText proves a renamed project stores the name
+// as plain text.
+func TestRenameHandlerKeepsMarkupAsText(t *testing.T) {
+	storage := t.TempDir()
+	id := storeTestUpload(t, storage)
+	const title = `<script>alert(1)</script>`
+	recorder := httptest.NewRecorder()
+
+	NewRenameHandler(storage).ServeHTTP(recorder, renameRequestFor(t, id, `{"title":"`+title+`"}`))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if record := readUploadRecord(t, storage, id); record.Title != title {
+		t.Fatalf("stored title = %q, want %q", record.Title, title)
+	}
+}
+
+// TestRenameHandlerRejectsBlankTitle proves a blank name changes nothing and
+// answers a plain sentence.
+func TestRenameHandlerRejectsBlankTitle(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "empty", body: `{"title":""}`},
+		{name: "spaces", body: `{"title":"   "}`},
+		{name: "whitespace", body: "{\"title\":\" \\t\\n \"}"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			storage := t.TempDir()
+			id := storeTestUpload(t, storage)
+			recorder := httptest.NewRecorder()
+
+			NewRenameHandler(storage).ServeHTTP(recorder, renameRequestFor(t, id, test.body))
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+			}
+			if got := strings.TrimSpace(recorder.Body.String()); got != renameBlankSentence {
+				t.Fatalf("sentence = %q, want %q", got, renameBlankSentence)
+			}
+			if record := readUploadRecord(t, storage, id); record.Title != "clip.mp4" {
+				t.Fatalf("stored title = %q, want clip.mp4", record.Title)
+			}
+		})
+	}
+}
+
+// TestRenameHandlerRejectsOverlongTitle proves a name past the limit changes
+// nothing and answers a plain sentence.
+func TestRenameHandlerRejectsOverlongTitle(t *testing.T) {
+	storage := t.TempDir()
+	id := storeTestUpload(t, storage)
+	recorder := httptest.NewRecorder()
+	body := `{"title":"` + strings.Repeat("a", maxProjectTitleRunes+1) + `"}`
+
+	NewRenameHandler(storage).ServeHTTP(recorder, renameRequestFor(t, id, body))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if got := strings.TrimSpace(recorder.Body.String()); got != tooLongTitleSentence() {
+		t.Fatalf("sentence = %q, want %q", got, tooLongTitleSentence())
+	}
+	if record := readUploadRecord(t, storage, id); record.Title != "clip.mp4" {
+		t.Fatalf("stored title = %q, want clip.mp4", record.Title)
+	}
+}
+
+// TestRenameHandlerRejectsUnknownProject proves a rename cannot invent a
+// record for an id no upload wrote.
+func TestRenameHandlerRejectsUnknownProject(t *testing.T) {
+	storage := t.TempDir()
+	recorder := httptest.NewRecorder()
+
+	NewRenameHandler(storage).ServeHTTP(recorder, renameRequestFor(t, "absent", `{"title":"New"}`))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusNotFound, recorder.Body.String())
+	}
+}
+
+// TestRenameHandlerRejectsInvalidRequests proves the route is POST only and
+// refuses a body that is not JSON.
+func TestRenameHandlerRejectsInvalidRequests(t *testing.T) {
+	storage := t.TempDir()
+	handler := NewRenameHandler(storage)
+	get := httptest.NewRequest(http.MethodGet, "/api/dubs/absent/title", nil)
+	get.SetPathValue("id", "absent")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, get)
+	if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != http.MethodPost {
+		t.Fatalf("GET = %d allow %q, want 405 POST", recorder.Code, recorder.Header().Get("Allow"))
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, renameRequestFor(t, "absent", "not json"))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("bad body = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// storeTestUpload writes one stored project and returns its id.
+func storeTestUpload(t *testing.T, storage string) string {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	NewUploadHandler(storage).ServeHTTP(recorder, uploadRequest(t, func(form *multipart.Writer) {
+		writeUploadFile(t, form, "video", "clip.mp4", []byte("video"))
+		writeUploadField(t, form, "language", "ml")
+	}))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d, want 201: %s", recorder.Code, recorder.Body.String())
+	}
+	var upload Upload
+	if err := json.NewDecoder(recorder.Body).Decode(&upload); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+	return upload.ID
+}
+
+// renameRequestFor builds one rename request bound to a project id.
+func renameRequestFor(t *testing.T, id, body string) *http.Request {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/dubs/"+id+"/title", strings.NewReader(body))
+	request.SetPathValue("id", id)
+	request.Header.Set("Content-Type", "application/json")
+	return request
+}
+
+// TestUploadHandlerAnswersTitlePastFieldGuard proves a name past the field
+// byte guard still reads as the naming limit rather than a store failure.
+func TestUploadHandlerAnswersTitlePastFieldGuard(t *testing.T) {
+	storage := t.TempDir()
+	recorder := httptest.NewRecorder()
+
+	NewUploadHandler(storage).ServeHTTP(recorder, uploadRequest(t, func(form *multipart.Writer) {
+		writeUploadFile(t, form, "video", "clip.mp4", []byte("video"))
+		writeUploadField(t, form, "language", "ml")
+		writeUploadField(t, form, "title", strings.Repeat("a", 9<<10))
+	}))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if got := strings.TrimSpace(recorder.Body.String()); got != tooLongTitleSentence() {
+		t.Fatalf("sentence = %q, want %q", got, tooLongTitleSentence())
+	}
+}
+
+// TestRenameHandlerAnswersTitlePastBodyGuard proves a rename body past the
+// byte guard still reads as the naming limit rather than a read failure.
+func TestRenameHandlerAnswersTitlePastBodyGuard(t *testing.T) {
+	storage := t.TempDir()
+	id := storeTestUpload(t, storage)
+	recorder := httptest.NewRecorder()
+	body := `{"title":"` + strings.Repeat("a", 9<<10) + `"}`
+
+	NewRenameHandler(storage).ServeHTTP(recorder, renameRequestFor(t, id, body))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if got := strings.TrimSpace(recorder.Body.String()); got != tooLongTitleSentence() {
+		t.Fatalf("sentence = %q, want %q", got, tooLongTitleSentence())
+	}
+	if record := readUploadRecord(t, storage, id); record.Title != "clip.mp4" {
+		t.Fatalf("stored title = %q, want clip.mp4", record.Title)
+	}
+}

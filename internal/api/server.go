@@ -49,8 +49,10 @@ type ServerOptions struct {
 	Languages        http.Handler
 	LanguagesRefresh http.Handler
 	Upload           http.Handler
-	Sample           http.Handler
-	Runner           PipelineRunner
+	// Rename updates the stored name of one project.
+	Rename http.Handler
+	Sample http.Handler
+	Runner PipelineRunner
 	// Rerender re-runs one dialogue line through the fit loop.
 	Rerender LineRenderer
 	Recorder RunRecorder
@@ -181,6 +183,9 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	}
 	if options.Upload != nil {
 		mux.Handle("POST /api/dubs/new", options.Upload)
+	}
+	if options.Rename != nil {
+		mux.Handle("POST /api/dubs/{id}/title", options.Rename)
 	}
 	if options.Sample != nil {
 		mux.Handle("POST /api/dubs/sample", options.Sample)
