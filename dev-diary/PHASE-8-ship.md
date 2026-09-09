@@ -22,7 +22,7 @@ Parallel agents would collide in the one file the demo depends on.
 requires:   P2, P3, P5, P7
 fixture-ok: no
 size:       M · frontier
-owns:       (integration, no exclusive paths)
+owns:       (integration only)
 status:     done
 ```
 Drive the sample button through live services to a finished video. Keep the workspace
