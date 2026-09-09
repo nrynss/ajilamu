@@ -28,12 +28,12 @@ The manual speaker reassignment selector on the workspace timeline exists specif
 
 ---
 
-## Unverified Live Edge Cases
+## Live Edge Cases Now Verified
 
-Two specific operational claims from the 2026-09-09 validation run require verification on a fresh live dataset:
+Two operational claims from the 2026-09-09 validation run were verified on the deployed host:
 
-1. **Live Ledger Charge Insertion**: An earlier live run encountered an error when inserting API billing records into a stale schema definition. The migration in `sql/schema.sql` resolved the column mismatch, but requires fresh live validation.
-2. **Live Acoustic Time Stretching**: During that same initial run, every generated take exceeded the stretch budget by more than 8 percent. The automated rewrite path handled repairs, leaving live `atempo` processing untested in that specific session.
+1. **Live ledger charge insertion.** A live run wrote 56 charge rows with 56 distinct event keys, summing to the run-reported 65,330,550 nanodollars.
+2. **Live acoustic time stretching.** A live run repaired two overruns with `atempo` at 0.9813 and 0.9844, and both takes landed inside their slots.
 
 ---
 

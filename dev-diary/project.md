@@ -56,9 +56,9 @@ Provide a video and target languages. The system returns a dubbed video for each
 3. **Render speech.** Google Cloud Chirp 3 HD voices synthesize audio matching speaker gender and emotional register.
 4. **Measure.** Code calculates actual duration against the allocated slot and records a signed delta. A line that ends early fails fit just like a line that runs long.
 5. **Repair the misfit.** The threshold checks absolute delta. The direction decides how `atempo` adjusts speed:
-   * **Within 8 percent, long or short:** The system applies `atempo`. It speeds up an overrun or slows down an underrun. It sounds natural on speech, runs instantly, and incurs zero model fees.
+   * **Within 8 percent long or 5 percent short:** The system applies `atempo`. It speeds up an overrun or slows down an underrun. It sounds natural on speech, runs instantly, and incurs zero model fees. The short side carries the tighter budget, because slowing speech is more noticeable.
    * **Beyond 8 percent long:** The system requests a shorter rewrite from Gemini.
-   * **Beyond 8 percent short:** The system requests a fuller rewrite. Alternatively, it leaves the slot partly silent and informs the creator. It never reports a 40 percent underrun as a fit.
+   * **Beyond 5 percent short:** The system requests a fuller rewrite. Alternatively, it leaves the slot partly silent and informs the creator. It never reports a 40 percent underrun as a fit.
    * After three failed attempts, the system flags the line for manual creator review.
 6. **Mux.** ffmpeg multiplexes audio and video streams into the final file. It preserves everything outside dialogue slots.
 

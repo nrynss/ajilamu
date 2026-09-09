@@ -73,13 +73,15 @@ therefore reads the absolute delta, and the direction picks the repair.
 
 | Signed delta | What happens |
 |---|---|
-| Within 8 percent, either way | ffmpeg `atempo` speeds up an overrun or slows an underrun. No model call, no fee. |
+| Within 8 percent long or 5 percent short | ffmpeg `atempo` speeds up an overrun or slows an underrun. No model call, no fee. |
 | More than 8 percent long | Gemini rewrites the line shorter. |
-| More than 8 percent short | Gemini rewrites the line fuller. |
+| More than 5 percent short | Gemini rewrites the line fuller. |
 | Still wrong after 3 attempts | The line is flagged for creator review, and the workspace says so. |
 
-The threshold lives at `types.FitThreshold`. The stretch budget lives at
-`fit.DefaultMaxStretchLong`. The attempt cap lives at `fit.DefaultMaxAttempts`.
+The short side carries the tighter budget, because slowing speech is more noticeable than
+speeding it up. The threshold lives at `types.FitThreshold`. The stretch budgets live at
+`fit.DefaultMaxStretchLong` and `fit.DefaultMaxStretchShort`. The attempt cap lives at
+`fit.DefaultMaxAttempts`.
 
 This rule exists because the first validation run got it wrong. It reported a take running 40.9
 percent short of its slot as a clean fit, and left 2.9 seconds of dead air over a moving mouth.
@@ -222,10 +224,9 @@ We would rather you read this than find it yourself.
 - **Speaker identity is inferred from voice, not from the picture.** The model names speakers
   from how they sound. It has misspelled a name across segments of one clip, and the synthesizer
   read the misspelling aloud. The speaker selector on the timeline exists because of this.
-- **Two claims from the live run remain unmeasured.** The 2026-09-09 run reached the export and
-  then failed. Its charge inserts hit a stale ledger schema, now replaced. Its takes all landed
-  outside the stretch budget, so `atempo` never ran and the repair path went unproven live. Both
-  claims wait on a re-run. [`dev-diary/PHASE-8-ship.md`](dev-diary/PHASE-8-ship.md) tracks them.
+- **The deployed host runs ffmpeg 6.1.1-3ubuntu5.** `AGENTS.md` freezes n9.0.1. The filters
+  used, `atempo`, `amix`, `aresample` and `sidechaincompress`, behave the same in both builds,
+  but the versions differ.
 - **Ducking against a supplied music track is the clean path.** Dynamic ducking against the film
   mix is the fallback when no separate music track exists.
 
