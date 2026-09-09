@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -774,5 +775,103 @@ func TestRunStartRejectsGlobDubID(t *testing.T) {
 	start.Body.Close()
 	if start.StatusCode != http.StatusAccepted {
 		t.Fatalf("hex dub id status = %d, want 202", start.StatusCode)
+	}
+}
+
+// TestRunTerminalSentenceFollowsCause pins the one sentence a creator reads
+// when a run stops. A busy model service names itself and asks for another run.
+// A cancelled run says so. An internal failure keeps the plain sentence, and
+// the log alone carries the cause, the run id, the dub id, and the stage.
+func TestRunTerminalSentenceFollowsCause(t *testing.T) {
+	const (
+		busySentence      = "The model service was busy, so the run stopped. Start the run again shortly."
+		cancelledSentence = "The run was cancelled."
+		plainSentence     = "The run could not finish."
+		cause             = "flush the ledger before the run commit: Code: 16. DB::Exception: No such column turn_id"
+	)
+	cases := []struct {
+		name         string
+		runErr       error
+		emit         *api.ProgressEvent
+		wantSentence string
+		wantStage    string
+		wantLog      []string
+		leaks        []string
+	}{
+		{
+			name: "busy upstream",
+			runErr: fmt.Errorf("%w: %w", api.ErrUpstreamBusy,
+				errors.New("segment media: Error 429, Message: Resource exhausted. Status: RESOURCE_EXHAUSTED")),
+			emit: &api.ProgressEvent{
+				Type:     api.EventError,
+				Stage:    api.StageSegmenting,
+				Sentence: "Unexpected error occurred during pipeline execution.",
+			},
+			wantSentence: busySentence,
+			wantStage:    api.StageSegmenting,
+			wantLog:      []string{"run failed", "dub_id=dub-cause", "stage=segmenting", "RESOURCE_EXHAUSTED"},
+			leaks:        []string{"429", "RESOURCE_EXHAUSTED", "segment media", "Unexpected error"},
+		},
+		{
+			name:         "cancelled run",
+			runErr:       context.Canceled,
+			wantSentence: cancelledSentence,
+			wantStage:    api.StageMeasuring,
+			wantLog:      []string{"run failed", "dub_id=dub-cause", "stage=measuring"},
+			leaks:        []string{"context canceled"},
+		},
+		{
+			name:         "internal failure",
+			runErr:       errors.New(cause),
+			wantSentence: plainSentence,
+			wantStage:    api.StageMeasuring,
+			wantLog:      []string{"run failed", "dub_id=dub-cause", "stage=measuring", "turn_id"},
+			leaks:        []string{"turn_id", "DB::Exception"},
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			storage := t.TempDir()
+			writeProjectSource(t, storage, "dub-cause")
+			runner := runFunc(func(_ context.Context, _ api.RunRequest, emit func(api.ProgressEvent)) (api.RunResult, error) {
+				if test.emit != nil {
+					emit(*test.emit)
+				}
+				return api.RunResult{}, test.runErr
+			})
+			recorder := recordFunc(func(context.Context, api.RunRequest, api.RunResult) error { return nil })
+			var logs bytes.Buffer
+			base := newRunTestServer(t, api.ServerOptions{
+				Runner:     runner,
+				Recorder:   recorder,
+				StorageDir: storage,
+				Logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+
+			started := postRun(t, base, "dub-cause", "language=ml")
+			started.Body.Close()
+			if started.StatusCode != http.StatusAccepted {
+				t.Fatalf("start status = %d, want 202", started.StatusCode)
+			}
+			body := drainEvents(t, base, "dub-cause")
+
+			if !strings.Contains(body, `"type":"error"`) {
+				t.Fatalf("event stream = %q, want an error terminal event", body)
+			}
+			if !strings.Contains(body, test.wantSentence) {
+				t.Errorf("event stream = %q, want the sentence %q", body, test.wantSentence)
+			}
+			for _, leak := range test.leaks {
+				if strings.Contains(body, leak) {
+					t.Errorf("event stream leaked %q: %q", leak, body)
+				}
+			}
+			logged := logs.String()
+			for _, want := range append([]string{"stage=" + test.wantStage}, test.wantLog...) {
+				if !strings.Contains(logged, want) {
+					t.Errorf("run log %q does not name %q", logged, want)
+				}
+			}
+		})
 	}
 }

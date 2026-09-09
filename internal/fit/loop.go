@@ -412,6 +412,10 @@ type PipelineConfig struct {
 	// MaxAttempts caps retry attempts per segment.
 	MaxAttempts int
 
+	// Retry bounds the retries of one transient upstream call. A zero value
+	// takes DefaultRetryPolicy.
+	Retry RetryPolicy
+
 	// Recorder receives itemized API expense charges.
 	Recorder ChargeRecorder
 
@@ -829,19 +833,20 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 		}
 	}
 
+	retry := p.cfg.Retry.normalized()
 	var segments []types.Segment
 	if p.cfg.InputMedia != nil {
 		if rs, ok := p.cfg.Segmenter.(RecorderSetter); ok {
 			rs.SetRecorder(tracker)
 		}
 		wrappedSegmenter := &loopSegmenter{
-			inner:   p.cfg.Segmenter,
+			inner:   NewRetryingSegmenter(p.cfg.Segmenter, retry),
 			emitter: emitter,
 			tracker: tracker,
 		}
 		segs, err := wrappedSegmenter.Segment(ctx, *p.cfg.InputMedia)
 		if err != nil {
-			return nil, err
+			return nil, markUpstreamBusy(err)
 		}
 		segments = segs
 	} else {
@@ -941,7 +946,7 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 
 	// Wrap translator and synthesizer with event emission hooks.
 	wrappedTranslator := &loopTranslator{
-		inner:    p.cfg.Translator,
+		inner:    NewRetryingTranslator(p.cfg.Translator, retry),
 		emitter:  emitter,
 		tracker:  tracker,
 		language: p.cfg.Language,
@@ -950,7 +955,7 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 	}
 
 	wrappedSynthesizer := &loopSynthesizer{
-		inner:    p.cfg.Synthesizer,
+		inner:    NewRetryingSynthesizer(p.cfg.Synthesizer, retry),
 		emitter:  emitter,
 		tracker:  tracker,
 		language: p.cfg.Language,
@@ -1013,6 +1018,25 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 
 		res, err := p.repairSegment(ctx, seg, rewriteCfg, clamped[seg.ID])
 		if err != nil {
+			if IsTransientUpstream(err) {
+				// The model service stayed busy past the bounded retries.
+				// One unreachable line must not fail the run, so the loop
+				// flags it and renders the rest, exactly as it does for a
+				// segment outside the film.
+				flaggedIDs = append(flaggedIDs, seg.ID)
+				results = append(results, LineResult{
+					Segment:          seg,
+					Flagged:          true,
+					NotificationCopy: fmt.Sprintf("Line %d hit a busy model service and needs creator review.", seg.ID),
+				})
+				emitter.emit(api.ProgressEvent{
+					Type:      api.EventProgress,
+					Stage:     api.StageRepairing,
+					Sentence:  fmt.Sprintf("The model service stayed busy, so line %d was flagged. Start the run again shortly.", seg.ID),
+					SegmentID: seg.ID,
+				})
+				continue
+			}
 			emitter.emit(api.ProgressEvent{
 				Type:      api.EventError,
 				Stage:     api.StageRepairing,

@@ -45,6 +45,9 @@ const (
 	runNoSource    = "This project has no source video."
 	runMissing     = "No run exists for this project."
 	runBadLanguage = "That language code is not valid."
+	// runUpstreamBusy is the terminal sentence for a model service that
+	// stayed unavailable past its bounded retries. It names no cause.
+	runUpstreamBusy = "The model service was busy, so the run stopped. Start the run again shortly."
 )
 
 var (
@@ -52,6 +55,10 @@ var (
 	errRunActive = errors.New("a run is already active for this project")
 	// errNoSourceVideo reports a project whose source video is missing.
 	errNoSourceVideo = errors.New("project has no source video")
+	// ErrUpstreamBusy marks a failure where an upstream model service stayed
+	// unavailable after its bounded retries. The pipeline attaches it, so the
+	// terminal event names a busy service and never leaks the cause.
+	ErrUpstreamBusy = errors.New("upstream model service stayed busy")
 )
 
 // RunRequest carries the inputs one dubbing run needs.
@@ -512,6 +519,10 @@ func (r *runRegistry) wait(ctx context.Context) {
 }
 
 // terminalEvent builds the one event that ends the stream.
+// The sentence follows the cause. A cancelled run says so. An upstream service
+// that stayed busy past its retries names the busy service and asks for
+// another run. A pipeline error event keeps its own plain sentence. Every
+// other failure keeps the plain sentence and never leaks the cause.
 func terminalEvent(req RunRequest, total cost.Price, runErr error, pending *ProgressEvent) ProgressEvent {
 	if runErr == nil {
 		if pending != nil && pending.Type == EventDone {
@@ -534,6 +545,8 @@ func terminalEvent(req RunRequest, total cost.Price, runErr error, pending *Prog
 	switch {
 	case errors.Is(runErr, context.Canceled):
 		sentence = "The run was cancelled."
+	case errors.Is(runErr, ErrUpstreamBusy):
+		sentence = runUpstreamBusy
 	case pending != nil && pending.Type == EventError && pending.Sentence != "":
 		sentence = pending.Sentence
 	}

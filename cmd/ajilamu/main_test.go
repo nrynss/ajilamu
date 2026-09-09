@@ -24,6 +24,7 @@ import (
 	"time"
 
 	texttospeechpb "cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
+	"google.golang.org/genai"
 
 	"github.com/nrynss/ajilamu/internal/agent"
 	"github.com/nrynss/ajilamu/internal/api"
@@ -2162,4 +2163,142 @@ func TestRunFlagsSegmentOutsideFilmPin(t *testing.T) {
 	if !strings.Contains(timeline, "2\tpast the film") {
 		t.Errorf("timeline = %q, want line 2 named", timeline)
 	}
+}
+
+// rateLimitedTranslator answers one line with a 429 on every call and
+// delegates the rest. It reproduces the Vertex reply that killed the
+// 2026-09-09 run after the creator already paid.
+type rateLimitedTranslator struct {
+	inner   *chargeWiringTranslator
+	segment int
+	calls   int
+}
+
+// Translate fails the named line with a rate limit and counts its calls.
+func (t *rateLimitedTranslator) Translate(ctx context.Context, req gemini.TranslateRequest) (string, error) {
+	if req.SegmentID == t.segment {
+		t.calls++
+		return "", genai.APIError{
+			Code:    429,
+			Message: "Resource exhausted. Please try again later.",
+			Status:  "RESOURCE_EXHAUSTED",
+		}
+	}
+	return t.inner.Translate(ctx, req)
+}
+
+// TestRunFlagsLineOnPersistentRateLimit proves a rate limit that never clears
+// no longer kills the run. The loop retries the call, flags that one line,
+// finishes the rest, exports the film, and persists the placeable takes and
+// their charges. Before the fix the same run ended on an error event with
+// "Unexpected error occurred during pipeline execution."
+func TestRunFlagsLineOnPersistentRateLimit(t *testing.T) {
+	storage := t.TempDir()
+	const dubID = "dub-rate-limited"
+	projectDir := filepath.Join(storage, dubID)
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("create project directory: %v", err)
+	}
+	source := filepath.Join(projectDir, "source.mp4")
+	synthAssemblyFilm(t, source)
+
+	router := &chargeRouter{}
+	segmenter := &chargeWiringSegmenter{rec: router, segments: []types.Segment{
+		{ID: 1, StartMs: 0, EndMs: 2000, Text: "source one", Speaker: types.Speaker{Name: "Suni Williams"}},
+		{ID: 2, StartMs: 1000, EndMs: 2000, Text: "source two", Speaker: types.Speaker{Name: "Suni Williams"}},
+	}}
+	translator := &rateLimitedTranslator{inner: &chargeWiringTranslator{rec: router}, segment: 2}
+	runner := newChargeRoutedRunner(router, segmenter, translator,
+		func(_ string, rec tts.ChargeRecorder) (tts.Synthesizer, error) {
+			return &chargeWiringSynthesizer{rec: rec}, nil
+		})
+
+	client, captured := standInClickHouse(t, "")
+	defer client.Close()
+	recorder := newRunRecorder(client, "gemini-3.8-flash", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	var logs bytes.Buffer
+	server, err := api.NewServer(&config.Config{Env: "development"}, api.ServerOptions{
+		Runner:     runner,
+		Recorder:   recorder,
+		StorageDir: storage,
+		Logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	response, err := http.Post(httpServer.URL+"/api/dubs/"+dubID+"/run?language=ml", "text/plain", nil)
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", response.StatusCode)
+	}
+
+	streamResponse, err := http.Get(httpServer.URL + "/api/dubs/" + dubID + "/events")
+	if err != nil {
+		t.Fatalf("read event stream: %v", err)
+	}
+	stream, err := io.ReadAll(streamResponse.Body)
+	streamResponse.Body.Close()
+	if err != nil {
+		t.Fatalf("read event body: %v", err)
+	}
+	for _, line := range strings.Split(string(stream), "\n") {
+		if strings.Contains(line, `"type":"done"`) {
+			t.Logf("terminal event: %s", line)
+		}
+	}
+	t.Logf("server log:\n%s", logs.String())
+
+	if !strings.Contains(string(stream), `"type":"done"`) {
+		t.Fatalf("event stream misses the done terminal event: %s", stream)
+	}
+	if strings.Contains(string(stream), `"type":"error"`) {
+		t.Fatalf("event stream carries an error terminal event: %s", stream)
+	}
+	if !strings.Contains(string(stream), "1 flagged line") {
+		t.Errorf("event stream misses the flagged line sentence: %s", stream)
+	}
+	if !strings.Contains(string(stream), "model service stayed busy") {
+		t.Errorf("event stream misses the busy model service sentence: %s", stream)
+	}
+	if strings.Contains(logs.String(), "run failed") {
+		t.Errorf("server log reports a failed run: %s", logs.String())
+	}
+	if translator.calls != 3 {
+		t.Errorf("rate-limited translation calls = %d, want the bounded 3", translator.calls)
+	}
+	t.Logf("rate-limited translation calls = %d", translator.calls)
+
+	export := filepath.Join(projectDir, "work", "ml-IN", assemble.DubbedDucked)
+	if _, err := os.Stat(export); err != nil {
+		t.Fatalf("export missing: %v", err)
+	}
+	t.Logf("ffprobe export duration = %.3fs", probeMediaSeconds(t, export))
+
+	requests := captured()
+	takes := insertRows(t, requests, "takes_raw")
+	if len(takes) == 0 {
+		t.Fatal("no take row persisted")
+	}
+	for _, row := range takes {
+		if row["segment_index"] != float64(1) {
+			t.Errorf("take row segment = %#v, want line 1 alone", row["segment_index"])
+		}
+	}
+	charges := insertRows(t, requests, "charges_raw")
+	if len(charges) == 0 {
+		t.Fatal("no charge row persisted")
+	}
+	for _, row := range charges {
+		if row["segment_index"] == float64(2) {
+			t.Errorf("charge row billed the flagged line: %#v", row)
+		}
+	}
+	t.Logf("persisted %d takes and %d charges", len(takes), len(charges))
 }

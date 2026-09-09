@@ -693,12 +693,12 @@ func (p *pipelineRunner) RenderLine(ctx context.Context, req api.LineRenderReque
 	synthesizer = fit.NewSynthesizerProxy(synthesizer, p.router)
 
 	cfg := fit.RewriteConfig{
-		Translator: &namedTranslator{
+		Translator: fit.NewRetryingTranslator(&namedTranslator{
 			inner:  p.translator,
 			target: language.name,
 			source: resolveLanguageName(req.SourceLanguage),
-		},
-		Synthesizer: synthesizer,
+		}, fit.DefaultRetryPolicy()),
+		Synthesizer: fit.NewRetryingSynthesizer(synthesizer, fit.DefaultRetryPolicy()),
 		WorkDir:     req.WorkDir,
 		PathBuilder: rerenderTakePath(req.TakeFile),
 		MaxAttempts: fit.DefaultMaxAttempts,

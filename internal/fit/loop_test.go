@@ -13,6 +13,7 @@ import (
 	"time"
 
 	texttospeechpb "cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
+	"google.golang.org/genai"
 
 	"github.com/nrynss/ajilamu/internal/api"
 	"github.com/nrynss/ajilamu/internal/config"
@@ -2469,5 +2470,383 @@ func TestPipelineFlagsSegmentOutsideFilm(t *testing.T) {
 	}
 	if !named {
 		t.Error("no event named the excluded line")
+	}
+}
+
+// scriptedTranslator answers each line with a scripted error sequence and
+// bills every successful call, which is the shape of the production client.
+type scriptedTranslator struct {
+	mu       sync.Mutex
+	rec      ChargeRecorder
+	errs     map[int][]error
+	always   map[int]error
+	requests []gemini.TranslateRequest
+}
+
+// newScriptedTranslator builds a scripted translator over one recorder.
+func newScriptedTranslator(rec ChargeRecorder) *scriptedTranslator {
+	return &scriptedTranslator{
+		rec:    rec,
+		errs:   make(map[int][]error),
+		always: make(map[int]error),
+	}
+}
+
+// Translate consumes one scripted error and bills a successful call.
+func (t *scriptedTranslator) Translate(_ context.Context, req gemini.TranslateRequest) (string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.requests = append(t.requests, req)
+	if err := t.always[req.SegmentID]; err != nil {
+		return "", err
+	}
+	if list := t.errs[req.SegmentID]; len(list) > 0 {
+		err := list[0]
+		t.errs[req.SegmentID] = list[1:]
+		return "", err
+	}
+	if t.rec != nil {
+		t.rec.Add(cost.Charge{
+			Kind:               cost.ChargeTranslate,
+			TakeID:             req.SegmentID,
+			PromptTokens:       25,
+			CandidateTokens:    15,
+			PromptUnitPrice:    150,
+			CandidateUnitPrice: 600,
+		})
+	}
+	return fmt.Sprintf("Malayalam translation for line %d", req.SegmentID), nil
+}
+
+// SetRecorder binds the charge recorder to the scripted translator.
+func (t *scriptedTranslator) SetRecorder(rec ChargeRecorder) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rec = rec
+}
+
+// callsFor counts the calls one line saw.
+func (t *scriptedTranslator) callsFor(segmentID int) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	calls := 0
+	for _, req := range t.requests {
+		if req.SegmentID == segmentID {
+			calls++
+		}
+	}
+	return calls
+}
+
+// TestPipelineRetriesTransientTranslationThenCompletesLine proves two rate
+// limits followed by a success complete the line. The line stays unflagged,
+// the retry count reaches three calls, and the successful call bills once.
+func TestPipelineRetriesTransientTranslationThenCompletesLine(t *testing.T) {
+	workDir := t.TempDir()
+	ledger := cost.NewLedger()
+	trans := newScriptedTranslator(ledger)
+	trans.errs[1] = []error{rateLimitErr(), rateLimitErr()}
+	synth := newMockPipelineSynthesizer("", ledger)
+	synth.durations[1] = []time.Duration{2 * time.Second}
+
+	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+		Segments: []types.Segment{{
+			ID:      1,
+			StartMs: 0,
+			EndMs:   2000,
+			Text:    "first",
+			Speaker: types.Speaker{Name: "Suni Williams"},
+			Emotion: "Warm",
+		}},
+		SourceDuration: 8 * time.Second,
+		Translator:     trans,
+		Synthesizer:    synth,
+		WorkDir:        workDir,
+		Recorder:       ledger,
+		Retry:          fastRetryPolicy(3),
+	}
+
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunPipeline failed: %v", err)
+	}
+	line, ok := res.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in results")
+	}
+	if line.Flagged {
+		t.Error("line 1 flagged, want a completed line")
+	}
+	if len(line.Attempts) != 1 {
+		t.Errorf("line 1 attempts = %d, want 1", len(line.Attempts))
+	}
+	if calls := trans.callsFor(1); calls != 3 {
+		t.Errorf("translation calls = %d, want 3 (one call and two retries)", calls)
+	}
+	billed := 0
+	for _, charge := range ledger.Charges() {
+		if charge.Kind == cost.ChargeTranslate {
+			billed++
+		}
+	}
+	if billed != 1 {
+		t.Errorf("translate charges = %d, want one for the successful call", billed)
+	}
+	t.Logf("line 1 completed after %d translation calls and %d translate charge", trans.callsFor(1), billed)
+}
+
+// TestPipelineFlagsLineWhenTransientRetriesExhaust proves a rate limit that
+// never clears flags the line instead of failing the run. The rest of the run
+// finishes, the flagged line renders nothing, and the retry count reaches the
+// bound.
+func TestPipelineFlagsLineWhenTransientRetriesExhaust(t *testing.T) {
+	workDir := t.TempDir()
+	ledger := cost.NewLedger()
+	trans := newScriptedTranslator(ledger)
+	trans.always[2] = rateLimitErr()
+	synth := newMockPipelineSynthesizer("", ledger)
+	synth.durations[1] = []time.Duration{2 * time.Second}
+
+	collector := &eventCollector{}
+	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+		Segments: []types.Segment{
+			{ID: 1, StartMs: 0, EndMs: 2000, Text: "first", Speaker: types.Speaker{Name: "Suni Williams"}, Emotion: "Warm"},
+			{ID: 2, StartMs: 3000, EndMs: 5000, Text: "second", Speaker: types.Speaker{Name: "Suni Williams"}, Emotion: "Calm"},
+		},
+		SourceDuration: 8 * time.Second,
+		Translator:     trans,
+		Synthesizer:    synth,
+		WorkDir:        workDir,
+		Recorder:       ledger,
+		Listener:       collector,
+		Retry:          fastRetryPolicy(3),
+	}
+
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunPipeline failed: %v", err)
+	}
+	if len(res.FlaggedSegments) != 1 || res.FlaggedSegments[0] != 2 {
+		t.Fatalf("flagged segments = %v, want [2]", res.FlaggedSegments)
+	}
+	line2, ok := res.Line(2)
+	if !ok {
+		t.Fatal("missing line 2 in results")
+	}
+	if !line2.Flagged || len(line2.Attempts) != 0 || line2.ChosenTake.File != "" {
+		t.Errorf("line 2 = flagged %t attempts %d take %q, want flagged with no take",
+			line2.Flagged, len(line2.Attempts), line2.ChosenTake.File)
+	}
+	line1, ok := res.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in results")
+	}
+	if line1.Flagged || len(line1.Attempts) != 1 {
+		t.Errorf("line 1 = flagged %t attempts %d, want a completed line",
+			line1.Flagged, len(line1.Attempts))
+	}
+	if calls := trans.callsFor(2); calls != 3 {
+		t.Errorf("line 2 translation calls = %d, want the bounded 3", calls)
+	}
+	for _, req := range synth.requests {
+		if req.SegmentID == 2 {
+			t.Errorf("synthesizer rendered the flagged line 2 at %s", req.OutPath)
+		}
+	}
+
+	events := collector.Events()
+	last := events[len(events)-1]
+	if last.Type != api.EventDone {
+		t.Fatalf("last event type = %s, want done", last.Type)
+	}
+	if !strings.Contains(last.Sentence, "1 flagged line") {
+		t.Errorf("done sentence = %q, want one flagged line", last.Sentence)
+	}
+	named := false
+	for _, event := range events {
+		if event.SegmentID == 2 && strings.Contains(event.Sentence, "model service stayed busy") {
+			named = true
+		}
+	}
+	if !named {
+		t.Error("no event named the busy model service")
+	}
+}
+
+// TestPipelineMarksBusyWhenSegmenterStaysUnavailable proves a rate limit that
+// exhausts its retries before any segment exists marks the failure busy, so the
+// run route reports a plain sentence, and keeps the cause for the log.
+func TestPipelineMarksBusyWhenSegmenterStaysUnavailable(t *testing.T) {
+	ledger := cost.NewLedger()
+	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+		Segmenter:          &mockSegmenter{err: rateLimitErr()},
+		InputMedia:         &gemini.Input{Data: []byte("audio"), MIMEType: "audio/mp3"},
+		Translator:         newMockPipelineTranslator(ledger),
+		Synthesizer:        newMockPipelineSynthesizer("", ledger),
+		WorkDir:            t.TempDir(),
+		Recorder:           ledger,
+		Retry:              fastRetryPolicy(3),
+	}
+	_, err := RunPipeline(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("RunPipeline succeeded, want the rate limit")
+	}
+	if !errors.Is(err, api.ErrUpstreamBusy) {
+		t.Errorf("error = %v, want the busy marker", err)
+	}
+	if !IsTransientUpstream(err) {
+		t.Errorf("error = %v, want the cause kept for the log", err)
+	}
+}
+
+// scriptedSegmenter fails with a scripted error sequence and then returns its
+// segments, so a test can count the retries.
+type scriptedSegmenter struct {
+	mu       sync.Mutex
+	errs     []error
+	segments []types.Segment
+	calls    int
+}
+
+// Segment consumes one scripted error and otherwise answers with the segments.
+func (s *scriptedSegmenter) Segment(_ context.Context, _ gemini.Input) ([]types.Segment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if len(s.errs) > 0 {
+		err := s.errs[0]
+		s.errs = s.errs[1:]
+		return nil, err
+	}
+	return s.segments, nil
+}
+
+// count returns the calls the segmenter has seen.
+func (s *scriptedSegmenter) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// flakySynthesizer fails with a scripted error sequence and then writes the
+// take through the fixture synthesizer.
+type flakySynthesizer struct {
+	mu    sync.Mutex
+	inner *mockPipelineSynthesizer
+	errs  []error
+	calls int
+}
+
+// Synthesize consumes one scripted error and otherwise renders the take.
+func (s *flakySynthesizer) Synthesize(ctx context.Context, req tts.SynthesizeRequest) error {
+	s.mu.Lock()
+	s.calls++
+	if len(s.errs) > 0 {
+		err := s.errs[0]
+		s.errs = s.errs[1:]
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	return s.inner.Synthesize(ctx, req)
+}
+
+// count returns the calls the synthesizer has seen.
+func (s *flakySynthesizer) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// TestPipelineRetriesTransientSegmentation proves a 503 on the segmentation
+// call is retried before the run gives up.
+func TestPipelineRetriesTransientSegmentation(t *testing.T) {
+	ledger := cost.NewLedger()
+	seg := &scriptedSegmenter{
+		errs: []error{genai.APIError{Code: 503, Status: "UNAVAILABLE"}},
+		segments: []types.Segment{{
+			ID:      1,
+			StartMs: 0,
+			EndMs:   2000,
+			Text:    "first",
+			Speaker: types.Speaker{Name: "Suni Williams"},
+			Emotion: "Warm",
+		}},
+	}
+	synth := newMockPipelineSynthesizer("", ledger)
+	synth.durations[1] = []time.Duration{2 * time.Second}
+
+	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+		Segmenter:          seg,
+		InputMedia:         &gemini.Input{Data: []byte("audio"), MIMEType: "audio/mp3"},
+		SourceDuration:     8 * time.Second,
+		Translator:         newMockPipelineTranslator(ledger),
+		Synthesizer:        synth,
+		WorkDir:            t.TempDir(),
+		Recorder:           ledger,
+		Retry:              fastRetryPolicy(3),
+	}
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunPipeline failed: %v", err)
+	}
+	if seg.count() != 2 {
+		t.Errorf("segmenter calls = %d, want 2 (one call and one retry)", seg.count())
+	}
+	if line, ok := res.Line(1); !ok || line.Flagged {
+		t.Errorf("line 1 = %+v, want a completed line", line)
+	}
+}
+
+// TestPipelineRetriesTransientSynthesis proves a 503 on the synthesis call is
+// retried before the line is flagged.
+func TestPipelineRetriesTransientSynthesis(t *testing.T) {
+	workDir := t.TempDir()
+	ledger := cost.NewLedger()
+	synth := &flakySynthesizer{
+		inner: newMockPipelineSynthesizer("", ledger),
+		errs:  []error{genai.APIError{Code: 503, Status: "UNAVAILABLE"}},
+	}
+	synth.inner.durations[1] = []time.Duration{2 * time.Second}
+
+	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+		Segments: []types.Segment{{
+			ID:      1,
+			StartMs: 0,
+			EndMs:   2000,
+			Text:    "first",
+			Speaker: types.Speaker{Name: "Suni Williams"},
+			Emotion: "Warm",
+		}},
+		SourceDuration: 8 * time.Second,
+		Translator:     newMockPipelineTranslator(ledger),
+		Synthesizer:    synth,
+		WorkDir:        workDir,
+		Recorder:       ledger,
+		Retry:          fastRetryPolicy(3),
+	}
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunPipeline failed: %v", err)
+	}
+	if synth.count() != 2 {
+		t.Errorf("synthesizer calls = %d, want 2 (one call and one retry)", synth.count())
+	}
+	line, ok := res.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in results")
+	}
+	if line.Flagged || len(line.Attempts) != 1 {
+		t.Errorf("line 1 = flagged %t attempts %d, want a completed line", line.Flagged, len(line.Attempts))
 	}
 }
