@@ -164,6 +164,7 @@
   <button class="theme-toggle" type="button" onclick={toggleTheme} aria-label="Switch to {theme === "light" ? "dark" : "light"} theme">
     {theme === "light" ? "Dark theme" : "Light theme"}
   </button>
+  <a class="docs-link" href="https://nrynss.github.io/ajilamu/">Docs</a>
   <a class="new-project" href="/new">New dub</a>
 </header>
 
@@ -242,6 +243,18 @@
     border: 1px solid var(--accent);
     border-radius: var(--radius-control);
     color: var(--surface);
+  }
+
+  .docs-link {
+    color: var(--dim);
+    font-size: 11.5px;
+    min-height: 28px;
+    padding: 4px 9px;
+    text-decoration: none;
+  }
+
+  .docs-link:hover {
+    color: var(--accent);
   }
 
   @media (max-width: 560px) {
