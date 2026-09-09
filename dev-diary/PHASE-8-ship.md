@@ -95,8 +95,8 @@ unbuilt. A reader who finds a gap between the writeup and the code stops trustin
 requires:   T8.1, T8.2, T8.3
 fixture-ok: no
 size:       S · mid
-owns:       docs/submission.md
-status:     not-started
+owns:       docs/submission.md, docs/demo-runbook.md
+status:     claimed:t84submission
 ```
 Record the demo video and complete the entry.
 
@@ -193,3 +193,12 @@ slot.`
 The baseline does not reproduce line for line, because the live model output differs from the
 2026-09-07 run. The task closes on the behaviour. `t8.1-rerun.md` and `charge-wiring-live.md`
 carry the measurements.
+
+### T8.4 artifacts ready 2026-09-09
+
+`docs/submission.md` and `docs/demo-runbook.md` are written. Every number names the record that
+measured it. The runbook drives the live host through the two shots the task names, and the
+click path was verified in a headless browser.
+
+The task stays open because its done condition is a submitted entry. The remaining actions are
+the user's: record the video, upload it, paste the entry, and submit before the deadline.
