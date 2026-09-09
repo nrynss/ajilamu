@@ -2,7 +2,8 @@
 
 :root {
   --sl-sidebar-width: 17rem;
-  --sl-content-width: 62rem;
+  --sl-content-width: 66rem;
+  --sl-content-pad-x: 2rem;
 
   /* Obsidian dark base palette */
   --sl-color-accent-low: #2e1c0c;
@@ -32,23 +33,40 @@
   --sl-color-bg-sidebar: #090d15;
 }
 
-/* Constrain the right sidebar (Table of Contents) to a clean 14rem width */
+/* Eliminate dead gap between left navigation and main content */
 @media (min-width: 72rem) {
   .right-sidebar-container {
-    width: 14rem !important;
+    width: 15rem !important;
   }
 
   .right-sidebar {
-    width: 14rem !important;
+    width: 15rem !important;
+    right: 0 !important;
+    inset-inline-end: 0 !important;
+  }
+
+  [data-has-sidebar] .main-pane {
+    --sl-content-margin-inline: 0 auto !important;
   }
 
   [data-has-sidebar][data-has-toc] .main-pane {
-    width: calc(100% - 14rem) !important;
+    width: calc(100% - 15rem) !important;
+    --sl-content-margin-inline: 0 auto !important;
+  }
+
+  .main-pane .sl-container {
+    margin-inline-start: 0 !important;
+    margin-inline-end: auto !important;
+    max-width: var(--sl-content-width);
+  }
+
+  .main-pane .content-panel {
+    padding: 1.5rem 2.5rem !important;
   }
 
   .right-sidebar-panel .sl-container {
-    max-width: 12rem !important;
-    width: 12rem !important;
+    max-width: 13rem !important;
+    width: 13rem !important;
   }
 }
 
