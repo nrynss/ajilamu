@@ -308,12 +308,14 @@ func TestNewPipelineRunnerReturnsNilWithoutDependencies(t *testing.T) {
 	}
 }
 
-// TestPipelineRunResultMapsLines proves the adapter maps takes, voices,
-// repairs, charges, flagged lines, and timeline snapshots.
+// TestPipelineRunResultMapsLines proves the adapter maps one take per
+// rendered attempt, with each attempt's own charges, voices, repairs, flagged
+// lines, the active marker, and timeline snapshots.
 func TestPipelineRunResultMapsLines(t *testing.T) {
 	first := types.Segment{ID: 1, StartMs: 0, EndMs: 2000, Text: "hello", Speaker: types.Speaker{Name: "Narrator"}, Emotion: "calm"}
 	second := types.Segment{ID: 2, StartMs: 2500, EndMs: 5000, Text: "world", Speaker: types.Speaker{Name: "Narrator"}, Emotion: "warm"}
 	firstFit := types.NewFit(2*time.Second, 2*time.Second)
+	firstTryFit := types.NewFit(2500*time.Millisecond, 3000*time.Millisecond)
 	secondFit := types.NewFit(2500*time.Millisecond, 2600*time.Millisecond)
 
 	result := &fit.PipelineResult{
@@ -323,7 +325,7 @@ func TestPipelineRunResultMapsLines(t *testing.T) {
 				Segment:    first,
 				ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: "seg_1_stretched.wav", Duration: 2 * time.Second, Fit: firstFit},
 				Attempts: []fit.LineAttempt{
-					{Attempt: 1, Text: "നമസ്കാരം", Repair: types.RepairAtempo, RepairDetail: "atempo 1.075", Fit: firstFit},
+					{Attempt: 1, Text: "നമസ്കാരം", AudioPath: "seg_1_stretched.wav", Repair: types.RepairAtempo, RepairDetail: "atempo 1.075", Fit: firstFit},
 				},
 			},
 			{
@@ -331,8 +333,8 @@ func TestPipelineRunResultMapsLines(t *testing.T) {
 				Flagged:    true,
 				ChosenTake: types.Take{SegmentID: 2, Attempt: 2, File: "seg_2_try2.wav", Duration: 2600 * time.Millisecond, Fit: secondFit},
 				Attempts: []fit.LineAttempt{
-					{Attempt: 1, Text: "ലോകം", Repair: types.RepairNone},
-					{Attempt: 2, Text: "ലോകം വിശാലം", Repair: types.RepairRewrite, RepairDetail: "shorter line", Fit: secondFit},
+					{Attempt: 1, Text: "ലോകം", AudioPath: "seg_2_try1.wav", Repair: types.RepairRewrite, Fit: firstTryFit},
+					{Attempt: 2, Text: "ലോകം വിശാലം", AudioPath: "seg_2_try2.wav", Repair: types.RepairRewrite, RepairDetail: "shorter line", Fit: secondFit},
 				},
 			},
 		},
@@ -355,14 +357,26 @@ func TestPipelineRunResultMapsLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pipelineRunResult: %v", err)
 	}
-	if len(got.Takes) != 2 || len(got.Timeline) != 2 {
-		t.Fatalf("mapped %d takes and %d snapshots, want 2 and 2", len(got.Takes), len(got.Timeline))
+	if len(got.Takes) != 3 || len(got.Timeline) != 2 {
+		t.Fatalf("mapped %d takes and %d snapshots, want 3 and 2", len(got.Takes), len(got.Timeline))
 	}
 	if got.TotalCost != 1234 {
 		t.Errorf("total cost = %d, want 1234", got.TotalCost)
 	}
 	if len(got.FlaggedSegments) != 1 || got.FlaggedSegments[0] != 2 {
 		t.Errorf("flagged segments = %v, want [2]", got.FlaggedSegments)
+	}
+	// One take per rendered attempt, oldest first, with the chosen attempt active.
+	for i, want := range []struct {
+		segment int
+		attempt int
+		active  bool
+	}{{1, 1, true}, {2, 1, false}, {2, 2, true}} {
+		take := got.Takes[i]
+		if take.Segment.ID != want.segment || take.Take.Attempt != want.attempt || take.Active != want.active {
+			t.Errorf("take %d = segment %d attempt %d active %t, want segment %d attempt %d active %t",
+				i, take.Segment.ID, take.Take.Attempt, take.Active, want.segment, want.attempt, want.active)
+		}
 	}
 	if got.Takes[0].Voice != "ml-IN-Chirp3-HD-Achernar" {
 		t.Errorf("first voice = %q", got.Takes[0].Voice)
@@ -373,11 +387,17 @@ func TestPipelineRunResultMapsLines(t *testing.T) {
 	if len(got.Takes[0].Charges) != 2 {
 		t.Errorf("first take charges = %d, want 2", len(got.Takes[0].Charges))
 	}
-	if got.Takes[1].Repair != types.RepairRewrite {
-		t.Errorf("second repair = %v, want rewrite", got.Takes[1].Repair)
+	if len(got.Takes[1].Charges) != 0 {
+		t.Errorf("discarded attempt charges = %d, want the attempt's own calls only", len(got.Takes[1].Charges))
 	}
-	if len(got.Takes[1].Peaks) != 1 {
-		t.Errorf("second take peaks = %v, want the stub sketch", got.Takes[1].Peaks)
+	if got.Takes[2].Repair != types.RepairRewrite {
+		t.Errorf("chosen repair = %v, want rewrite", got.Takes[2].Repair)
+	}
+	if len(got.Takes[2].Charges) != 2 {
+		t.Errorf("chosen take charges = %d, want 2", len(got.Takes[2].Charges))
+	}
+	if len(got.Takes[2].Peaks) != 1 {
+		t.Errorf("chosen take peaks = %v, want the stub sketch", got.Takes[2].Peaks)
 	}
 	if len(got.WholePassCharges) != 1 || got.WholePassCharges[0].Kind != cost.ChargeSegment {
 		t.Errorf("whole-pass charges = %+v, want one segment charge", got.WholePassCharges)
@@ -398,7 +418,7 @@ func TestPipelineRunResultReportsPeakFailure(t *testing.T) {
 		Lines: []fit.LineResult{{
 			Segment:    segment,
 			ChosenTake: types.Take{SegmentID: 1, Attempt: 1, File: "seg_1.wav", Duration: 2 * time.Second, Fit: fitValue},
-			Attempts:   []fit.LineAttempt{{Attempt: 1, Text: "നമസ്കാരം"}},
+			Attempts:   []fit.LineAttempt{{Attempt: 1, Text: "നമസ്കാരം", AudioPath: "seg_1.wav", Fit: fitValue}},
 		}},
 	}
 	peaks := peakReader(func(context.Context, string) ([]uint8, error) {
@@ -1496,19 +1516,25 @@ func TestChargeWiringRoutesAttemptsToTheWriter(t *testing.T) {
 	if len(translator.requests) != 2 {
 		t.Fatalf("translation calls = %d, want 2 attempts", len(translator.requests))
 	}
-	if len(result.Takes) != 1 {
-		t.Fatalf("takes = %d, want 1", len(result.Takes))
+	if len(result.Takes) != 2 {
+		t.Fatalf("takes = %d, want one per rendered attempt", len(result.Takes))
 	}
-	take := result.Takes[0]
-	if take.Take.Attempt != 2 {
-		t.Fatalf("chosen attempt = %d, want 2", take.Take.Attempt)
+	if result.Takes[0].Take.Attempt != 1 || result.Takes[0].Active {
+		t.Errorf("first take = attempt %d active %t, want attempt 1 inactive",
+			result.Takes[0].Take.Attempt, result.Takes[0].Active)
+	}
+	chosen := result.Takes[1]
+	if chosen.Take.Attempt != 2 || !chosen.Active {
+		t.Fatalf("chosen take = attempt %d active %t, want attempt 2 active", chosen.Take.Attempt, chosen.Active)
 	}
 	if got, want := result.TotalCost, cost.Price(708_000); got != want {
 		t.Errorf("run total = %d nanodollars, want %d", got, want)
 	}
 	perAttempt := map[int]int{}
-	for _, item := range take.AttemptCharges {
-		perAttempt[item.Attempt]++
+	for _, take := range result.Takes {
+		for _, item := range take.AttemptCharges {
+			perAttempt[item.Attempt]++
+		}
 	}
 	if perAttempt[1] != 2 || perAttempt[2] != 2 {
 		t.Errorf("attempt charges = %v, want two calls on each of attempts 1 and 2", perAttempt)
@@ -1519,9 +1545,11 @@ func TestChargeWiringRoutesAttemptsToTheWriter(t *testing.T) {
 	result.ProjectID = request.DubID
 	result.OwnerID = "local"
 	result.CommitID = "commit-charge-wiring"
-	result.Takes[0].TakeID = "take-charge-wiring"
+	for i := range result.Takes {
+		result.Takes[i].TakeID = fmt.Sprintf("take-charge-wiring-%d", result.Takes[i].Take.Attempt)
+	}
 	for i := range result.Timeline {
-		result.Timeline[i].TakeID = "take-charge-wiring"
+		result.Timeline[i].TakeID = chosen.TakeID
 	}
 	recorder := newRunRecorder(client, "gemini-3.8-flash", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err := recorder.Persist(context.Background(), request, result); err != nil {
@@ -1705,5 +1733,200 @@ func TestChargeWiringWritesChargeRows(t *testing.T) {
 	}
 	if first[0] != "1" || second[0] != "2" {
 		t.Errorf("candidate attempts = %s and %s, want 1 and 2", first[0], second[0])
+	}
+}
+
+// synthLineCostFilm renders a six second film, so the pin can place two lines
+// without running past the bed.
+func synthLineCostFilm(t *testing.T, path string) {
+	t.Helper()
+	cmd := exec.Command("ffmpeg", "-v", "error",
+		"-f", "lavfi", "-i", "color=black:s=64x64:r=30:d=6",
+		"-f", "lavfi", "-i", "sine=frequency=220:sample_rate=44100:duration=6",
+		"-map", "0:v", "-map", "1:a", "-ac", "2", "-ar", "44100",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("render line cost film: %v: %s", err, out)
+	}
+}
+
+// lineCostTranslator bills one translate call per attempt and answers with a
+// text whose length drives the stand-in synthesizer. Segment 1 overruns on
+// every attempt, so the loop renders three and keeps the first as the closest.
+// Segment 2 fits on its first attempt.
+type lineCostTranslator struct {
+	rec fit.ChargeRecorder
+}
+
+// Translate bills the call and answers the text for the segment and mode.
+func (t *lineCostTranslator) Translate(_ context.Context, req gemini.TranslateRequest) (string, error) {
+	t.rec.Add(cost.Charge{
+		Kind:               cost.ChargeTranslate,
+		TakeID:             req.SegmentID,
+		PromptTokens:       100,
+		CandidateTokens:    20,
+		PromptUnitPrice:    150,
+		CandidateUnitPrice: 600,
+	})
+	if req.SegmentID != 1 {
+		return strings.Repeat("d", 20), nil
+	}
+	if req.Mode == gemini.ModeShorter {
+		return strings.Repeat("b", 40), nil
+	}
+	return strings.Repeat("a", 30), nil
+}
+
+// lineCostRunner builds a runner whose stand-in clients render segment 1 in
+// three attempts and segment 2 in one.
+func lineCostRunner() (*pipelineRunner, *lineCostTranslator) {
+	router := &chargeRouter{}
+	segmenter := &chargeWiringSegmenter{rec: router, segments: []types.Segment{
+		{ID: 1, StartMs: 0, EndMs: 2000, Text: "source one", Speaker: types.Speaker{Name: "Suni Williams"}},
+		{ID: 2, StartMs: 3000, EndMs: 5000, Text: "source two", Speaker: types.Speaker{Name: "Suni Williams"}},
+	}}
+	translator := &lineCostTranslator{rec: router}
+	runner := newChargeRoutedRunner(router, segmenter, translator,
+		func(_ string, rec tts.ChargeRecorder) (tts.Synthesizer, error) {
+			return &chargeWiringSynthesizer{rec: rec}, nil
+		})
+	return runner, translator
+}
+
+// workspaceLine returns the workspace line for one segment.
+func workspaceLine(t *testing.T, tracks []api.LanguageTrack, segmentID int) api.Line {
+	t.Helper()
+	for _, track := range tracks {
+		for _, line := range track.Lines {
+			if line.SegmentID == segmentID {
+				return line
+			}
+		}
+	}
+	t.Fatalf("workspace holds no line %d in %+v", segmentID, tracks)
+	return api.Line{}
+}
+
+// TestLineCostStoresEveryAttempt measures the H1 fix against a real ClickHouse
+// loaded from sql/schema.sql. One line renders three attempts and one renders a
+// single attempt. The pin reads the takes and charges views and the workspace
+// payload. It proves every attempt stores its own take row and charges, that
+// the charges view sum is unchanged, and that the chosen attempt stays active.
+func TestLineCostStoresEveryAttempt(t *testing.T) {
+	if os.Getenv(chargeWiringPinEnv) != "1" {
+		t.Skipf("set %s=1 with the AJILAMU_CHARGE_PIN_* variables to measure a real ClickHouse", chargeWiringPinEnv)
+	}
+	cfg := chargeWiringPinConfigFromEnv(t)
+	workDir := t.TempDir()
+	source := filepath.Join(workDir, "source.mp4")
+	synthLineCostFilm(t, source)
+
+	runner, _ := lineCostRunner()
+	dubID := fmt.Sprintf("dub-line-cost-pin-%d", time.Now().UTC().UnixNano())
+	t.Logf("dub id = %s", dubID)
+	request := api.RunRequest{
+		DubID:          dubID,
+		Language:       "ml",
+		SourceLanguage: "en-US",
+		Source:         source,
+		WorkDir:        workDir,
+	}
+	result, err := runner.Run(context.Background(), request, func(api.ProgressEvent) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	result.ProjectID = dubID
+	result.OwnerID = "local"
+	result.CommitID = dubID + "-commit"
+	activeID := map[int]string{}
+	for i := range result.Takes {
+		take := &result.Takes[i]
+		take.TakeID = fmt.Sprintf("%s-take-%d-%d", dubID, take.Segment.ID, take.Take.Attempt)
+		if take.Active {
+			activeID[take.Segment.ID] = take.TakeID
+		}
+	}
+	for i := range result.Timeline {
+		result.Timeline[i].TakeID = activeID[result.Timeline[i].SegmentIndex]
+	}
+
+	var multi, single int
+	var reportedLine int64
+	for _, take := range result.Takes {
+		if take.Segment.ID == 1 {
+			multi++
+			for _, charge := range take.Charges {
+				reportedLine += int64(charge.Total())
+			}
+		} else {
+			single++
+		}
+	}
+	if multi != 3 || single != 1 {
+		t.Fatalf("run reported %d attempts on line 1 and %d on line 2, want 3 and 1", multi, single)
+	}
+
+	client, err := ledger.New(&config.Config{
+		ClickHouseHost:     "pin.invalid",
+		ClickHousePort:     8123,
+		ClickHouseUser:     cfg.user,
+		ClickHousePassword: cfg.password,
+		ClickHouseDatabase: cfg.database,
+	}, t.TempDir(), ledger.WithEndpoint("http://"+cfg.addr))
+	if err != nil {
+		t.Fatalf("open pin ledger client: %v", err)
+	}
+	defer client.Close()
+	recorder := newRunRecorder(client, "gemini-3.8-flash", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := recorder.Persist(context.Background(), request, result); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	attempts := chargeWiringPinQuery(t, cfg, fmt.Sprintf(
+		"SELECT attempt FROM takes WHERE dub_id='%s' AND segment_index=1 ORDER BY attempt", dubID))
+	t.Logf("line 1 take attempts:\n%s", attempts)
+	if attempts != "1\n2\n3" {
+		t.Errorf("line 1 take attempts = %q, want 1, 2 and 3", attempts)
+	}
+	singleRows := chargeWiringPinQuery(t, cfg, fmt.Sprintf(
+		"SELECT count() FROM takes WHERE dub_id='%s' AND segment_index=2", dubID))
+	if singleRows != "1" {
+		t.Errorf("line 2 take rows = %s, want 1", singleRows)
+	}
+	lineSum := chargeWiringPinQuery(t, cfg, fmt.Sprintf(
+		"SELECT sum(toInt64(round(cost_usd * 1000000000))) FROM charges WHERE dub_id='%s' AND segment_index=1 AND kind IN ('translate', 'synthesize')", dubID))
+	t.Logf("line 1 SQL charge sum = %s, run reported %d", lineSum, reportedLine)
+	if lineSum != fmt.Sprintf("%d", reportedLine) {
+		t.Errorf("line 1 charge sum = %s, want the run's %d", lineSum, reportedLine)
+	}
+
+	tracks, err := client.WorkspaceTakes(context.Background(), dubID)
+	if err != nil {
+		t.Fatalf("WorkspaceTakes: %v", err)
+	}
+	line := workspaceLine(t, tracks, 1)
+	if len(line.Takes) != 3 {
+		t.Fatalf("workspace line 1 takes = %d, want 3", len(line.Takes))
+	}
+	if line.Takes[2].Attempt != 1 {
+		t.Errorf("active take attempt = %d, want the chosen attempt 1 last", line.Takes[2].Attempt)
+	}
+	var workspaceSum int64
+	for _, take := range line.Takes {
+		if len(take.Charges) == 0 {
+			t.Errorf("take attempt %d carries no charge", take.Attempt)
+		}
+		for _, charge := range take.Charges {
+			if charge.Unit == "" {
+				t.Errorf("take attempt %d charge carries no unit", take.Attempt)
+			}
+			workspaceSum += int64(charge.TotalNanodollars)
+		}
+	}
+	if workspaceSum != reportedLine {
+		t.Errorf("workspace line sum = %d, want the SQL sum %d", workspaceSum, reportedLine)
+	}
+	if singleLine := workspaceLine(t, tracks, 2); len(singleLine.Takes) != 1 {
+		t.Errorf("workspace line 2 takes = %d, want 1", len(singleLine.Takes))
 	}
 }

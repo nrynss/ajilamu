@@ -272,6 +272,8 @@ type Charge struct {
 	SegmentID *int `json:"segment_id"`
 	// TakeFile names the attempt a charge serves. Empty marks whole-pass work.
 	TakeFile string `json:"take_file"`
+	// Unit names the billing unit, such as prompt_tokens or characters.
+	Unit string `json:"unit"`
 	// Units counts billed characters or tokens.
 	Units int64 `json:"units"`
 	// UnitPriceNanodollars is the price of one unit.

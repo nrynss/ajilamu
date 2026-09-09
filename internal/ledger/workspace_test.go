@@ -313,9 +313,15 @@ func TestWorkspaceTakesGroupsAndOrders(t *testing.T) {
 	if len(first.Takes[0].Charges) != 1 || first.Takes[0].Charges[0].Kind != "translate" {
 		t.Errorf("attempt 1 charges = %+v, want one translate charge", first.Takes[0].Charges)
 	}
+	if first.Takes[0].Charges[0].Unit != "prompt_tokens" {
+		t.Errorf("attempt 1 charge unit = %q, want prompt_tokens", first.Takes[0].Charges[0].Unit)
+	}
 	if len(first.Takes[1].Charges) != 1 || first.Takes[1].Charges[0].Kind != "synthesize" ||
 		first.Takes[1].Charges[0].TakeFile != "a2.wav" {
 		t.Errorf("attempt 2 charges = %+v, want one synthesize charge on a2.wav", first.Takes[1].Charges)
+	}
+	if first.Takes[1].Charges[0].Unit != "characters" {
+		t.Errorf("attempt 2 charge unit = %q, want characters", first.Takes[1].Charges[0].Unit)
 	}
 	second := got[0].Lines[1]
 	if second.SegmentID != 2 || !second.Flagged {
@@ -323,6 +329,49 @@ func TestWorkspaceTakesGroupsAndOrders(t *testing.T) {
 	}
 	if len(captured()) != 2 {
 		t.Errorf("request count = %d, want the takes and charges statements", len(captured()))
+	}
+}
+
+// TestWorkspaceTakesPutsTheActiveAttemptLast proves the reader returns every
+// recorded attempt and keeps the wire rule that the last take is active. The
+// active row carries the line's chosen text even when it is the oldest attempt.
+func TestWorkspaceTakesPutsTheActiveAttemptLast(t *testing.T) {
+	t.Parallel()
+
+	takes := strings.Join([]string{
+		`{"language":"ml","commit_id":"c1","segment_index":1,"attempt":1,"active":1,"voice":"voice-a","text":"chosen text","audio_path":"a1.wav","repair":"rewrite","peaks":[],"slot_ms":2000,"measured_ms":3000,"delta_ms":1000,"created_ms":4000}`,
+		`{"language":"ml","commit_id":"c1","segment_index":1,"attempt":2,"active":0,"voice":"voice-a","text":"longer try","audio_path":"a2.wav","repair":"rewrite","peaks":[],"slot_ms":2000,"measured_ms":4000,"delta_ms":2000,"created_ms":5000}`,
+		`{"language":"ml","commit_id":"c1","segment_index":1,"attempt":3,"active":0,"voice":"voice-a","text":"short try","audio_path":"a3.wav","repair":"rewrite","peaks":[],"slot_ms":2000,"measured_ms":1000,"delta_ms":-1000,"created_ms":6000}`,
+	}, "\n") + "\n"
+	client, _ := workspaceStandIn(t, map[string]string{
+		selectWorkspaceTakes:       takes,
+		selectWorkspaceTakeCharges: "",
+	})
+	got, err := client.WorkspaceTakes(context.Background(), fixtureDub)
+	if err != nil {
+		t.Fatalf("WorkspaceTakes: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Lines) != 1 {
+		t.Fatalf("tracks = %+v, want one track with one line", got)
+	}
+	line := got[0].Lines[0]
+	if len(line.Takes) != 3 {
+		t.Fatalf("takes = %d, want every recorded attempt", len(line.Takes))
+	}
+	wantAttempts := []int{2, 3, 1}
+	for i, want := range wantAttempts {
+		if line.Takes[i].Attempt != want {
+			t.Errorf("take %d attempt = %d, want %d (active last)", i, line.Takes[i].Attempt, want)
+		}
+	}
+	if line.Takes[2].File != "a1.wav" {
+		t.Errorf("last take file = %q, want the active attempt's a1.wav", line.Takes[2].File)
+	}
+	if line.Text != "chosen text" {
+		t.Errorf("line text = %q, want the active attempt's text", line.Text)
+	}
+	if !line.Flagged {
+		t.Error("line with no fitting attempt should stay flagged")
 	}
 }
 

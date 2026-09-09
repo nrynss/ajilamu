@@ -252,14 +252,19 @@ func TestRunStartRejectsUnsafeLanguage(t *testing.T) {
 }
 
 // TestRunMintsLedgerIdentity proves the run mints the commit and take ids the
-// recorder needs, and links every snapshot to its take.
+// recorder needs, and links every snapshot to the attempt the loop chose rather
+// than to the last attempt.
 func TestRunMintsLedgerIdentity(t *testing.T) {
 	storage := t.TempDir()
 	writeProjectSource(t, storage, "dub-identity")
 	recorded := make(chan api.RunResult, 1)
 	runner := runFunc(func(context.Context, api.RunRequest, func(api.ProgressEvent)) (api.RunResult, error) {
 		return api.RunResult{
-			Takes: []api.RunTake{{Segment: types.Segment{ID: 1}}},
+			Takes: []api.RunTake{
+				{Segment: types.Segment{ID: 1}, Take: types.Take{SegmentID: 1, Attempt: 1}},
+				{Segment: types.Segment{ID: 1}, Take: types.Take{SegmentID: 1, Attempt: 2}, Active: true},
+				{Segment: types.Segment{ID: 1}, Take: types.Take{SegmentID: 1, Attempt: 3}},
+			},
 			Timeline: []api.RunSegmentState{
 				{SegmentIndex: 1},
 			},
@@ -287,11 +292,25 @@ func TestRunMintsLedgerIdentity(t *testing.T) {
 		if result.OwnerID == "" {
 			t.Error("the run minted no owner id")
 		}
-		if len(result.Takes) != 1 || result.Takes[0].TakeID == "" {
-			t.Fatalf("minted takes = %+v, want one take with an id", result.Takes)
+		if len(result.Takes) != 3 {
+			t.Fatalf("minted takes = %+v, want one per attempt", result.Takes)
 		}
-		if len(result.Timeline) != 1 || result.Timeline[0].TakeID != result.Takes[0].TakeID {
-			t.Fatalf("minted timeline = %+v, want the take id %q", result.Timeline, result.Takes[0].TakeID)
+		ids := map[string]bool{}
+		activeID := ""
+		for _, take := range result.Takes {
+			if take.TakeID == "" {
+				t.Fatal("a take carries no minted id")
+			}
+			if ids[take.TakeID] {
+				t.Fatalf("take id %q repeats", take.TakeID)
+			}
+			ids[take.TakeID] = true
+			if take.Active {
+				activeID = take.TakeID
+			}
+		}
+		if len(result.Timeline) != 1 || result.Timeline[0].TakeID != activeID {
+			t.Fatalf("minted timeline = %+v, want the active take id %q", result.Timeline, activeID)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the recorder never saw the run result")

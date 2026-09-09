@@ -847,8 +847,10 @@ func assembleRun(ctx context.Context, req api.RunRequest, result *fit.PipelineRe
 type peakReader func(ctx context.Context, path string) ([]uint8, error)
 
 // pipelineRunResult maps a fit pipeline result onto the api run result.
-// Charges follow their segment. A charge no take owns stays whole-pass until
-// Persist attributes it to the first rendered take.
+// Every rendered attempt becomes one run take, so the ledger holds each try
+// the loop rendered. A take carries only the charges its own attempt billed.
+// The chosen attempt is marked active. A charge no attempt owns stays
+// whole-pass until Persist attributes it to the first rendered take.
 func pipelineRunResult(ctx context.Context, result *fit.PipelineResult, peaks peakReader) (api.RunResult, error) {
 	if result == nil {
 		return api.RunResult{}, errors.New("pipeline result is nil")
@@ -860,6 +862,10 @@ func pipelineRunResult(ctx context.Context, result *fit.PipelineResult, peaks pe
 	bySegment := make(map[int][]cost.AttemptCharge, len(rendered))
 	var wholePass []cost.Charge
 	for _, item := range result.AttemptCharges {
+		if item.Attempt == 0 {
+			wholePass = append(wholePass, item.Charge)
+			continue
+		}
 		if _, ok := rendered[item.Charge.TakeID]; ok {
 			bySegment[item.Charge.TakeID] = append(bySegment[item.Charge.TakeID], item)
 			continue
@@ -872,30 +878,34 @@ func pipelineRunResult(ctx context.Context, result *fit.PipelineResult, peaks pe
 		WholePassCharges: wholePass,
 	}
 	for _, line := range result.Lines {
-		take := line.ChosenTake
-		if take.File == "" {
-			continue
-		}
-		attempt := chosenAttempt(line)
-		var waveform []uint8
-		if peaks != nil {
-			sketch, err := peaks(ctx, take.File)
-			if err != nil {
-				return api.RunResult{}, fmt.Errorf("sketch take peaks for line %d: %w", line.Segment.ID, err)
+		voice := voiceName(result.Voices, line.Segment.Speaker.Name)
+		for _, attempt := range line.Attempts {
+			take := attempt.Take(line.Segment.ID)
+			if take.File == "" {
+				continue
 			}
-			waveform = sketch
+			var waveform []uint8
+			if peaks != nil {
+				sketch, err := peaks(ctx, take.File)
+				if err != nil {
+					return api.RunResult{}, fmt.Errorf("sketch take peaks for line %d: %w", line.Segment.ID, err)
+				}
+				waveform = sketch
+			}
+			charges := chargesForAttempt(bySegment[line.Segment.ID], attempt.Attempt)
+			out.Takes = append(out.Takes, api.RunTake{
+				Text:           attempt.Text,
+				Segment:        line.Segment,
+				Take:           take,
+				Active:         attempt.Attempt == line.ChosenTake.Attempt,
+				Voice:          voice,
+				Repair:         attempt.Repair,
+				RepairDetail:   attempt.RepairDetail,
+				Charges:        chargesOf(charges),
+				AttemptCharges: charges,
+				Peaks:          waveform,
+			})
 		}
-		out.Takes = append(out.Takes, api.RunTake{
-			Text:           attempt.Text,
-			Segment:        line.Segment,
-			Take:           take,
-			Voice:          voiceName(result.Voices, line.Segment.Speaker.Name),
-			Repair:         attempt.Repair,
-			RepairDetail:   attempt.RepairDetail,
-			Charges:        chargesOf(bySegment[line.Segment.ID]),
-			AttemptCharges: bySegment[line.Segment.ID],
-			Peaks:          waveform,
-		})
 		out.Timeline = append(out.Timeline, api.RunSegmentState{
 			SegmentIndex: line.Segment.ID,
 			StartMs:      line.Segment.StartMs,
@@ -903,10 +913,22 @@ func pipelineRunResult(ctx context.Context, result *fit.PipelineResult, peaks pe
 			Speaker:      line.Segment.Speaker.Name,
 			Emotion:      line.Segment.Emotion,
 			SourceText:   line.Segment.Text,
-			Text:         attempt.Text,
+			Text:         chosenAttempt(line).Text,
 		})
 	}
 	return out, nil
+}
+
+// chargesForAttempt selects the calls one attempt billed. Every rendered
+// attempt owns the charges its own translate and render calls produced.
+func chargesForAttempt(items []cost.AttemptCharge, attempt int) []cost.AttemptCharge {
+	var out []cost.AttemptCharge
+	for _, item := range items {
+		if item.Attempt == attempt {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // chosenAttempt returns the attempt the line chose.
@@ -959,7 +981,7 @@ func newRunRecorder(client *ledger.Client, provider string, logger *slog.Logger)
 // reports done.
 func (r *runRecorder) Persist(ctx context.Context, req api.RunRequest, result api.RunResult) error {
 	return r.persist(ctx, req, result, api.ActionTakeRendered, api.AuthorAgent, -1,
-		fmt.Sprintf("Rendered %d lines into %s.", len(result.Takes), req.Language))
+		fmt.Sprintf("Rendered %d lines into %s.", renderedLineCount(result), req.Language))
 }
 
 // PersistCorrected writes one corrected-source re-render. It is the only
@@ -967,6 +989,16 @@ func (r *runRecorder) Persist(ctx context.Context, req api.RunRequest, result ap
 func (r *runRecorder) PersistCorrected(ctx context.Context, req api.RunRequest, result api.RunResult, corrected api.CorrectedRerender) error {
 	return r.persist(ctx, req, result, corrected.Action, corrected.Author, int32(corrected.Segment),
 		fmt.Sprintf("Corrected the source of line %d and re-rendered it.", corrected.Segment))
+}
+
+// renderedLineCount counts the lines a run rendered. The take list holds one
+// entry per rendered attempt, so counting takes would overstate the lines.
+func renderedLineCount(result api.RunResult) int {
+	segments := make(map[int]struct{}, len(result.Takes))
+	for _, take := range result.Takes {
+		segments[take.Segment.ID] = struct{}{}
+	}
+	return len(segments)
 }
 
 // persist writes one commit with its action, takes, charges and timeline

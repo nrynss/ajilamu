@@ -19,6 +19,7 @@
           "kind": "translate",
           "segment_id": 3,
           "take_file": "seg_3_try1.wav",
+          "unit": "prompt_tokens",
           "units": 82,
           "unit_price_nanodollars": 100,
           "total_nanodollars": 8200
@@ -27,6 +28,7 @@
           "kind": "synthesize",
           "segment_id": 3,
           "take_file": "seg_3_try1.wav",
+          "unit": "characters",
           "units": 77,
           "unit_price_nanodollars": 30000,
           "total_nanodollars": 2310000

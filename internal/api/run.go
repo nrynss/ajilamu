@@ -82,6 +82,9 @@ type RunTake struct {
 	Text string
 	// Take is the rendered attempt.
 	Take types.Take
+	// Active marks the attempt the loop chose. The run links each segment's
+	// timeline snapshot to this take, and the workspace shows it as active.
+	Active bool
 	// Voice names the voice profile used.
 	Voice string
 	// Repair names the strategy that produced the file.
@@ -127,7 +130,8 @@ type RunResult struct {
 	ProjectID string
 	// OwnerID names the creator who owns the dub.
 	OwnerID string
-	// Takes lists one rendered take per finished line.
+	// Takes lists every rendered attempt, one entry per attempt. Each entry
+	// carries its own charges, and Active names the one the loop chose.
 	Takes []RunTake
 	// Timeline lists one snapshot per rendered segment.
 	Timeline []RunSegmentState
@@ -442,19 +446,30 @@ func (run *dubRun) fail(req RunRequest, total cost.Price, runErr error) {
 
 // mintRunIdentity fills the identity fields the ledger requires. The api
 // package mints them because it owns the run seam types. It links each
-// timeline snapshot to the take that speaks its segment.
+// timeline snapshot to the take the loop chose for that segment. A take the
+// caller did not mark active falls back to the segment's last take.
 func mintRunIdentity(req RunRequest, result *RunResult) {
 	result.ProjectID = req.DubID
 	result.OwnerID = localOwnerID
 	result.CommitID = newRunID()
-	takeBySegment := make(map[int]string, len(result.Takes))
+	activeBySegment := make(map[int]string, len(result.Takes))
+	lastBySegment := make(map[int]string, len(result.Takes))
 	for i := range result.Takes {
 		id := newRunID()
 		result.Takes[i].TakeID = id
-		takeBySegment[result.Takes[i].Segment.ID] = id
+		segment := result.Takes[i].Segment.ID
+		lastBySegment[segment] = id
+		if result.Takes[i].Active {
+			activeBySegment[segment] = id
+		}
+	}
+	for segment, id := range lastBySegment {
+		if _, ok := activeBySegment[segment]; !ok {
+			activeBySegment[segment] = id
+		}
 	}
 	for i := range result.Timeline {
-		result.Timeline[i].TakeID = takeBySegment[result.Timeline[i].SegmentIndex]
+		result.Timeline[i].TakeID = activeBySegment[result.Timeline[i].SegmentIndex]
 	}
 }
 

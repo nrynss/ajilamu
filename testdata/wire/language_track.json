@@ -22,6 +22,7 @@
               "kind": "translate",
               "segment_id": 1,
               "take_file": "seg_1_try1.wav",
+              "unit": "prompt_tokens",
               "units": 21,
               "unit_price_nanodollars": 100,
               "total_nanodollars": 2100
@@ -30,6 +31,7 @@
               "kind": "synthesize",
               "segment_id": 1,
               "take_file": "seg_1_try1.wav",
+              "unit": "characters",
               "units": 28,
               "unit_price_nanodollars": 30000,
               "total_nanodollars": 840000
@@ -59,6 +61,7 @@
               "kind": "translate",
               "segment_id": 8,
               "take_file": "seg_8_try1.wav",
+              "unit": "prompt_tokens",
               "units": 86,
               "unit_price_nanodollars": 100,
               "total_nanodollars": 8600
@@ -67,6 +70,7 @@
               "kind": "synthesize",
               "segment_id": 8,
               "take_file": "seg_8_try1.wav",
+              "unit": "characters",
               "units": 98,
               "unit_price_nanodollars": 30000,
               "total_nanodollars": 2940000

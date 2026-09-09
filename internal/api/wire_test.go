@@ -456,6 +456,24 @@ func TestMicroCostSurvivesAsInteger(t *testing.T) {
 	}
 }
 
+// TestChargeNamesItsBillingUnit pins the L2 contract. One Gemini call bills a
+// prompt row and a candidate row, so the wire must name the unit that tells
+// them apart. types.ts mirrors the field, and the parity test holds them.
+func TestChargeNamesItsBillingUnit(t *testing.T) {
+	var charge Charge
+	decodeExample(t, "charge.json", &charge)
+	if charge.Unit != "prompt_tokens" {
+		t.Fatalf("example unit = %q, want prompt_tokens", charge.Unit)
+	}
+	data, err := json.Marshal(charge)
+	if err != nil {
+		t.Fatalf("marshal charge: %v", err)
+	}
+	if !strings.Contains(string(data), `"unit":"prompt_tokens"`) {
+		t.Fatalf("unit did not serialize: %s", data)
+	}
+}
+
 // TestProgressEventsCarrySentenceAndCost pins the SSE envelope contract.
 func TestProgressEventsCarrySentenceAndCost(t *testing.T) {
 	var event ProgressEvent

@@ -25,7 +25,13 @@ import (
 // before it reaches the reader. slot_ms, measured_ms and delta_ms leave as Int64
 // so one row shape covers the wire Fit type. created_ms orders attempts that
 // share an attempt number across runs.
-const selectWorkspaceTakes = "SELECT language, commit_id, segment_index, attempt, voice, text, audio_path, toString(repair) AS repair, repair_detail, peaks, toInt64(slot_ms) AS slot_ms, toInt64(measured_ms) AS measured_ms, toInt64(delta_ms) AS delta_ms, toInt64(toUnixTimestamp64Milli(created_at)) AS created_ms FROM takes WHERE dub_id = {dub_id:String} ORDER BY language ASC, segment_index ASC, attempt ASC, created_ms ASC, commit_id ASC FORMAT JSONEachRow"
+//
+// active marks the attempt the loop chose. The timeline view records that take
+// id per line at its newest snapshot, so each take compares its own id against
+// the newest snapshot id for its line. The order puts the active take last,
+// which is the order the wire documents, and the rest follow by attempt and
+// then by creation time.
+const selectWorkspaceTakes = "SELECT language, commit_id, segment_index, attempt, voice, text, audio_path, toString(repair) AS repair, repair_detail, peaks, toInt64(slot_ms) AS slot_ms, toInt64(measured_ms) AS measured_ms, toInt64(delta_ms) AS delta_ms, toInt64(toUnixTimestamp64Milli(created_at)) AS created_ms, toUInt8(take_id IN (SELECT take_id FROM (SELECT argMax(take_id, (version_seq, commit_id)) AS take_id FROM timeline_state WHERE dub_id = {dub_id:String} GROUP BY language, segment_index))) AS active FROM takes WHERE dub_id = {dub_id:String} ORDER BY language ASC, segment_index ASC, active ASC, attempt ASC, created_ms ASC, commit_id ASC FORMAT JSONEachRow"
 
 // selectWorkspaceTakeCharges lists the charges a single take owns.
 //
@@ -72,10 +78,12 @@ const selectProjectMetadata = "SELECT toUInt64(commit_count) AS commit_count, to
 
 // workspaceTakeRow is one JSONEachRow line from selectWorkspaceTakes.
 type workspaceTakeRow struct {
-	Language     string  `json:"language"`
-	CommitID     string  `json:"commit_id"`
-	SegmentIndex int32   `json:"segment_index"`
-	Attempt      uint8   `json:"attempt"`
+	Language     string `json:"language"`
+	CommitID     string `json:"commit_id"`
+	SegmentIndex int32  `json:"segment_index"`
+	Attempt      uint8  `json:"attempt"`
+	// Active is one when the timeline names this take as the line's choice.
+	Active       uint8   `json:"active"`
 	Voice        string  `json:"voice"`
 	Text         string  `json:"text"`
 	AudioPath    string  `json:"audio_path"`
@@ -192,6 +200,7 @@ func (c *Client) WholePassCharges(ctx context.Context, dubID string) ([]api.Char
 	for _, row := range rows {
 		out = append(out, api.Charge{
 			Kind:                 row.Kind,
+			Unit:                 row.Unit,
 			Units:                row.Units,
 			UnitPriceNanodollars: cost.Price(row.UnitPriceNanodollars),
 			TotalNanodollars:     cost.Price(row.TotalNanodollars),
@@ -340,6 +349,7 @@ func buildLanguageTracks(takes []workspaceTakeRow, charges []workspaceChargeRow)
 		chargesByTake[key] = append(chargesByTake[key], api.Charge{
 			Kind:                 row.Kind,
 			SegmentID:            &segment,
+			Unit:                 row.Unit,
 			Units:                row.Units,
 			UnitPriceNanodollars: cost.Price(row.UnitPriceNanodollars),
 			TotalNanodollars:     cost.Price(row.Units * row.UnitPriceNanodollars),
@@ -367,6 +377,8 @@ func buildLanguageTracks(takes []workspaceTakeRow, charges []workspaceChargeRow)
 			lineIndex[lineKey] = lineAt
 		}
 		line := &tracks[trackAt].Lines[lineAt]
+		// The rows arrive with the active take last, so the last text is the
+		// text the loop chose. A line with no active take keeps its last row.
 		line.Text = row.Text
 		// Charges starts empty so a take with no itemized charge marshals as
 		// [] rather than null, the shape testdata/wire/take.json declares.
@@ -439,11 +451,17 @@ func atempoStretchMilli(repair, detail string) int64 {
 	return int64(math.Round(ratio * 1000))
 }
 
+// cmpWorkspaceTakeRow orders one line's takes. The active take sorts last, so
+// the wire rule that the last take is active holds whatever the server's row
+// order. The rest follow by attempt, then by creation time and commit.
 func cmpWorkspaceTakeRow(a, b workspaceTakeRow) int {
 	if c := cmp.Compare(a.Language, b.Language); c != 0 {
 		return c
 	}
 	if c := cmp.Compare(a.SegmentIndex, b.SegmentIndex); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(a.Active, b.Active); c != 0 {
 		return c
 	}
 	if c := cmp.Compare(a.Attempt, b.Attempt); c != 0 {

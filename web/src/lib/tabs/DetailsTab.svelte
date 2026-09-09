@@ -64,6 +64,10 @@
       }
     }
   }
+  function unitSuffix(charge: Charge): string {
+    if (!charge.unit) return ""
+    return ` (${charge.unit.replace(/_/g, " ")})`
+  }
 </script>
 
 <section class="details" aria-label="Line details">
@@ -89,7 +93,7 @@
       {#each line?.takes ?? [] as take, takeIndex (`${take.file}-${takeIndex}`)}
         {#each take.charges as charge, chargeIndex (`${take.file}-${charge.kind}-${charge.units}-${charge.unit_price_nanodollars}-${charge.total_nanodollars}-${chargeIndex}`)}
           <li>
-            <span>{chargeName(charge)} for try <span class="numeric">{take.attempt}</span></span>
+            <span>{chargeName(charge)}{unitSuffix(charge)} for try <span class="numeric">{take.attempt}</span></span>
             <span class="numeric">{formatMoney(charge.total_nanodollars)}</span>
           </li>
         {/each}
@@ -107,7 +111,7 @@
     {#if projectCharges.length > 0}
       <ul class="charges project-charges">
         {#each projectCharges as charge, chargeIndex (`project-${charge.kind}-${charge.units}-${charge.unit_price_nanodollars}-${charge.total_nanodollars}-${chargeIndex}`)}
-          <li><span>{chargeName(charge)}</span><span class="numeric">{formatMoney(charge.total_nanodollars)}</span></li>
+          <li><span>{chargeName(charge)}{unitSuffix(charge)}</span><span class="numeric">{formatMoney(charge.total_nanodollars)}</span></li>
         {/each}
       </ul>
     {/if}

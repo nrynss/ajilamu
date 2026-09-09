@@ -193,6 +193,8 @@ export interface Charge {
   segment_id: number | null
   /** TakeFile names the attempt a charge serves. Empty marks whole-pass work. */
   take_file: string
+  /** Unit names the billing unit, such as prompt_tokens or characters. */
+  unit: string
   /** Units counts billed characters or tokens. */
   units: number
   /** UnitPriceNanodollars is the price of one unit. */
