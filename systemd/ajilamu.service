@@ -1,0 +1,56 @@
+[Unit]
+Description=Ajilamu dubbing server
+Documentation=https://github.com/nrynss/ajilamu
+After=network-online.target
+Wants=network-online.target
+Requires=ajilamu-secrets.service
+After=ajilamu-secrets.service
+
+[Service]
+Type=exec
+User=ajilamu
+Group=ajilamu
+WorkingDirectory=/opt/ajilamu
+
+# The ExecStartPre refreshes the tmpfs secret file on every start, so a
+# rotated secret arrives without a redeploy. ajilamu-secrets.service runs
+# first, because systemd reads EnvironmentFile= before this step on some
+# systemd releases and the file must exist on a cold /run.
+ExecStartPre=+/opt/ajilamu/deploy/fetch-secrets.sh
+EnvironmentFile=/run/ajilamu/env
+
+# Non-secret settings from dev-diary/infrastructure.md.
+Environment=PORT=8080
+Environment=ENV=production
+Environment=GEMINI_MODEL=gemini-3.8-flash
+Environment=GOOGLE_CLOUD_PROJECT=nryn-personal
+Environment=GOOGLE_CLOUD_LOCATION=global
+Environment=CLICKHOUSE_HOST=dvjdkkiusz.us-central1.gcp.clickhouse.cloud
+Environment=CLICKHOUSE_PORT=8443
+Environment=CLICKHOUSE_USER=default
+Environment=CLICKHOUSE_DATABASE=ajilamu
+Environment=CLICKHOUSE_SECURE=true
+Environment=CLICKHOUSE_SERVICE_ID=d824334c-ff63-478c-8f83-c7485a00ae79
+Environment=CLICKHOUSE_ORG_ID=b4745d4e-d50c-47f4-b0c1-b4f4cbef49cf
+Environment=CLICKHOUSE_MCP_URL=http://127.0.0.1:8000/mcp
+Environment=CLICKHOUSE_MCP_SERVER_TRANSPORT=http
+Environment=CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000
+Environment=AJILAMU_DATA_DIR=/data/storage/ajilamu
+Environment=AJILAMU_FRONTEND_DIR=/opt/ajilamu/web
+# GOOGLE_APPLICATION_CREDENTIALS stays unset. ADC reads the metadata server.
+
+ExecStart=/opt/ajilamu/bin/ajilamu
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# The server writes only under its data directory. PrivateTmp gives ffmpeg a
+# private /tmp, so concurrent runs cannot read each other's intermediate files.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/data/storage
+
+[Install]
+WantedBy=multi-user.target

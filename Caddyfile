@@ -1,0 +1,19 @@
+# Ajilamu TLS front door.
+#
+# The first address is the custom name. Its A record is DNS-only, so the
+# ACME HTTP-01 challenge reaches this origin directly. The second address
+# arrives from the systemd drop-in that bootstrap.sh writes. It encodes the
+# reserved address with dashes under sslip.io and stays the fallback when the
+# custom certificate cannot be issued.
+#
+# Caddy obtains one public certificate per name over the HTTP-01 challenge.
+#
+# flush_interval -1 disables response buffering, so the run event stream
+# arrives frame by frame instead of at the end of the run. Range requests and
+# their 206 answers pass through the proxy untouched, so video scrubbing
+# never re-downloads the file.
+ajilamu.nryn.dev, {$AJILAMU_HOSTNAME} {
+	reverse_proxy 127.0.0.1:8080 {
+		flush_interval -1
+	}
+}

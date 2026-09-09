@@ -50,7 +50,7 @@ requires:   T8.1
 fixture-ok: no
 size:       M · mid
 owns:       deploy/, Caddyfile, systemd/
-status:     not-started
+status:     done
 ```
 Provision the machine described in [infrastructure.md](infrastructure.md). Build the
 mcp-clickhouse image from `deploy/mcp-clickhouse/`, because no published image exists.
@@ -150,3 +150,26 @@ The site enforces a three-column layout across all pages via `template: doc`.
 A custom theme applies obsidian dark styling with Monpa copper and cyan telemetry accents.
 GitHub Actions workflow `.github/workflows/deploy-docs.yml` publishes to GitHub Pages on master pushes.
 The repository drift audit and all prose constraints pass with zero findings.
+
+### T8.2 deploy 2026-09-09
+
+The host is live. `https://ajilamu.nryn.dev` serves the workspace with a Let's Encrypt
+certificate, and `34-63-219-30.sslip.io` stays as the fallback.
+
+**Resources.** VM `ajilamu`, e2-standard-2 in us-central1-a, static IP 34.63.219.30, a 20 GB
+boot disk and a 50 GB `pd-ssd` data disk at `/data/storage`, firewall rules for tcp 80 and 443,
+the bucket `gs://ajilamu-media`, the service account `ajilamu-host@nryn-personal`, and five
+Secret Manager secrets. ClickHouse Cloud holds the `mcp_readonly` user with SELECT on `ajilamu`.
+
+**Proof.** `deploy/deploy.sh --recreate-vm` deleted the instance and rebuilt it from the
+repository alone with the same address and data disk. It then served run 3's export byte
+identical, sha256 `06cf7f20`. Both hostnames answer 200 and a range request answers 206. The
+ledger held 62 charges with 62 distinct event keys summing to the run's reported 72,309,000
+nanodollars. The events stream delivered its first frame at 0 seconds and 72 frames before
+finishing, so Caddy does not buffer.
+
+**Findings fixed inside the task.** No predefined role carries any `texttospeech.*` permission,
+and Chirp synthesizes with `roles/aiplatform.user` alone. The mcp unit lacked the non-secret
+ClickHouse settings and dialled localhost. Three smaller script defects are recorded.
+
+**Cost.** About $59.42 per month fixed, and about $0.07 of model spend per dub.

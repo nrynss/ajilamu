@@ -75,9 +75,15 @@ declines to call that flag a boundary.
 The GCE host runs under an attached service account. The metadata server supplies its token.
 No key file reaches the virtual machine, and no credential reaches an image layer.
 
-The service account holds three roles. `roles/aiplatform.user` reaches Vertex AI.
-`roles/secretmanager.secretAccessor` reads the secrets below, granted on each secret rather
-than on the project. `roles/storage.objectAdmin` reaches `gs://ajilamu-media`.
+The service account holds `roles/aiplatform.user` on the project and
+`roles/secretmanager.secretAccessor` on each secret alone. It holds
+`roles/storage.objectAdmin` on `gs://ajilamu-media`.
+
+The synchronous Cloud Text-to-Speech API needs no texttospeech role. No role named
+`cloudtexttospeech.user` or `cloudtts.user` exists, and a scan of every predefined role
+found no `texttospeech.*` permission. A Chirp synthesize call from the deployed host
+returned HTTP 200 with `roles/aiplatform.user` alone. The record
+`dev-diary/adversarial-review/t8.2-deploy.md` carries the measurement.
 
 ClickHouse holds two database users. The writer user in `CLICKHOUSE_USER` serves the
 durable ledger client in `internal/ledger`. The read-only user `mcp_readonly` serves
@@ -132,7 +138,7 @@ without an access grant.
 | `CLICKHOUSE_HOST` | the ClickHouse Cloud hostname |
 | `CLICKHOUSE_PORT` | `8443` |
 | `CLICKHOUSE_USER` | the writer user name |
-| `CLICKHOUSE_DATABASE` | `default` |
+| `CLICKHOUSE_DATABASE` | `ajilamu` |
 | `CLICKHOUSE_SECURE` | `true` |
 | `CLICKHOUSE_SERVICE_ID` | the ClickHouse Cloud service id |
 | `CLICKHOUSE_ORG_ID` | the ClickHouse Cloud organisation id |
@@ -140,7 +146,7 @@ without an access grant.
 | `CLICKHOUSE_MCP_SERVER_TRANSPORT` | `http` |
 | `CLICKHOUSE_MCP_ALLOWED_HOSTS` | `127.0.0.1:8000,localhost:8000` |
 | `AJILAMU_DATA_DIR` | `/data/storage/ajilamu` |
-| `AJILAMU_FRONTEND_DIR` | the built workspace directory |
+| `AJILAMU_FRONTEND_DIR` | `/opt/ajilamu/web` |
 | `AJILAMU_SAMPLE_CLIP` | unset, the committed clip is found beside the process |
 
 The hostname and the two ClickHouse Cloud identifiers are not public, but they are not

@@ -1,0 +1,29 @@
+[Unit]
+Description=Ajilamu mcp-clickhouse read server
+Documentation=https://github.com/nrynss/ajilamu
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service ajilamu-secrets.service
+After=ajilamu-secrets.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/ajilamu/deploy/mcp-clickhouse
+ExecStartPre=+/opt/ajilamu/deploy/fetch-secrets.sh
+EnvironmentFile=/run/ajilamu/env
+# The compose file interpolates these non-secret connection settings. Without
+# them mcp-clickhouse defaults to localhost and cannot reach ClickHouse Cloud.
+Environment=CLICKHOUSE_HOST=dvjdkkiusz.us-central1.gcp.clickhouse.cloud
+Environment=CLICKHOUSE_PORT=8443
+Environment=CLICKHOUSE_DATABASE=ajilamu
+Environment=CLICKHOUSE_SECURE=true
+Environment=CLICKHOUSE_MCP_SERVER_TRANSPORT=http
+Environment=CLICKHOUSE_MCP_ALLOWED_HOSTS=127.0.0.1:8000,localhost:8000
+# The container joins the host network and binds 127.0.0.1:8000. Docker
+# publishes no port, so the read server never leaves the machine.
+ExecStart=/usr/bin/docker compose -f /opt/ajilamu/deploy/mcp-clickhouse/compose.yaml up -d --no-build
+ExecStop=/usr/bin/docker compose -f /opt/ajilamu/deploy/mcp-clickhouse/compose.yaml down
+
+[Install]
+WantedBy=multi-user.target
