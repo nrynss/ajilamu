@@ -15,7 +15,7 @@ Before building Ajilamu, install the following tools:
 - **Go**: Version 1.27.1 or later.
 - **Node.js**: Version 26 and npm.
 - **ffmpeg and ffprobe**: Version n9.0.1 or later. Ensure your build enables `atempo`, `amix`, `aresample`, and `sidechaincompress`.
-- **ClickHouse**: A running instance with tables created from `sql/schema.sql`.
+- **ClickHouse**: A running instance with tables created from `sql/schema.sql`. `deploy/clickhouse-schema.sh` creates the database, loads the schema and grants the read-only user.
 - **Google Cloud Application Default Credentials**: Required for live Gemini segmentation and Chirp 3 HD audio synthesis.
 
 ---

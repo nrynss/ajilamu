@@ -145,7 +145,7 @@ once, and rejected attempts carry their own charges rather than hiding inside th
 - Node 26 and npm
 - ffmpeg and ffprobe, n9.0.1 or later, with `atempo`, `amix`, `aresample` and `sidechaincompress`
 - Google Cloud Application Default Credentials, for a live dub
-- A ClickHouse service holding `sql/schema.sql`, for the ledger
+- A ClickHouse service holding `sql/schema.sql`, for the ledger. `deploy/clickhouse-schema.sh` creates and loads one.
 
 ### Configure
 
