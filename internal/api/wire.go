@@ -398,3 +398,17 @@ type LanguageCatalog struct {
 	// It is absent for the committed list.
 	FetchedAt string `json:"fetched_at,omitempty"`
 }
+
+// AgentRequest carries one question for the editor agent.
+type AgentRequest struct {
+	Question string `json:"question"`
+}
+
+// AgentResponse preserves every model call's token counts and unit prices.
+// Charges uses cost.Charge's exported field names and numeric ChargeKind values.
+// The total prices this turn only and does not change the workspace ledger.
+type AgentResponse struct {
+	Answer           string        `json:"answer"`
+	Charges          []cost.Charge `json:"charges"`
+	TotalNanodollars cost.Price    `json:"total_nanodollars"`
+}

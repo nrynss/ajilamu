@@ -62,6 +62,8 @@ type wireExample struct {
 // wireExamples lists every example payload and its target struct.
 // Each shared struct in wire.go appears here at least once.
 var wireExamples = []wireExample{
+	{"agent_request.json", func() any { return &AgentRequest{} }},
+	{"agent_response.json", func() any { return &AgentResponse{} }},
 	{"dub.json", func() any { return &Dub{} }},
 	{"dubs.json", func() any { return &DubIndex{} }},
 	{"dub_summary.json", func() any { return &DubSummary{} }},
@@ -137,8 +139,11 @@ func checkJSONKeys(t *testing.T, raw any, typ reflect.Type, path string) {
 		for i := 0; i < typ.NumField(); i++ {
 			field := typ.Field(i)
 			key := strings.Split(field.Tag.Get("json"), ",")[0]
-			if key == "" || key == "-" {
+			if key == "-" {
 				continue
+			}
+			if key == "" {
+				key = field.Name
 			}
 			fields[key] = field
 		}
@@ -180,6 +185,8 @@ func TestEverySharedStructHasExample(t *testing.T) {
 // mirroredTypes lists every struct shared between wire.go and types.ts.
 // The parity test fails when a struct is added on one side only.
 var mirroredTypes = []any{
+	AgentRequest{},
+	AgentResponse{},
 	DubIndex{},
 	DubSummary{},
 	Dub{},
@@ -630,5 +637,33 @@ func TestChargeKindParity(t *testing.T) {
 	}
 	if len(ts) != len(want) {
 		t.Errorf("types.ts ChargeKind has %d members, want %d", len(ts), len(want))
+	}
+}
+
+// TestAgentChargeMirror pins the native cost fields used by the agent response.
+func TestAgentChargeMirror(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", "types.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	interfaces := parseTSInterfaces(t, strings.Replace(string(src), "export type AgentCostCharge = {", "export interface AgentCostCharge {", 1))
+	fields := interfaces["AgentCostCharge"].optional
+	typ := reflect.TypeOf(cost.Charge{})
+	if len(fields) != typ.NumField() {
+		t.Fatalf("charge mirror has %d fields, want %d", len(fields), typ.NumField())
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		if optional, exists := fields[typ.Field(i).Name]; !exists || optional {
+			t.Errorf("missing required charge field %s", typ.Field(i).Name)
+		}
+	}
+	var example AgentResponse
+	decodeExample(t, "agent_response.json", &example)
+	var total cost.Price
+	for _, charge := range example.Charges {
+		total += charge.Total()
+	}
+	if len(example.Charges) != 1 || example.Charges[0].Kind != cost.ChargeAgent || total != 384000 || example.TotalNanodollars != total {
+		t.Fatalf("agent example does not reconcile: %+v", example)
 	}
 }

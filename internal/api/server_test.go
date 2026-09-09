@@ -455,6 +455,7 @@ func TestEntrypointExitsCleanlyWithoutLedger(t *testing.T) {
 	command.Dir = projectRoot
 	command.Env = []string{
 		"AJILAMU_DATA_DIR=" + filepath.Join(t.TempDir(), "data"),
+		"AJILAMU_FRONTEND_DIR=" + testFrontend(t),
 		"AJILAMU_SAMPLE_CLIP=" + filepath.Join(projectRoot, "testdata", "clip.mp4"),
 		"ENV=development",
 		"PORT=" + port,
@@ -513,6 +514,25 @@ func TestEntrypointExitsCleanlyWithoutLedger(t *testing.T) {
 	}
 
 listening:
+
+	// Observe the running process with no MCP settings, beyond startup logs.
+	agentResponse, err := http.Post("http://127.0.0.1:"+port+"/api/dubs/fixture/agent", "application/json", strings.NewReader(`{"question":"Which line?"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentBody, readErr := io.ReadAll(agentResponse.Body)
+	agentResponse.Body.Close()
+	if readErr != nil || agentResponse.StatusCode != 503 || !strings.Contains(string(agentBody), "The editor agent is unavailable.") {
+		t.Fatalf("entrypoint agent response: %d %s %v", agentResponse.StatusCode, agentBody, readErr)
+	}
+	workspaceResponse, err := http.Get("http://127.0.0.1:" + port + "/d/fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceResponse.Body.Close()
+	if workspaceResponse.StatusCode != 200 {
+		t.Fatalf("entrypoint workspace status %d", workspaceResponse.StatusCode)
+	}
 	response, err := http.Post("http://127.0.0.1:"+port+"/api/dubs/sample", "", nil)
 	if err != nil {
 		t.Fatalf("post sample through entrypoint: %v", err)
@@ -1064,5 +1084,40 @@ func TestShutdownCancelsRunningPipeline(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("shutdown returned before the pipeline stopped")
+	}
+}
+
+func TestServerWithoutMCPServesWorkspaceAndAgentUnavailable(t *testing.T) {
+	cfg, err := config.LoadFromMap(map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := api.NewServer(cfg, api.ServerOptions{FrontendRoot: testFrontend(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	response, err := http.Post(httpServer.URL+"/api/dubs/fixture/agent", "application/json", strings.NewReader(`{"question":"Which line?"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 503 || string(body) != "{\"error\":\"The editor agent is unavailable.\"}\n" {
+		t.Fatalf("unconfigured agent: %d %s", response.StatusCode, body)
+	}
+	for _, path := range []string{"/d/fixture", "/api/healthz"} {
+		response, err := http.Get(httpServer.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != 200 {
+			t.Errorf("%s status %d", path, response.StatusCode)
+		}
 	}
 }

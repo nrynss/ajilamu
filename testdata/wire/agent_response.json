@@ -1,0 +1,16 @@
+{
+  "answer": "Line 3 costs the most.",
+  "charges": [
+    {
+      "Kind": 3,
+      "TakeID": 0,
+      "Units": 0,
+      "UnitPrice": 0,
+      "PromptTokens": 1200,
+      "CandidateTokens": 340,
+      "PromptUnitPrice": 150,
+      "CandidateUnitPrice": 600
+    }
+  ],
+  "total_nanodollars": 384000
+}

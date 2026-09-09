@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nrynss/ajilamu/internal/agent"
 	"github.com/nrynss/ajilamu/internal/api"
 	"github.com/nrynss/ajilamu/internal/assemble"
 	"github.com/nrynss/ajilamu/internal/config"
@@ -84,6 +85,8 @@ func run() error {
 		}
 	}
 
+	editor := newEditorAgent(context.Background(), cfg, agent.NewFromConfig, slog.Default())
+
 	// The catalog serves the committed list with no credentials, and a
 	// refresh fetches the live list through ADC.
 	languageCatalog := tts.NewCatalog(nil)
@@ -104,6 +107,7 @@ func run() error {
 		UpdatedAt:        dub.UpdatedAt,
 	}
 	server, err := api.NewServer(cfg, api.ServerOptions{
+		Agent:        editor,
 		FrontendRoot: frontendRoot(cfg),
 		Ledger:       ledgerFlusher,
 		History:      history,
@@ -1135,4 +1139,21 @@ func (r *editRecorder) RecordEdit(ctx context.Context, edit api.EditRecord) erro
 		return fmt.Errorf("flush the ledger after the edit: %w", err)
 	}
 	return nil
+}
+
+// newEditorAgent keeps missing or unusable MCP settings from stopping the workspace.
+// A nil result stays a nil interface so the route answers 503.
+func newEditorAgent(ctx context.Context, cfg *config.Config, build func(context.Context, *config.Config) (*agent.Agent, error), logger *slog.Logger) api.EditorAgent {
+	if !cfg.MCPConfigured() {
+		return nil
+	}
+	editor, err := build(ctx, cfg)
+	if err != nil {
+		logger.Warn("editor agent is unavailable", "error", err)
+		return nil
+	}
+	if editor == nil {
+		return nil
+	}
+	return editor
 }

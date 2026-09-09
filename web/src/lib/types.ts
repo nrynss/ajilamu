@@ -314,3 +314,28 @@ export interface LanguageCatalog {
    * It is absent for the committed list. */
   fetched_at?: string
 }
+
+// AgentCostCharge mirrors internal/cost.Charge without changing its field names.
+// Kind uses the Go enum: segment 0, translate 1, synthesize 2, agent 3.
+export type AgentCostCharge = {
+  Kind: 0 | 1 | 2 | 3
+  TakeID: number
+  Units: number
+  UnitPrice: Nanodollars
+  PromptTokens: number
+  CandidateTokens: number
+  PromptUnitPrice: Nanodollars
+  CandidateUnitPrice: Nanodollars
+}
+
+// AgentRequest carries the creator's question.
+export interface AgentRequest {
+  question: string
+}
+
+// AgentResponse reports this turn's answer and measured cost.
+export interface AgentResponse {
+  answer: string
+  charges: AgentCostCharge[]
+  total_nanodollars: Nanodollars
+}

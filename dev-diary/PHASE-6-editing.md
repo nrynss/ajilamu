@@ -297,12 +297,13 @@ token counts the response reported. `.env.example` starts a listening server as 
 requires:   T6.6, T7.0, T7.2c
 fixture-ok: yes
 size:       M · frontier
-owns:       internal/api/agent.go, internal/api/agent_test.go,
+owns:       internal/agent/route_test.go,
+            internal/api/agent.go, internal/api/agent_test.go,
             internal/api/server.go, internal/api/server_test.go,
             internal/api/wire.go, internal/api/wire_test.go, testdata/wire/,
             web/src/lib/types.ts,
             cmd/ajilamu/main.go, cmd/ajilamu/main_test.go
-status:     claimed:gpt-6-astra
+status:     done
 ```
 T6.6 built `internal/agent` and nothing calls it. No file in `cmd/ajilamu` or `internal/api`
 imports the package, so a running server cannot reach the agent. The P6 close review recorded
@@ -381,7 +382,7 @@ requires:   T6.7, T5.7
 fixture-ok: yes
 size:       S · mid
 owns:       web/src/routes/d/[id]/+page.svelte, web/src/lib/fixture.ts
-status:     claimed:gpt-6-astra
+status:     blocked
 ```
 The P6 close review recorded this in its notes. The fixture dub at `/d/fixture` has no ledger,
 so every boundary drag, speaker change, text edit and command confirmation posts to
@@ -919,3 +920,33 @@ A grounding review filed three tasks after the P6 close. T6.6a gives the T6.6 ag
 because nothing in the server constructs it. T6.6b reaches that route from the command bar.
 T6.7a makes the fixture workspace read-only, which the P6 close round 3 notes had recorded.
 No code changed with this filing.
+
+### Wave handoff 2026-09-09
+
+T6.6a implementation exists in the working tree. The implementer reported passing offline route integration and startup gating checks.
+The workspace spend cap stopped the worker before its final handoff. No fresh review has run.
+The accepted contract adds `internal/agent/route_test.go` for offline integration without importing ADK outside that package.
+See `adversarial-review/t6.6a-contract.md`.
+
+T6.7a implementation exists in the workspace page. Browser measurements covered all fixture aliases and observed zero POST requests after editing attempts.
+A mocked real-project response preserved the boundary request path. A fresh reviewer must still verify a real ledger commit.
+
+The spend cap blocks fresh reviews for both tasks. Neither task has landed.
+T6.6b remains unstarted until T6.6a, T5.5a and T6.7a have approved commits.
+Resume the required review loops with fresh agents.
+
+### T6.7a validation constraint 2026-09-09
+
+The user declined pulling or running a local ClickHouse container. Keep the real-ledger acceptance check blocked.
+Automatic approval review rejected the reviewer image pull under the Endor Labs package and container approval policy.
+No existing local ClickHouse runtime was found. Browser and isolated checks may continue.
+T6.7a cannot land until the required ledger check completes. T6.6b remains blocked by the workspace ownership gate.
+
+### T6.6a landed 2026-09-09
+
+The server exposes `POST /api/dubs/{id}/agent` with an answer, native charges and their nanodollar total.
+Startup constructs the agent only with MCP settings. Missing settings leave the workspace available and answer agent requests with 503.
+The route never writes to the ledger. Wire examples and TypeScript mirror the native charge fields.
+Fresh review `adversarial-review/t6.6a-round1.md` approves with zero findings at every severity.
+An independent real-agent HTTP probe measured two model calls, one MCP read and zero writer calls.
+Its token arithmetic reconciled to 16650 nanodollars. Startup probes and scoped Go and Node 26 checks passed.

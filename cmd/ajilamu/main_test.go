@@ -20,6 +20,7 @@ import (
 
 	texttospeechpb "cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
 
+	"github.com/nrynss/ajilamu/internal/agent"
 	"github.com/nrynss/ajilamu/internal/api"
 	"github.com/nrynss/ajilamu/internal/config"
 	"github.com/nrynss/ajilamu/internal/cost"
@@ -1237,5 +1238,45 @@ func TestRunPersistAndEditShareDubCommitLock(t *testing.T) {
 	}
 	if !editOnHead {
 		t.Error("the head chain dropped the edit commit")
+	}
+}
+
+func TestEditorAgentStartupGatesConstruction(t *testing.T) {
+	configured := &config.Config{ClickHouseMCPURL: "http://127.0.0.1:8000/mcp", ClickHouseMCPAuthToken: "test"}
+	for _, tc := range []struct {
+		name      string
+		cfg       *config.Config
+		failure   bool
+		wantCalls int
+	}{
+		{"absent", &config.Config{}, false, 0},
+		{"partial", &config.Config{ClickHouseMCPURL: configured.ClickHouseMCPURL}, false, 0},
+		{"configured", configured, false, 1},
+		{"build failure", configured, true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			built := &agent.Agent{}
+			editor := newEditorAgent(context.Background(), tc.cfg, func(_ context.Context, cfg *config.Config) (*agent.Agent, error) {
+				calls++
+				if cfg != tc.cfg {
+					t.Fatal("startup replaced config")
+				}
+				if tc.failure {
+					return nil, errors.New("model unavailable")
+				}
+				return built, nil
+			}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if calls != tc.wantCalls {
+				t.Fatalf("builder calls %d, want %d", calls, tc.wantCalls)
+			}
+			if tc.wantCalls == 0 || tc.failure {
+				if editor != nil {
+					t.Fatalf("disabled agent is %T", editor)
+				}
+			} else if editor != built {
+				t.Fatal("startup lost built agent")
+			}
+		})
 	}
 }
