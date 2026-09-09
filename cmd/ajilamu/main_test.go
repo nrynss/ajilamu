@@ -316,12 +316,12 @@ func TestPipelineRunResultMapsLines(t *testing.T) {
 		FlaggedSegments: []int{2},
 		Voices:          map[string]tts.Voice{"Narrator": {Name: "ml-IN-Chirp3-HD-Achernar"}},
 		TotalCost:       1234,
-		Charges: []cost.Charge{
-			{Kind: cost.ChargeTranslate, TakeID: 1, PromptTokens: 10, CandidateTokens: 5, PromptUnitPrice: 150, CandidateUnitPrice: 600},
-			{Kind: cost.ChargeSynthesize, TakeID: 1, Units: 20, UnitPrice: 30_000},
-			{Kind: cost.ChargeTranslate, TakeID: 2, PromptTokens: 11, CandidateTokens: 6, PromptUnitPrice: 150, CandidateUnitPrice: 600},
-			{Kind: cost.ChargeSynthesize, TakeID: 2, Units: 21, UnitPrice: 30_000},
-			{Kind: cost.ChargeSegment, TakeID: 0, PromptTokens: 100, CandidateTokens: 50, PromptUnitPrice: 150, CandidateUnitPrice: 600},
+		AttemptCharges: []cost.AttemptCharge{
+			{Attempt: 1, Charge: cost.Charge{Kind: cost.ChargeTranslate, TakeID: 1, PromptTokens: 10, CandidateTokens: 5, PromptUnitPrice: 150, CandidateUnitPrice: 600}},
+			{Attempt: 1, Charge: cost.Charge{Kind: cost.ChargeSynthesize, TakeID: 1, Units: 20, UnitPrice: 30_000}},
+			{Attempt: 2, Charge: cost.Charge{Kind: cost.ChargeTranslate, TakeID: 2, PromptTokens: 11, CandidateTokens: 6, PromptUnitPrice: 150, CandidateUnitPrice: 600}},
+			{Attempt: 2, Charge: cost.Charge{Kind: cost.ChargeSynthesize, TakeID: 2, Units: 21, UnitPrice: 30_000}},
+			{Charge: cost.Charge{Kind: cost.ChargeSegment, TakeID: 0, PromptTokens: 100, CandidateTokens: 50, PromptUnitPrice: 150, CandidateUnitPrice: 600}},
 		},
 	}
 	peaks := peakReader(func(_ context.Context, path string) ([]uint8, error) {

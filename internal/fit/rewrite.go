@@ -235,6 +235,20 @@ func formatFlaggedCopy(segID int, slot time.Duration, attempts []LineAttempt, be
 	return fmt.Sprintf("%s %s %s %s", s1, s2, s3, s4)
 }
 
+// ChargeAttemptSetter names the attempt whose calls bill next. The pipeline
+// wraps its translator and synthesizer so every charge carries the attempt
+// that produced it. A client without the method records attempt 0.
+type ChargeAttemptSetter interface {
+	SetChargeAttempt(attempt int)
+}
+
+// setChargeAttempt tells one client which attempt is billing.
+func setChargeAttempt(client any, attempt int) {
+	if setter, ok := client.(ChargeAttemptSetter); ok {
+		setter.SetChargeAttempt(attempt)
+	}
+}
+
 // RepairLine runs up to three attempts to fit a dialogue line.
 func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (LineResult, error) {
 	if seg.ID < 0 {
@@ -274,6 +288,9 @@ func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (Line
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
+
+		setChargeAttempt(cfg.Translator, attemptNum)
+		setChargeAttempt(cfg.Synthesizer, attemptNum)
 
 		var mode gemini.TranslateMode
 		switch {

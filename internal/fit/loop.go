@@ -417,6 +417,10 @@ type PipelineResult struct {
 
 	// Charges itemizes all recorded charges.
 	Charges []cost.Charge
+
+	// AttemptCharges itemizes the same calls with the attempt that produced
+	// each one. Whole-pass work carries attempt 0.
+	AttemptCharges []cost.AttemptCharge
 }
 
 // IsClean reports whether all segments fit without flags.
@@ -504,20 +508,35 @@ func CleanErrorMessage(err error) string {
 }
 
 // trackingRecorder tracks itemized charges and maintains exact total cost.
+// It also records the attempt whose call produced each charge, so a charge
+// from a discarded attempt keeps its own identity in the ledger.
 type trackingRecorder struct {
-	mu      sync.Mutex
-	inner   ChargeRecorder
-	charges []cost.Charge
-	total   cost.Price
+	mu       sync.Mutex
+	inner    ChargeRecorder
+	charges  []cost.Charge
+	recorded []cost.AttemptCharge
+	total    cost.Price
+	attempt  int
 }
 
 func newTrackingRecorder(inner ChargeRecorder) *trackingRecorder {
 	return &trackingRecorder{inner: inner}
 }
 
+// SetChargeAttempt names the attempt that later charges belong to. The loop
+// sets it before each attempt renders. Whole-pass charges recorded before the
+// first attempt carry 0.
+func (r *trackingRecorder) SetChargeAttempt(attempt int) {
+	r.mu.Lock()
+	r.attempt = attempt
+	r.mu.Unlock()
+}
+
 func (r *trackingRecorder) Add(c cost.Charge) {
 	r.mu.Lock()
+	attempt := r.attempt
 	r.charges = append(r.charges, c)
+	r.recorded = append(r.recorded, cost.AttemptCharge{Charge: c, Attempt: attempt})
 	r.total += c.Total()
 	r.mu.Unlock()
 	if r.inner != nil {
@@ -542,6 +561,15 @@ func (r *trackingRecorder) Charges() []cost.Charge {
 	}
 	out := make([]cost.Charge, len(r.charges))
 	copy(out, r.charges)
+	return out
+}
+
+// RecordedCharges returns every charge with the attempt that produced it.
+func (r *trackingRecorder) RecordedCharges() []cost.AttemptCharge {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]cost.AttemptCharge, len(r.recorded))
+	copy(out, r.recorded)
 	return out
 }
 
@@ -642,6 +670,13 @@ func (lt *loopTranslator) Translate(ctx context.Context, req gemini.TranslateReq
 	return lt.inner.Translate(ctx, req)
 }
 
+// SetChargeAttempt names the attempt whose translate call bills next.
+func (lt *loopTranslator) SetChargeAttempt(attempt int) {
+	if lt.tracker != nil {
+		lt.tracker.SetChargeAttempt(attempt)
+	}
+}
+
 // loopSynthesizer wraps tts.Synthesizer to emit synthesis and measurement events.
 type loopSynthesizer struct {
 	inner    tts.Synthesizer
@@ -676,6 +711,13 @@ func (ls *loopSynthesizer) Synthesize(ctx context.Context, req tts.SynthesizeReq
 		TakeFile:  takeFile,
 	})
 	return nil
+}
+
+// SetChargeAttempt names the attempt whose render call bills next.
+func (ls *loopSynthesizer) SetChargeAttempt(attempt int) {
+	if ls.tracker != nil {
+		ls.tracker.SetChargeAttempt(attempt)
+	}
 }
 
 // Pipeline orchestrates the end-to-end dubbing workflow.
@@ -958,6 +1000,7 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 		Voices:          assignedVoices,
 		TotalCost:       tracker.Total(),
 		Charges:         tracker.Charges(),
+		AttemptCharges:  tracker.RecordedCharges(),
 	}, nil
 }
 

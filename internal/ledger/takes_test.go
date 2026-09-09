@@ -185,8 +185,8 @@ func TestRecordTakeFixtureCapture(t *testing.T) {
 
 	beforeInvalid = captureCount(&captured, &capturedMu)
 	invalid = attempts[0]
-	invalid.Charges = append([]cost.Charge(nil), invalid.Charges...)
-	invalid.Charges[0].Kind = cost.ChargeAgent
+	invalid.AttemptCharges = append([]cost.AttemptCharge(nil), invalid.AttemptCharges...)
+	invalid.AttemptCharges[0].Charge.Kind = cost.ChargeAgent
 	if err := client.RecordTake(context.Background(), invalid); err == nil {
 		t.Fatal("RecordTake accepted an agent charge")
 	}
@@ -464,9 +464,9 @@ func fixtureTakeAttempt(segment types.Segment, number int, measuredMS int64, rep
 		Segment: segment,
 		Text:    fmt.Sprintf("target line %d", segment.ID),
 		Take:    types.Take{SegmentID: segment.ID, Attempt: number, File: "testdata/takes/segment.wav", Fit: types.NewFit(slot, time.Duration(measuredMS)*time.Millisecond)},
-		Charges: []cost.Charge{
-			{Kind: cost.ChargeTranslate, TakeID: segment.ID, PromptTokens: 100 + segment.ID, CandidateTokens: 20 + segment.ID, PromptUnitPrice: 150, CandidateUnitPrice: 600},
-			{Kind: cost.ChargeSynthesize, TakeID: segment.ID, Units: 1000 + segment.ID, UnitPrice: 30_000},
+		AttemptCharges: []cost.AttemptCharge{
+			{Attempt: number, Charge: cost.Charge{Kind: cost.ChargeTranslate, TakeID: segment.ID, PromptTokens: 100 + segment.ID, CandidateTokens: 20 + segment.ID, PromptUnitPrice: 150, CandidateUnitPrice: 600}},
+			{Attempt: number, Charge: cost.Charge{Kind: cost.ChargeSynthesize, TakeID: segment.ID, Units: 1000 + segment.ID, UnitPrice: 30_000}},
 		},
 	}
 }
@@ -556,5 +556,41 @@ func assertThreeChargesPerAttempt(t *testing.T, charges []map[string]any) {
 		if count != 3 {
 			t.Errorf("attempt %s captured %d itemized charges, want 3", identity, count)
 		}
+	}
+}
+
+// TestChargeRowsStampCallAttempt proves every charge row carries the attempt of
+// the call that produced it. ClickHouse hashes attempt into event_key, so a call
+// from a discarded attempt must not share a row with another attempt's call.
+func TestChargeRowsStampCallAttempt(t *testing.T) {
+	t.Parallel()
+
+	segment := types.Segment{ID: 1, StartMs: 0, EndMs: 2000, Text: "hello", Speaker: types.Speaker{Name: "Suni Williams"}}
+	slot := segment.SlotDuration()
+	attempt := TakeAttempt{
+		TakeID: "take-1-1", CommitID: "commit-1", ProjectID: "project-1", DubID: "dub-1",
+		OwnerID: "owner-1", Language: "ml-IN", Voice: "ml-IN-Chirp3-HD", ChargeProvider: "fixture-provider",
+		Repair: types.RepairNone, Segment: segment, Text: "target line 1",
+		Take: types.Take{SegmentID: 1, Attempt: 1, File: "testdata/takes/segment.wav", Fit: types.NewFit(slot, slot)},
+		AttemptCharges: []cost.AttemptCharge{
+			{Attempt: 1, Charge: cost.Charge{Kind: cost.ChargeTranslate, TakeID: 1, PromptTokens: 112, CandidateTokens: 35, PromptUnitPrice: 150, CandidateUnitPrice: 600}},
+			{Attempt: 2, Charge: cost.Charge{Kind: cost.ChargeTranslate, TakeID: 1, PromptTokens: 104, CandidateTokens: 35, PromptUnitPrice: 150, CandidateUnitPrice: 600}},
+		},
+	}
+	_, rows, err := attempt.rows()
+	if err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("charge rows = %d, want 4", len(rows))
+	}
+	byAttempt := make(map[uint8]int)
+	for _, row := range rows {
+		if row.Unit == "candidate_tokens" {
+			byAttempt[row.Attempt]++
+		}
+	}
+	if byAttempt[1] != 1 || byAttempt[2] != 1 {
+		t.Errorf("candidate rows by attempt = %v, want one row each for attempt 1 and attempt 2", byAttempt)
 	}
 }

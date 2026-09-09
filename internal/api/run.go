@@ -90,6 +90,10 @@ type RunTake struct {
 	RepairDetail string
 	// Charges itemizes the API calls this take paid for.
 	Charges []cost.Charge
+	// AttemptCharges itemizes the same calls with the attempt that produced
+	// each one. A caller that leaves it empty has every charge attributed to
+	// the take's own attempt.
+	AttemptCharges []cost.AttemptCharge
 	// Peaks is the waveform sketch the timeline draws.
 	Peaks []uint8
 }

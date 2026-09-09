@@ -33,7 +33,10 @@ type TakeAttempt struct {
 	Repair         types.Repair
 	Segment        types.Segment
 	Take           types.Take
-	Charges        []cost.Charge
+	// AttemptCharges itemizes every billed call with the attempt that
+	// produced it. A call from a discarded attempt keeps its own attempt,
+	// so it never shares a ledger event_key with another attempt's call.
+	AttemptCharges []cost.AttemptCharge
 	Peaks          []uint8
 }
 
@@ -197,13 +200,17 @@ func (a TakeAttempt) rows() (takeRow, []chargeRow, error) {
 }
 
 func (a TakeAttempt) chargeRows() ([]chargeRow, error) {
-	if len(a.Charges) > 0 && strings.TrimSpace(a.ChargeProvider) == "" {
+	if len(a.AttemptCharges) > 0 && strings.TrimSpace(a.ChargeProvider) == "" {
 		return nil, errors.New("take charge provider is empty")
 	}
-	rows := make([]chargeRow, 0, len(a.Charges)*2)
-	for _, charge := range a.Charges {
+	rows := make([]chargeRow, 0, len(a.AttemptCharges)*2)
+	for _, item := range a.AttemptCharges {
+		charge := item.Charge
 		if charge.TakeID != a.Segment.ID {
 			return nil, fmt.Errorf("charge take id %d does not match segment %d", charge.TakeID, a.Segment.ID)
+		}
+		if item.Attempt < 0 || item.Attempt > math.MaxUint8 {
+			return nil, fmt.Errorf("charge attempt = %d, want 0 through %d", item.Attempt, math.MaxUint8)
 		}
 		base := chargeRow{
 			TakeID:       a.TakeID,
@@ -213,7 +220,7 @@ func (a TakeAttempt) chargeRows() ([]chargeRow, error) {
 			OwnerID:      a.OwnerID,
 			Language:     a.Language,
 			SegmentIndex: int32(a.Segment.ID),
-			Attempt:      uint8(a.Take.Attempt),
+			Attempt:      uint8(item.Attempt),
 			Kind:         charge.Kind.String(),
 			Provider:     a.ChargeProvider,
 		}
@@ -222,6 +229,9 @@ func (a TakeAttempt) chargeRows() ([]chargeRow, error) {
 		}
 		switch charge.Kind {
 		case cost.ChargeSynthesize:
+			if item.Attempt == 0 {
+				return nil, errors.New("synthesis charge carries no attempt")
+			}
 			if charge.PromptTokens != 0 || charge.CandidateTokens != 0 ||
 				charge.PromptUnitPrice != 0 || charge.CandidateUnitPrice != 0 {
 				return nil, errors.New("synthesis charge includes Gemini token fields")
@@ -231,6 +241,13 @@ func (a TakeAttempt) chargeRows() ([]chargeRow, error) {
 			}
 			rows = append(rows, chargeRowWithCost(base, "characters", int64(charge.Units), charge.UnitPrice))
 		case cost.ChargeSegment, cost.ChargeTranslate:
+			if charge.Kind == cost.ChargeSegment {
+				if item.Attempt != 0 {
+					return nil, fmt.Errorf("segment charge carries attempt %d, want 0", item.Attempt)
+				}
+			} else if item.Attempt == 0 {
+				return nil, errors.New("translate charge carries no attempt")
+			}
 			if charge.Units != 0 || charge.UnitPrice != 0 {
 				return nil, errors.New("Gemini charge includes synthesis character fields")
 			}

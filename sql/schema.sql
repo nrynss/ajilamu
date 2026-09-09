@@ -499,8 +499,9 @@ FROM
 --
 -- ORDER BY (dub_id, language, commit_id, segment_index, attempt, event_key). The five
 -- leading fields name the natural identity of a render, the commit included. charges_raw
--- repeats that prefix, so the take panel join and the branch cost rollup read one
--- contiguous run per take and never double across two branches.
+-- repeats the dub, language and commit, so the branch cost rollup reads one contiguous
+-- run per commit and never doubles across two branches. A charge carries the attempt
+-- whose call billed it, not the attempt of the take it is attributed to.
 --
 -- event_key hashes the natural identity of a render, which is the dub, the language, the
 -- commit, the segment and the attempt. take_id stays on the row and never decides dedup, so
@@ -755,13 +756,14 @@ ORDER BY (dub_id, commit_id, event_key);
 -- pass that billed them, so a whole pass keeps a stable identity of its own.
 --
 -- ORDER BY (dub_id, language, commit_id, segment_index, attempt, kind, event_key). The
--- five leading fields repeat the natural identity of the take that paid for the call.
--- takes_raw shares that prefix, so a branch cost rollup never merges two commits' rows.
--- kind splits the call types a cost rollup groups.
+-- five leading fields name the take the charge is attributed to and the attempt whose
+-- call billed it. dub_id, language and commit_id keep two commits' rows apart, so a
+-- branch cost rollup never merges them. kind splits the call types a cost rollup groups.
 --
--- event_key hashes the take identity and call facts. Agent rows also hash turn_id and
--- call_index. A queue retry keeps those values, while identical later turns stay distinct.
--- A genuine repeated take call must raise attempt so it stays distinct from a retry.
+-- event_key hashes the take, the attempt whose call billed it, and the call facts. Agent
+-- rows also hash turn_id and call_index. A queue retry keeps those values, while identical
+-- later turns stay distinct. Two identical calls in different attempts hash apart, because
+-- each carries its own attempt.
 CREATE TABLE IF NOT EXISTS charges_raw
 (
     -- The id the client gave this delivery. Informational, and never the dedup key.
@@ -776,7 +778,7 @@ CREATE TABLE IF NOT EXISTS charges_raw
     language       LowCardinality(String) DEFAULT '',
     -- Take identity repeated so a cost rollup needs no join.
     segment_index  Int32 DEFAULT -1,
-    -- The attempt of the take that paid for this call. Whole pass rows carry 0.
+    -- The attempt whose call produced this charge. Whole-pass rows carry 0.
     attempt        UInt8 DEFAULT 0,
     -- Agent rows share one turn id and use call_index to distinguish model calls.
     -- Take and segmentation rows leave both fields at their defaults.

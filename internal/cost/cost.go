@@ -96,6 +96,16 @@ type Charge struct {
 	CandidateUnitPrice Price
 }
 
+// AttemptCharge pairs one billed call with the attempt that produced it.
+// Attempt is 0 for whole-pass work that no single attempt owns, such as the
+// segmentation pass.
+type AttemptCharge struct {
+	// Charge is the billed operation.
+	Charge Charge
+	// Attempt is the take attempt whose call produced this charge.
+	Attempt int
+}
+
 // Total calculates the overall cost for this charge.
 // It sums character units and both Gemini token kinds.
 func (c Charge) Total() Price {

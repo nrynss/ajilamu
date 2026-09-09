@@ -819,14 +819,14 @@ func pipelineRunResult(ctx context.Context, result *fit.PipelineResult, peaks pe
 	for _, line := range result.Lines {
 		rendered[line.Segment.ID] = struct{}{}
 	}
-	bySegment := make(map[int][]cost.Charge, len(rendered))
+	bySegment := make(map[int][]cost.AttemptCharge, len(rendered))
 	var wholePass []cost.Charge
-	for _, charge := range result.Charges {
-		if _, ok := rendered[charge.TakeID]; ok {
-			bySegment[charge.TakeID] = append(bySegment[charge.TakeID], charge)
+	for _, item := range result.AttemptCharges {
+		if _, ok := rendered[item.Charge.TakeID]; ok {
+			bySegment[item.Charge.TakeID] = append(bySegment[item.Charge.TakeID], item)
 			continue
 		}
-		wholePass = append(wholePass, charge)
+		wholePass = append(wholePass, item.Charge)
 	}
 	out := api.RunResult{
 		FlaggedSegments:  result.FlaggedSegments,
@@ -848,14 +848,15 @@ func pipelineRunResult(ctx context.Context, result *fit.PipelineResult, peaks pe
 			waveform = sketch
 		}
 		out.Takes = append(out.Takes, api.RunTake{
-			Text:         attempt.Text,
-			Segment:      line.Segment,
-			Take:         take,
-			Voice:        voiceName(result.Voices, line.Segment.Speaker.Name),
-			Repair:       attempt.Repair,
-			RepairDetail: attempt.RepairDetail,
-			Charges:      bySegment[line.Segment.ID],
-			Peaks:        waveform,
+			Text:           attempt.Text,
+			Segment:        line.Segment,
+			Take:           take,
+			Voice:          voiceName(result.Voices, line.Segment.Speaker.Name),
+			Repair:         attempt.Repair,
+			RepairDetail:   attempt.RepairDetail,
+			Charges:        chargesOf(bySegment[line.Segment.ID]),
+			AttemptCharges: bySegment[line.Segment.ID],
+			Peaks:          waveform,
 		})
 		out.Timeline = append(out.Timeline, api.RunSegmentState{
 			SegmentIndex: line.Segment.ID,
@@ -987,9 +988,9 @@ func (r *runRecorder) persist(ctx context.Context, req api.RunRequest, result ap
 			"dub_id", req.DubID, "charges", len(result.WholePassCharges))
 	}
 	for i, take := range result.Takes {
-		charges := take.Charges
+		charges := takeAttemptCharges(take)
 		if i == 0 && len(result.WholePassCharges) > 0 {
-			charges = append(append([]cost.Charge(nil), take.Charges...),
+			charges = append(append([]cost.AttemptCharge(nil), charges...),
 				attributeWholePass(result.WholePassCharges, take.Segment.ID)...)
 		}
 		attempt := ledger.TakeAttempt{
@@ -1006,7 +1007,7 @@ func (r *runRecorder) persist(ctx context.Context, req api.RunRequest, result ap
 			Segment:        take.Segment,
 			Text:           take.Text,
 			Take:           take.Take,
-			Charges:        charges,
+			AttemptCharges: charges,
 			Peaks:          take.Peaks,
 		}
 		if err := r.client.RecordTake(ctx, attempt); err != nil {
@@ -1040,16 +1041,41 @@ func (r *runRecorder) persist(ctx context.Context, req api.RunRequest, result ap
 	return nil
 }
 
+// takeAttemptCharges pairs each billed call with the attempt that produced it.
+// A run names the attempt of every call. A re-render reaches the ledger through
+// the route, which builds its run take without per-call attempts, so its charges
+// take the attempt of the recorded take.
+func takeAttemptCharges(take api.RunTake) []cost.AttemptCharge {
+	if len(take.AttemptCharges) > 0 {
+		return take.AttemptCharges
+	}
+	out := make([]cost.AttemptCharge, len(take.Charges))
+	for i, charge := range take.Charges {
+		out[i] = cost.AttemptCharge{Charge: charge, Attempt: take.Take.Attempt}
+	}
+	return out
+}
+
+// chargesOf strips the attempt pairing from a take's itemized calls.
+func chargesOf(items []cost.AttemptCharge) []cost.Charge {
+	out := make([]cost.Charge, len(items))
+	for i, item := range items {
+		out[i] = item.Charge
+	}
+	return out
+}
+
 // attributeWholePass rewrites each whole-pass charge onto the first rendered
 // take. charges_raw keys every charge by take_id and RecordTake rejects a
 // charge whose segment does not match its take, so the segmentation pass needs
 // an owner. The first take carries the run's commit id, which keeps the
-// whole-pass cost inside the commit ancestry.
-func attributeWholePass(charges []cost.Charge, segmentID int) []cost.Charge {
-	out := make([]cost.Charge, len(charges))
+// whole-pass cost inside the commit ancestry. Segmentation runs before any
+// attempt, so the attributed calls carry attempt 0.
+func attributeWholePass(charges []cost.Charge, segmentID int) []cost.AttemptCharge {
+	out := make([]cost.AttemptCharge, len(charges))
 	for i, charge := range charges {
 		charge.TakeID = segmentID
-		out[i] = charge
+		out[i] = cost.AttemptCharge{Charge: charge}
 	}
 	return out
 }
