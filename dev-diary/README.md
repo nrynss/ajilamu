@@ -11,7 +11,7 @@ Where a phase document and specification conflict, the specification wins. Recor
 
 Each document provides complete context for an engineer starting cold.
 
-**Current status:** We validated the core pipeline end to end. We have not built the application yet.
+**Current status:** Phases P0 to P7 are complete and reviewed. P8 Ship has not started. Five follow-up tasks filed on 2026-09-09 reopen P5, P6 and P7 on the board below.
 
 ---
 
@@ -192,9 +192,9 @@ Protect this core flow above auxiliary features.
 | P2 | 10 / 10 | Complete. Close review approved with zero residue. See [p2-close-round1.md](adversarial-review/p2-close-round1.md). |
 | P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
 | P4 | 8 / 8 | Complete. Close review approved with zero residue. See [p4-close-round2.md](adversarial-review/p4-close-round2.md). |
-| P5 | 7 / 7 | Complete. Workspace renders from offline fixtures. See [PHASE-5-workspace.md](PHASE-5-workspace.md). |
-| P6 | 10 / 10 | Complete. Close review approved with zero residue. See [p6-close-round3.md](adversarial-review/p6-close-round3.md). |
-| P7 | 20 / 20 | Complete. Close review approved with zero residue. See [p7-close-round4.md](adversarial-review/p7-close-round4.md). |
+| P5 | 7 / 8 | Reopened 2026-09-09. T5.5a filed after a grounding review. Workspace renders from offline fixtures. See [PHASE-5-workspace.md](PHASE-5-workspace.md). |
+| P6 | 10 / 13 | Reopened 2026-09-09. T6.6a, T6.6b and T6.7a filed after a grounding review. Close review approved with zero residue at ten tasks. See [p6-close-round3.md](adversarial-review/p6-close-round3.md). |
+| P7 | 20 / 21 | Reopened 2026-09-09. T7.3d filed after a grounding review. Close review approved with zero residue at twenty tasks. See [p7-close-round4.md](adversarial-review/p7-close-round4.md). |
 | P8 | 0 / 4 | Not started. |
 
 **Concept validation:** Complete. Recorded in [observations.md](observations.md) and reviewed in [adversarial-review](adversarial-review/2026-09-07-pipeline-and-claims.md).

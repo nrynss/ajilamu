@@ -292,6 +292,63 @@ token counts the response reported. `.env.example` starts a listening server as 
 
 ---
 
+### T6.6a: Editor agent route
+```yaml
+requires:   T6.6, T7.0, T7.2c
+fixture-ok: yes
+size:       M · frontier
+owns:       internal/api/agent.go, internal/api/agent_test.go,
+            internal/api/server.go, internal/api/server_test.go,
+            internal/api/wire.go, internal/api/wire_test.go, testdata/wire/,
+            web/src/lib/types.ts,
+            cmd/ajilamu/main.go, cmd/ajilamu/main_test.go
+status:     claimed:gpt-6-astra
+```
+T6.6 built `internal/agent` and nothing calls it. No file in `cmd/ajilamu` or `internal/api`
+imports the package, so a running server cannot reach the agent. The P6 close review recorded
+the agent turn as having no route and no price.
+
+Add `POST /api/dubs/{id}/agent`. The body carries one question. The response carries the
+answer, the `[]cost.Charge` the turn produced, and their total in nanodollars. Define the wire
+type in `internal/api/wire.go`, mirror it in `web/src/lib/types.ts`, and add its example under
+`testdata/wire/`.
+
+The entrypoint builds the agent through `agent.NewFromConfig` only when `MCPConfigured` holds.
+A server without MCP settings answers the route 503 with one sentence and serves everything
+else. The route never writes to the ledger. The T6.6 handoff notes that `internal/ledger/takes.go`
+drops an unknown charge kind, so recording agent charges in the ledger stays out of this task.
+
+**Done when:** The route answers through the offline fake transport with the answer and its
+charges. A server without MCP settings answers 503 and still serves the workspace. The returned
+total equals the reported token counts priced by the rate card.
+
+---
+
+### T6.6b: Ask the agent from the command bar
+```yaml
+requires:   T6.6a, T6.4, T5.5a
+fixture-ok: yes
+size:       S · mid
+owns:       web/src/lib/edit/CommandBar.svelte, web/src/routes/d/[id]/+page.svelte
+status:     not-started
+```
+The command bar parses instructions through `POST /api/editor/commands/preview`. Text the
+parser rejects stops at the 422 sentence. Give that text a second path. When the parser
+answers 422, offer to ask the editor agent, and post the text to `POST /api/dubs/{id}/agent`.
+
+Show the agent's answer in the bar with the charge the turn cost. A token count is unknown
+before the turn runs, so show the rate card before the ask and the measured charge after it.
+Say so in one sentence rather than showing a price the turn has not earned.
+
+An answer that proposes a command lands in the preview path unchanged. The agent never applies
+anything, and the page never treats its answer as a mutation.
+
+**Done when:** A rejected instruction offers the ask, and the answer renders in the bar with
+its measured charge. A proposed command runs through the preview route, and no agent answer
+mutates the timeline directly.
+
+---
+
 ### T6.7: Record boundary and command edits as commits ★
 ```yaml
 requires:   T6.1, T6.4, T6.5c, T4.5
@@ -315,6 +372,28 @@ timeline snapshot, and wire the two page confirmations to it.
 
 **Done when:** A boundary drag and a command confirmation each write one commit, one action
 and one timeline snapshot, the History tab shows both, and the edit survives a reload.
+
+---
+
+### T6.7a: Read-only fixture workspace
+```yaml
+requires:   T6.7, T5.7
+fixture-ok: yes
+size:       S · mid
+owns:       web/src/routes/d/[id]/+page.svelte, web/src/lib/fixture.ts
+status:     claimed:gpt-6-astra
+```
+The P6 close review recorded this in its notes. The fixture dub at `/d/fixture` has no ledger,
+so every boundary drag, speaker change, text edit and command confirmation posts to
+`POST /api/dubs/fixture/edits` and answers 404. The page shows the failure sentence and snaps
+the control back. The user sees an error for a state the product designed.
+
+Treat a fixture dub as read-only. `isFixtureID` already names it. Disable each edit confirm and
+show one sentence that says the offline fixture cannot save an edit. No request leaves the
+page. A real project keeps the T6.7 write path unchanged.
+
+**Done when:** On `/d/fixture` no edit request leaves the page and each edit control shows the
+read-only sentence. On a project with a ledger a boundary drag still writes one commit.
 
 ---
 
@@ -833,3 +912,10 @@ takes.
 
 `internal/api/mutations_test.go` covers the boundary row, the command row, an invalid
 command, an overlapping boundary, a failed recorder, and a project with no timeline.
+
+### T6.6a, T6.6b and T6.7a filed 2026-09-09
+
+A grounding review filed three tasks after the P6 close. T6.6a gives the T6.6 agent a route,
+because nothing in the server constructs it. T6.6b reaches that route from the command bar.
+T6.7a makes the fixture workspace read-only, which the P6 close round 3 notes had recorded.
+No code changed with this filing.

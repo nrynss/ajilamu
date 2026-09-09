@@ -404,6 +404,29 @@ stretch and measure steps uncancellable, which is the defect this task exists to
 
 ---
 
+### T7.3d: Media tests on committed fixtures
+```yaml
+requires:   T7.3c, T0.4
+fixture-ok: yes
+size:       XS · light
+owns:       internal/media/media_test.go
+status:     claimed:gpt-6-astra
+```
+`findFixture` in `media_test.go` reads `scratch/takes/*.wav` and `assets/source/clip.mp4`.
+Both paths are gitignored, so six tests fail on a clean clone and `go test ./...` exits 1.
+Every P7 close round recorded this as a note and none filed it. T0.4 promoted the same takes
+to `testdata/takes/` and the clip to `testdata/clip.mp4`.
+
+Point the tests at the committed files. Pin the values ffprobe reports for those files rather
+than the numbers the scratch copies produced. `Duration` rounds to the nearest millisecond,
+so `testdata/takes/seg_3_stretched.wav` at 5.337563 s still reads 5338 ms. Re-measure every
+pin anyway, because the committed files are the authority now.
+
+**Done when:** `go test ./...` passes on a clean clone with no `scratch/` and no `assets/`
+directory, and every pinned duration matches ffprobe on the committed file.
+
+---
+
 ### T7.4: Index and config routes
 ```yaml
 requires:   T1.4
@@ -1021,3 +1044,9 @@ Note. This machine holds no ClickHouse credential, so the running server answers
 stand-in reader, the way T7.5 measured it. The first acceptance run failed the entrypoint sample
 with `no space left on device`, because `/tmp` was full. Freeing space made the test pass, so
 that failure was environmental.
+
+### T7.3d filed 2026-09-09
+
+A grounding review filed T7.3d after the P7 close. All four P7 close rounds recorded that the
+`internal/media` tests need gitignored fixtures and none filed a finding. `go test ./...` fails
+on a clean clone until it lands. No code changed with this filing.

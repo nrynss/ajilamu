@@ -108,6 +108,26 @@ Clicking duration labels triggers audio playback for that take.
 
 ---
 
+### T5.5a: Charge labels for every kind
+```yaml
+requires:   T5.5, T6.6
+fixture-ok: yes
+size:       XS · light
+owns:       web/src/lib/tabs/DetailsTab.svelte
+status:     claimed:gpt-6-astra
+```
+The T6.6 handoff recorded this gap. `DetailsTab.svelte` labels a charge "Finding lines" for
+`segment`, "Translation" for `translate`, and "Voice render" for everything else. An `agent`
+charge therefore reads as a voice render.
+
+Label each `ChargeKind` by name. Make the switch exhaustive, so a kind added to
+`web/src/lib/types.ts` without a label fails `npm run check` rather than falling through.
+
+**Done when:** An `agent` charge reads as an editor agent turn, every other kind keeps its label,
+and a kind with no label fails the type check.
+
+---
+
 ### T5.6: States and keyboard ★
 ```yaml
 requires:   T5.1
@@ -168,3 +188,8 @@ Selection is shared across the rail, length rows, keyboard, and playhead. The le
 Two leftovers sit outside this task. T5.2 still needs a per-language mix before Preview can switch dubbed audio. T5.3 still needs Timeline selection and playhead props.
 
 `?panel=loading` reaches the loading panel state. The default route stays populated on first paint.
+
+### T5.5a filed 2026-09-09
+
+A grounding review filed T5.5a after the P5 close. The T6.6 handoff had recorded the charge
+label gap and named T5.5 as the owner of `web/src/lib/tabs/`. No code changed with this filing.
