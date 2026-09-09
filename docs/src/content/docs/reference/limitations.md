@@ -37,6 +37,13 @@ Two operational claims from the 2026-09-09 validation run were verified on the d
 
 ---
 
+## One Target Language Per Project
+
+A project dubs into the single target language chosen at creation. Dubbing the same film into
+a second language needs a second project, uploaded from the same video.
+
+---
+
 ## Audio Ducking Strategy
 
 Ducking dialogue over a separately provided music stem yields the cleanest acoustic results.

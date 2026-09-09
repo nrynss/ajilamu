@@ -224,6 +224,8 @@ We would rather you read this than find it yourself.
 - **Speaker identity is inferred from voice, not from the picture.** The model names speakers
   from how they sound. It has misspelled a name across segments of one clip, and the synthesizer
   read the misspelling aloud. The speaker selector on the timeline exists because of this.
+- **One target language per project.** A project dubs into the language chosen when it is
+  created. A second language needs a second project, uploaded from the same video.
 - **The deployed host runs ffmpeg 6.1.1-3ubuntu5.** `AGENTS.md` freezes n9.0.1. The filters
   used, `atempo`, `amix`, `aresample` and `sidechaincompress`, behave the same in both builds,
   but the versions differ.
