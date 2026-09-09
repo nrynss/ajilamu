@@ -25,7 +25,7 @@
   import { PanelState, ProcessingBanner, type PanelViewState, type ProcessingStep } from "$lib/states"
   import { createShortcutManager } from "$lib/shortcuts"
   import Timeline from "$lib/Timeline.svelte"
-  import type { Charge, Dub, Fit, ProgressEvent, RepairKind, Take } from "$lib/types"
+  import type { Charge, Dub, Fit, ProgressEvent, RepairKind, Segment, Take } from "$lib/types"
 
   type SelectionSource = "user" | "playhead"
 
@@ -88,6 +88,7 @@
     endMs?: number
     command?: string
     durationMs?: number
+    allowOverlap?: boolean
   }
 
   interface LineRerenderRequest {
@@ -291,6 +292,18 @@
     if (hit) selectSegment(hit.id, "playhead")
   }
 
+  // The Boundary panel commits an overlap only after the creator confirms it,
+  // because a collision opens the Keep overlap confirm instead of a save.
+  // The route needs that confirmation as an explicit flag, because a silent
+  // overlap must still fail.
+  function overlapsAnotherLine(candidate: Segment, segments: readonly Segment[]): boolean {
+    return segments.some((other) => (
+      other.id !== candidate.id
+      && candidate.start_ms < other.end_ms
+      && candidate.end_ms > other.start_ms
+    ))
+  }
+
   async function handleBoundaryChange(change: BoundaryChange): Promise<void> {
     if (!dub) return
     commandPreview = undefined
@@ -300,7 +313,8 @@
       language: activeLanguage,
       segmentId: change.segment.id,
       startMs: change.segment.start_ms,
-      endMs: change.segment.end_ms
+      endMs: change.segment.end_ms,
+      allowOverlap: overlapsAnotherLine(change.segment, dub.segments)
     })
     if ("error" in reply) {
       // Remount Boundary from the unchanged payload, so a failed write
@@ -321,6 +335,7 @@
     if (request.endMs !== undefined) body.end_ms = request.endMs
     if (request.command !== undefined) body.command = request.command
     if (request.durationMs !== undefined) body.duration_ms = request.durationMs
+    if (request.allowOverlap) body.allow_overlap = true
 
     try {
       const response = await fetch(`/api/dubs/${encodeURIComponent(projectID)}/edits`, {

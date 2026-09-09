@@ -222,26 +222,62 @@ func TestEditCommandRejectsAnInvalidInstruction(t *testing.T) {
 	}
 }
 
-// TestEditBoundaryRejectsOverlap proves a drag that would overlap a neighbour
-// fails before the recorder sees a row.
-func TestEditBoundaryRejectsOverlap(t *testing.T) {
-	calls := 0
-	recorder := editRecorderFunc(func(context.Context, api.EditRecord) error {
-		calls++
-		return nil
-	})
-	base := newRunTestServer(t, api.ServerOptions{Edits: recorder, History: editHistory()})
+// TestEditBoundaryOverlapNeedsConfirmation proves a silent overlap fails
+// before the recorder sees a row, and the creator's explicit confirmation
+// saves the overlapping bounds.
+func TestEditBoundaryOverlapNeedsConfirmation(t *testing.T) {
+	t.Run("silent overlap fails", func(t *testing.T) {
+		calls := 0
+		recorder := editRecorderFunc(func(context.Context, api.EditRecord) error {
+			calls++
+			return nil
+		})
+		base := newRunTestServer(t, api.ServerOptions{Edits: recorder, History: editHistory()})
 
-	response := postEdit(t, base, "dub-overlap", `{"kind":"boundary","language":"ml","segment_id":1,"start_ms":0,"end_ms":6500}`)
-	if response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("overlap status = %d, want 400", response.StatusCode)
-	}
-	if sentence := editError(t, response); sentence != "That boundary would overlap another line." {
-		t.Errorf("failure sentence = %q, want the overlap sentence", sentence)
-	}
-	if calls != 0 {
-		t.Errorf("recorder calls = %d, want 0 for an overlap", calls)
-	}
+		response := postEdit(t, base, "dub-overlap", `{"kind":"boundary","language":"ml","segment_id":1,"start_ms":0,"end_ms":6500}`)
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("overlap status = %d, want 400", response.StatusCode)
+		}
+		if sentence := editError(t, response); sentence != "That boundary would overlap another line." {
+			t.Errorf("failure sentence = %q, want the overlap sentence", sentence)
+		}
+		if calls != 0 {
+			t.Errorf("recorder calls = %d, want 0 for an overlap", calls)
+		}
+	})
+
+	t.Run("confirmed overlap saves", func(t *testing.T) {
+		var got api.EditRecord
+		calls := 0
+		recorder := editRecorderFunc(func(_ context.Context, edit api.EditRecord) error {
+			calls++
+			got = edit
+			return nil
+		})
+		base := newRunTestServer(t, api.ServerOptions{Edits: recorder, History: editHistory()})
+
+		response := postEdit(t, base, "dub-overlap", `{"kind":"boundary","language":"ml","segment_id":1,"start_ms":0,"end_ms":6500,"allow_overlap":true}`)
+		if response.StatusCode != http.StatusCreated {
+			t.Fatalf("confirmed overlap status = %d, want 201", response.StatusCode)
+		}
+		body := decodeEdit(t, response)
+
+		if calls != 1 {
+			t.Errorf("recorder calls = %d, want 1 for a confirmed overlap", calls)
+		}
+		if got.Action != api.ActionBoundaryNudged || got.Author != api.AuthorManualUI {
+			t.Errorf("provenance = %q/%q, want the manual boundary edit", got.Action, got.Author)
+		}
+		if got.Segment.StartMs != 0 || got.Segment.EndMs != 6500 {
+			t.Errorf("snapshot bounds = %d..%d, want the overlapping 0..6500", got.Segment.StartMs, got.Segment.EndMs)
+		}
+		if got.AfterValue != `{"start_ms":0,"end_ms":6500,"speaker":"Mark"}` {
+			t.Errorf("after_value = %q, want the overlapping bounds", got.AfterValue)
+		}
+		if body.Segment.ID != 1 || body.Segment.StartMs != 0 || body.Segment.EndMs != 6500 || body.Segment.DurationMs != 6500 {
+			t.Errorf("response segment = %+v, want line 1 0..6500 over 6500ms", body.Segment)
+		}
+	})
 }
 
 // TestEditFailureDoesNotReportSuccess proves a failed ledger write answers 500

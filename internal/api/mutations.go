@@ -156,6 +156,9 @@ type EditBody struct {
 	Command string `json:"command,omitempty"`
 	// DurationMs is the timeline length the command validator bounds against.
 	DurationMs int64 `json:"duration_ms,omitempty"`
+	// AllowOverlap keeps a boundary the creator explicitly confirmed. Only
+	// the Boundary panel's Keep overlap control sends it.
+	AllowOverlap bool `json:"allow_overlap,omitempty"`
 }
 
 // EditSegment is the resulting line state the page applies.
@@ -305,7 +308,7 @@ func editOutcome(body EditBody, entries []TimelineEntry) (before, after Timeline
 		if body.StartMs == nil || body.EndMs == nil {
 			return before, after, "", "", "", "", editsBadTiming, http.StatusBadRequest
 		}
-		existing, target, problem := boundaryEntry(entries, body.SegmentID, *body.StartMs, *body.EndMs)
+		existing, target, problem := boundaryEntry(entries, body.SegmentID, *body.StartMs, *body.EndMs, body.AllowOverlap)
 		if problem != "" {
 			return before, after, "", "", "", "", problem, http.StatusBadRequest
 		}
@@ -344,9 +347,10 @@ func editOutcome(body EditBody, entries []TimelineEntry) (before, after Timeline
 }
 
 // boundaryEntry validates a dragged boundary against the head timeline and
-// returns the state before and after. A drag may not invert its slot or
-// overlap a neighbour. The rest of the row copies forward.
-func boundaryEntry(entries []TimelineEntry, segmentID int, startMs, endMs int64) (TimelineEntry, TimelineEntry, string) {
+// returns the state before and after. A drag may not invert its slot. An
+// overlap needs the creator's explicit confirmation, because a silent
+// overlap still fails. The rest of the row copies forward.
+func boundaryEntry(entries []TimelineEntry, segmentID int, startMs, endMs int64, allowOverlap bool) (TimelineEntry, TimelineEntry, string) {
 	target, ok := findTimelineEntry(entries, segmentID)
 	if !ok {
 		return TimelineEntry{}, TimelineEntry{}, editsNoLine
@@ -354,12 +358,14 @@ func boundaryEntry(entries []TimelineEntry, segmentID int, startMs, endMs int64)
 	if startMs < 0 || endMs <= startMs {
 		return TimelineEntry{}, TimelineEntry{}, editsBadTiming
 	}
-	for _, other := range entries {
-		if other.SegmentIndex == segmentID {
-			continue
-		}
-		if startMs < other.EndMs && endMs > other.StartMs {
-			return TimelineEntry{}, TimelineEntry{}, editsOverlap
+	if !allowOverlap {
+		for _, other := range entries {
+			if other.SegmentIndex == segmentID {
+				continue
+			}
+			if startMs < other.EndMs && endMs > other.StartMs {
+				return TimelineEntry{}, TimelineEntry{}, editsOverlap
+			}
 		}
 	}
 	after := target
