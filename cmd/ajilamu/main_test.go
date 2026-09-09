@@ -5,10 +5,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1376,5 +1378,332 @@ func TestEditorAgentStartupGatesConstruction(t *testing.T) {
 				t.Fatal("startup lost built agent")
 			}
 		})
+	}
+}
+
+// chargeWiringSegmenter bills one segmentation call through its router.
+type chargeWiringSegmenter struct {
+	rec      fit.ChargeRecorder
+	segments []types.Segment
+	calls    int
+}
+
+// Segment bills the segmentation pass and returns the fixed segments.
+func (s *chargeWiringSegmenter) Segment(context.Context, gemini.Input) ([]types.Segment, error) {
+	s.calls++
+	s.rec.Add(cost.Charge{
+		Kind:               cost.ChargeSegment,
+		TakeID:             0,
+		PromptTokens:       200,
+		CandidateTokens:    40,
+		PromptUnitPrice:    150,
+		CandidateUnitPrice: 600,
+	})
+	return s.segments, nil
+}
+
+// chargeWiringTranslator bills one translation call with fixed token counts.
+// The counts stay the same on every attempt, so two attempts bill identical
+// calls that only the attempt tells apart.
+type chargeWiringTranslator struct {
+	rec      fit.ChargeRecorder
+	requests []gemini.TranslateRequest
+}
+
+// Translate bills the call and answers with a text whose length drives the
+// stand-in synthesizer. The first attempt overruns the slot, so the loop
+// renders a second, shorter attempt that fits.
+func (t *chargeWiringTranslator) Translate(_ context.Context, req gemini.TranslateRequest) (string, error) {
+	t.requests = append(t.requests, req)
+	t.rec.Add(cost.Charge{
+		Kind:               cost.ChargeTranslate,
+		TakeID:             req.SegmentID,
+		PromptTokens:       100,
+		CandidateTokens:    20,
+		PromptUnitPrice:    150,
+		CandidateUnitPrice: 600,
+	})
+	if req.Mode == gemini.ModeNormal {
+		return strings.Repeat("a", 30), nil
+	}
+	return strings.Repeat("a", 20), nil
+}
+
+// chargeWiringSynthesizer writes a WAV whose length follows the text and
+// bills one synthesis call with fixed units.
+type chargeWiringSynthesizer struct {
+	rec fit.ChargeRecorder
+}
+
+// Synthesize writes the take and bills the call.
+func (s *chargeWiringSynthesizer) Synthesize(_ context.Context, req tts.SynthesizeRequest) error {
+	if err := os.MkdirAll(filepath.Dir(req.OutPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(req.OutPath, wavOfMillis(100*len([]rune(req.Text))), 0o644); err != nil {
+		return err
+	}
+	s.rec.Add(cost.Charge{
+		Kind:      cost.ChargeSynthesize,
+		TakeID:    req.SegmentID,
+		Units:     10,
+		UnitPrice: 30_000,
+	})
+	return nil
+}
+
+// chargeWiringRunner builds the runner exactly as newPipelineRunner does. The
+// stand-in clients bill the router, and the production helper wraps them.
+func chargeWiringRunner() (*pipelineRunner, *chargeWiringSegmenter, *chargeWiringTranslator) {
+	router := &chargeRouter{}
+	segmenter := &chargeWiringSegmenter{rec: router, segments: []types.Segment{{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "source line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}}}
+	translator := &chargeWiringTranslator{rec: router}
+	runner := newChargeRoutedRunner(router, segmenter, translator,
+		func(_ string, rec tts.ChargeRecorder) (tts.Synthesizer, error) {
+			return &chargeWiringSynthesizer{rec: rec}, nil
+		})
+	return runner, segmenter, translator
+}
+
+// TestChargeWiringRoutesAttemptsToTheWriter builds the runner exactly as
+// newPipelineRunner does, with stand-in clients that bill known amounts. It
+// renders one line in two attempts and proves the writer receives every call
+// with the attempt that produced it. The pre-fix wiring left AttemptCharges
+// empty, so the ledger wrote no charge row at all.
+func TestChargeWiringRoutesAttemptsToTheWriter(t *testing.T) {
+	workDir := t.TempDir()
+	source := filepath.Join(workDir, "source.mp4")
+	synthAssemblyFilm(t, source)
+
+	runner, _, translator := chargeWiringRunner()
+	request := api.RunRequest{
+		DubID:          "dub-charge-wiring",
+		Language:       "ml",
+		SourceLanguage: "en-US",
+		Source:         source,
+		WorkDir:        workDir,
+	}
+	result, err := runner.Run(context.Background(), request, func(api.ProgressEvent) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(translator.requests) != 2 {
+		t.Fatalf("translation calls = %d, want 2 attempts", len(translator.requests))
+	}
+	if len(result.Takes) != 1 {
+		t.Fatalf("takes = %d, want 1", len(result.Takes))
+	}
+	take := result.Takes[0]
+	if take.Take.Attempt != 2 {
+		t.Fatalf("chosen attempt = %d, want 2", take.Take.Attempt)
+	}
+	if got, want := result.TotalCost, cost.Price(708_000); got != want {
+		t.Errorf("run total = %d nanodollars, want %d", got, want)
+	}
+	perAttempt := map[int]int{}
+	for _, item := range take.AttemptCharges {
+		perAttempt[item.Attempt]++
+	}
+	if perAttempt[1] != 2 || perAttempt[2] != 2 {
+		t.Errorf("attempt charges = %v, want two calls on each of attempts 1 and 2", perAttempt)
+	}
+
+	client, captured := standInClickHouse(t, "")
+	defer client.Close()
+	result.ProjectID = request.DubID
+	result.OwnerID = "local"
+	result.CommitID = "commit-charge-wiring"
+	result.Takes[0].TakeID = "take-charge-wiring"
+	for i := range result.Timeline {
+		result.Timeline[i].TakeID = "take-charge-wiring"
+	}
+	recorder := newRunRecorder(client, "gemini-3.8-flash", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := recorder.Persist(context.Background(), request, result); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	rows := insertRows(t, captured(), "charges_raw")
+	if len(rows) != 8 {
+		t.Fatalf("charge rows = %d, want 8", len(rows))
+	}
+	var candidateAttempts []float64
+	for _, row := range rows {
+		if row["kind"] == "translate" && row["unit"] == "candidate_tokens" && row["units"] == "20" {
+			attempt, ok := row["attempt"].(float64)
+			if !ok {
+				t.Fatalf("candidate row attempt = %#v, want a number", row["attempt"])
+			}
+			candidateAttempts = append(candidateAttempts, attempt)
+		}
+	}
+	sort.Float64s(candidateAttempts)
+	if len(candidateAttempts) != 2 || candidateAttempts[0] != 1 || candidateAttempts[1] != 2 {
+		t.Errorf("identical candidate rows carry attempts %v, want [1 2]", candidateAttempts)
+	}
+}
+
+// chargeWiringPinEnv lets the ClickHouse pin write to a real server. Without
+// it the pin skips, so a default test run never touches a database.
+const chargeWiringPinEnv = "AJILAMU_CHARGE_PIN_CLICKHOUSE"
+
+// chargeWiringPinConfig holds the pin's ClickHouse endpoint.
+type chargeWiringPinConfig struct {
+	addr     string
+	database string
+	user     string
+	password string
+}
+
+// chargeWiringPinConfigFromEnv reads the pin's endpoint from the environment.
+func chargeWiringPinConfigFromEnv(t *testing.T) chargeWiringPinConfig {
+	t.Helper()
+	read := func(name string) string {
+		value := strings.TrimSpace(os.Getenv(name))
+		if value == "" {
+			t.Fatalf("%s is unset", name)
+		}
+		return value
+	}
+	return chargeWiringPinConfig{
+		addr:     read("AJILAMU_CHARGE_PIN_ADDR"),
+		database: read("AJILAMU_CHARGE_PIN_DB"),
+		user:     read("AJILAMU_CHARGE_PIN_USER"),
+		password: read("AJILAMU_CHARGE_PIN_PASSWORD"),
+	}
+}
+
+// chargeWiringPinQuery runs one statement on the pin's ClickHouse and returns
+// the body. The pin measures the stored rows, not the run's own report.
+func chargeWiringPinQuery(t *testing.T, cfg chargeWiringPinConfig, statement string) string {
+	t.Helper()
+	values := url.Values{
+		"database": {cfg.database},
+		"user":     {cfg.user},
+		"password": {cfg.password},
+		"query":    {statement},
+	}
+	response, err := http.Post("http://"+cfg.addr+"/?"+values.Encode(), "text/plain", nil)
+	if err != nil {
+		t.Fatalf("query ClickHouse: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read ClickHouse reply: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("ClickHouse status %d: %s", response.StatusCode, body)
+	}
+	return strings.TrimSpace(string(body))
+}
+
+// TestChargeWiringWritesChargeRows measures the production wiring against a
+// real ClickHouse loaded from sql/schema.sql. It proves the charge rows sum to
+// the run total to the nanodollar, and that two identical calls from different
+// attempts store two rows with two distinct event_keys.
+func TestChargeWiringWritesChargeRows(t *testing.T) {
+	if os.Getenv(chargeWiringPinEnv) != "1" {
+		t.Skipf("set %s=1 with the AJILAMU_CHARGE_PIN_* variables to measure a real ClickHouse", chargeWiringPinEnv)
+	}
+	cfg := chargeWiringPinConfigFromEnv(t)
+	workDir := t.TempDir()
+	source := filepath.Join(workDir, "source.mp4")
+	synthAssemblyFilm(t, source)
+
+	runner, _, _ := chargeWiringRunner()
+	dubID := "dub-charge-pin-" + time.Now().UTC().Format("20060102150405.000000000")
+	request := api.RunRequest{
+		DubID:          dubID,
+		Language:       "ml",
+		SourceLanguage: "en-US",
+		Source:         source,
+		WorkDir:        workDir,
+	}
+	result, err := runner.Run(context.Background(), request, func(api.ProgressEvent) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	result.ProjectID = request.DubID
+	result.OwnerID = "local"
+	result.CommitID = dubID + "-commit"
+	result.Takes[0].TakeID = dubID + "-take"
+	for i := range result.Timeline {
+		result.Timeline[i].TakeID = dubID + "-take"
+	}
+
+	client, err := ledger.New(&config.Config{
+		ClickHouseHost:     "pin.invalid",
+		ClickHousePort:     8123,
+		ClickHouseUser:     cfg.user,
+		ClickHousePassword: cfg.password,
+		ClickHouseDatabase: cfg.database,
+	}, t.TempDir(), ledger.WithEndpoint("http://"+cfg.addr))
+	if err != nil {
+		t.Fatalf("open pin ledger client: %v", err)
+	}
+	defer client.Close()
+	recorder := newRunRecorder(client, "gemini-3.8-flash", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := recorder.Persist(context.Background(), request, result); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	total, err := client.RunningTotal(context.Background(), dubID)
+	if err != nil {
+		t.Fatalf("RunningTotal: %v", err)
+	}
+	t.Logf("covers = %q", total.Covers)
+	if total.TotalNanodollars != cost.Price(708_000) {
+		t.Errorf("running total = %d nanodollars, want 708000", total.TotalNanodollars)
+	}
+	if want := "1 segment call, 2 translation calls, 2 render calls, and 0 agent calls."; total.Covers != want {
+		t.Errorf("covers = %q, want %q", total.Covers, want)
+	}
+
+	summary := chargeWiringPinQuery(t, cfg, fmt.Sprintf(
+		"SELECT count(), uniqExact(event_key), sum(toInt64(round(cost_usd * 1000000000))) FROM charges WHERE dub_id='%s'", dubID))
+	t.Logf("summary = %s", summary)
+	fields := strings.Fields(summary)
+	if len(fields) != 3 {
+		t.Fatalf("summary fields = %v, want rows, keys and nanodollars", fields)
+	}
+	if fields[0] != "8" {
+		t.Errorf("charge rows = %s, want 8", fields[0])
+	}
+	if fields[1] != "8" {
+		t.Errorf("distinct event_keys = %s, want 8", fields[1])
+	}
+	if fields[2] != "708000" {
+		t.Errorf("ledger sum = %s nanodollars, want 708000", fields[2])
+	}
+	if result.TotalCost != cost.Price(708_000) {
+		t.Errorf("run total = %d nanodollars, want the ledger sum 708000", result.TotalCost)
+	}
+
+	identical := chargeWiringPinQuery(t, cfg, fmt.Sprintf(
+		"SELECT attempt, unit, units, unit_price_usd, event_key FROM charges WHERE dub_id='%s' AND kind='translate' AND unit='candidate_tokens' ORDER BY attempt", dubID))
+	t.Logf("identical candidate rows:\n%s", identical)
+	lines := strings.Split(identical, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("identical candidate rows = %d, want 2", len(lines))
+	}
+	first := strings.Fields(lines[0])
+	second := strings.Fields(lines[1])
+	if len(first) != 5 || len(second) != 5 {
+		t.Fatalf("candidate rows = %q, %q, want five fields each", lines[0], lines[1])
+	}
+	if first[1] != second[1] || first[2] != second[2] || first[3] != second[3] {
+		t.Errorf("candidate rows differ beyond attempt: %q and %q", lines[0], lines[1])
+	}
+	if first[4] == second[4] {
+		t.Errorf("identical candidate rows share event_key %q, want two distinct keys", first[4])
+	}
+	if first[0] != "1" || second[0] != "2" {
+		t.Errorf("candidate attempts = %s and %s, want 1 and 2", first[0], second[0])
 	}
 }

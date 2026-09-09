@@ -1221,6 +1221,64 @@ func TestPipelineProxyDecorators(t *testing.T) {
 	}
 }
 
+// retargetRecorder forwards every charge to the recorder it currently holds.
+// It implements RecorderSetter, so a proxy can retarget a client that binds
+// its recorder at construction.
+type retargetRecorder struct {
+	mu     sync.Mutex
+	target ChargeRecorder
+}
+
+// SetRecorder points the router at a new recorder.
+func (r *retargetRecorder) SetRecorder(rec ChargeRecorder) {
+	r.mu.Lock()
+	r.target = rec
+	r.mu.Unlock()
+}
+
+// Add forwards one charge to the current recorder.
+func (r *retargetRecorder) Add(c cost.Charge) {
+	r.mu.Lock()
+	target := r.target
+	r.mu.Unlock()
+	if target != nil {
+		target.Add(c)
+	}
+}
+
+// fixedRecorderTranslator bills the recorder it was built with. It has no
+// SetRecorder, so it models every production client.
+type fixedRecorderTranslator struct {
+	rec ChargeRecorder
+}
+
+// Translate bills one translation call on the fixed recorder.
+func (t *fixedRecorderTranslator) Translate(context.Context, gemini.TranslateRequest) (string, error) {
+	t.rec.Add(cost.Charge{Kind: cost.ChargeTranslate, TakeID: 1, PromptTokens: 5, PromptUnitPrice: 100})
+	return "text", nil
+}
+
+// TestProxyRetargetsFixedRecorder proves a proxy reaches a client that binds
+// its recorder at construction. Production clients have no SetRecorder, so the
+// proxy must retarget the recorder the client holds. Without that retarget the
+// fit loop's tracker never sees a charge.
+func TestProxyRetargetsFixedRecorder(t *testing.T) {
+	router := &retargetRecorder{}
+	client := &fixedRecorderTranslator{rec: router}
+	proxy := NewTranslatorProxy(client, router)
+
+	target := &bareTestRecorder{}
+	proxy.SetRecorder(target)
+	if _, err := proxy.Translate(context.Background(), gemini.TranslateRequest{SegmentID: 1}); err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	if len(target.charges) != 1 {
+		t.Fatalf("retargeted recorder charges = %d, want 1", len(target.charges))
+	}
+}
+
 // TestPipelineResumesAfterCompletedTake proves an interrupted run resumes.
 // The second pass renders only the lines the first pass never finished.
 func TestPipelineResumesAfterCompletedTake(t *testing.T) {

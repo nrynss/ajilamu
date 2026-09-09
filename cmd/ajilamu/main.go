@@ -584,12 +584,20 @@ func newPipelineRunner(cfg *config.Config, card cost.RateCard) (api.PipelineRunn
 	if err != nil {
 		return nil, fmt.Errorf("open the translator: %w", err)
 	}
+	return newChargeRoutedRunner(router, segmenter, translator, runSynthesizerFactory(cfg, card, nil)), nil
+}
+
+// newChargeRoutedRunner wraps every production client so the fit loop's
+// recorder reaches it. The clients bill the router, and the recorder proxies
+// retarget that router at the tracker the fit loop installs. Without the
+// proxies the tracker never sees a charge and the ledger writes no take rows.
+func newChargeRoutedRunner(router *chargeRouter, segmenter gemini.Segmenter, translator gemini.Translator, newSynthesizer func(language string, rec tts.ChargeRecorder) (tts.Synthesizer, error)) *pipelineRunner {
 	return &pipelineRunner{
-		segmenter:      segmenter,
-		translator:     translator,
+		segmenter:      fit.NewSegmenterProxy(segmenter, router),
+		translator:     fit.NewTranslatorProxy(translator, router),
 		router:         router,
-		newSynthesizer: runSynthesizerFactory(cfg, card, nil),
-	}, nil
+		newSynthesizer: newSynthesizer,
+	}
 }
 
 // Run segments, translates, synthesizes, fits, and assembles one dub.
@@ -606,13 +614,14 @@ func (p *pipelineRunner) Run(ctx context.Context, req api.RunRequest, emit func(
 	req.Language = language.tag
 
 	charges := cost.NewLedger()
-	p.router.set(charges)
-	defer p.router.set(nil)
+	p.router.SetRecorder(charges)
+	defer p.router.SetRecorder(nil)
 
-	synthesizer, err := p.newSynthesizer(language.tag, charges)
+	synthesizer, err := p.newSynthesizer(language.tag, p.router)
 	if err != nil {
 		return api.RunResult{}, fmt.Errorf("open the synthesizer: %w", err)
 	}
+	synthesizer = fit.NewSynthesizerProxy(synthesizer, p.router)
 
 	source, err := os.ReadFile(req.Source)
 	if err != nil {
@@ -657,13 +666,14 @@ func (p *pipelineRunner) RenderLine(ctx context.Context, req api.LineRenderReque
 	}
 
 	charges := cost.NewLedger()
-	p.router.set(charges)
-	defer p.router.set(nil)
+	p.router.SetRecorder(charges)
+	defer p.router.SetRecorder(nil)
 
-	synthesizer, err := p.newSynthesizer(language.tag, charges)
+	synthesizer, err := p.newSynthesizer(language.tag, p.router)
 	if err != nil {
 		return api.LineRenderResult{}, fmt.Errorf("open the synthesizer: %w", err)
 	}
+	synthesizer = fit.NewSynthesizerProxy(synthesizer, p.router)
 
 	cfg := fit.RewriteConfig{
 		Translator: &namedTranslator{
@@ -749,21 +759,26 @@ func rerenderTakePath(first string) fit.PathBuilder {
 	}
 }
 
-// chargeRouter sends every client charge to the ledger of the active run.
+// chargeRouter sends every client charge to the recorder of the active run.
 // A run holds the runner mutex, so the target never changes mid-run.
 type chargeRouter struct {
 	mu     sync.Mutex
-	target *cost.Ledger
+	target fit.ChargeRecorder
 }
 
-// set points the router at the ledger of the run that is starting or ending.
-func (r *chargeRouter) set(target *cost.Ledger) {
+// chargeRouter implements the seam the fit recorder proxies retarget.
+var _ fit.RecorderSetter = (*chargeRouter)(nil)
+
+// SetRecorder points the router at the recorder of the run that is starting
+// or ending. The fit loop calls it with its tracker, so every client charge
+// flows through that tracker and keeps the attempt that produced it.
+func (r *chargeRouter) SetRecorder(target fit.ChargeRecorder) {
 	r.mu.Lock()
 	r.target = target
 	r.mu.Unlock()
 }
 
-// Add records one charge on the active run ledger.
+// Add records one charge on the active run recorder.
 func (r *chargeRouter) Add(charge cost.Charge) {
 	r.mu.Lock()
 	target := r.target

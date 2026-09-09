@@ -79,6 +79,8 @@ type RecorderSetter interface {
 }
 
 // TranslatorProxy decorates a gemini.Translator with RecorderSetter support.
+// A production client binds its recorder at construction and cannot take a
+// new one, so the proxy retargets that fixed recorder instead.
 type TranslatorProxy struct {
 	inner gemini.Translator
 	rec   ChargeRecorder
@@ -93,10 +95,16 @@ func NewTranslatorProxy(inner gemini.Translator, rec ChargeRecorder) *Translator
 	return p
 }
 
-// SetRecorder updates the active charge recorder on the proxy.
+// SetRecorder routes later charges to r. A client that accepts a recorder
+// takes it directly. A client that holds a fixed recorder keeps it, and the
+// proxy retargets that recorder instead. The proxy keeps the original
+// recorder, so a later run can retarget it again.
 func (p *TranslatorProxy) SetRecorder(r ChargeRecorder) {
-	p.rec = r
 	if rs, ok := p.inner.(RecorderSetter); ok {
+		rs.SetRecorder(r)
+		return
+	}
+	if rs, ok := p.rec.(RecorderSetter); ok {
 		rs.SetRecorder(r)
 	}
 }
@@ -107,6 +115,8 @@ func (p *TranslatorProxy) Translate(ctx context.Context, req gemini.TranslateReq
 }
 
 // SynthesizerProxy decorates a tts.Synthesizer with RecorderSetter support.
+// A production client binds its recorder at construction and cannot take a
+// new one, so the proxy retargets that fixed recorder instead.
 type SynthesizerProxy struct {
 	inner tts.Synthesizer
 	rec   ChargeRecorder
@@ -121,10 +131,16 @@ func NewSynthesizerProxy(inner tts.Synthesizer, rec ChargeRecorder) *Synthesizer
 	return p
 }
 
-// SetRecorder updates the active charge recorder on the proxy.
+// SetRecorder routes later charges to r. A client that accepts a recorder
+// takes it directly. A client that holds a fixed recorder keeps it, and the
+// proxy retargets that recorder instead. The proxy keeps the original
+// recorder, so a later run can retarget it again.
 func (p *SynthesizerProxy) SetRecorder(r ChargeRecorder) {
-	p.rec = r
 	if rs, ok := p.inner.(RecorderSetter); ok {
+		rs.SetRecorder(r)
+		return
+	}
+	if rs, ok := p.rec.(RecorderSetter); ok {
 		rs.SetRecorder(r)
 	}
 }
@@ -135,6 +151,8 @@ func (p *SynthesizerProxy) Synthesize(ctx context.Context, req tts.SynthesizeReq
 }
 
 // SegmenterProxy decorates a gemini.Segmenter with RecorderSetter support.
+// A production client binds its recorder at construction and cannot take a
+// new one, so the proxy retargets that fixed recorder instead.
 type SegmenterProxy struct {
 	inner gemini.Segmenter
 	rec   ChargeRecorder
@@ -149,10 +167,16 @@ func NewSegmenterProxy(inner gemini.Segmenter, rec ChargeRecorder) *SegmenterPro
 	return p
 }
 
-// SetRecorder updates the active charge recorder on the proxy.
+// SetRecorder routes later charges to r. A client that accepts a recorder
+// takes it directly. A client that holds a fixed recorder keeps it, and the
+// proxy retargets that recorder instead. The proxy keeps the original
+// recorder, so a later run can retarget it again.
 func (p *SegmenterProxy) SetRecorder(r ChargeRecorder) {
-	p.rec = r
 	if rs, ok := p.inner.(RecorderSetter); ok {
+		rs.SetRecorder(r)
+		return
+	}
+	if rs, ok := p.rec.(RecorderSetter); ok {
 		rs.SetRecorder(r)
 	}
 }
