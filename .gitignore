@@ -23,3 +23,14 @@ scratch/
 *.tgz
 *.tmp
 *.log
+
+# Agent tooling directories
+.claude/
+.codex/
+.cursor/
+.entire/
+.factory/
+.gemini/
+.github/hooks/
+.opencode/
+.pi/
