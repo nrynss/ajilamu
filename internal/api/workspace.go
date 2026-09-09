@@ -11,8 +11,10 @@ import (
 	"strings"
 )
 
-// WorkspaceReader reads the ledger facts one workspace payload needs.
-// It names api wire types only, so this package never imports internal/ledger.
+// WorkspaceReader reads the facts one workspace payload needs. The ledger
+// holds the takes. The stored upload record holds the target language of a
+// project that has not run yet. It names api wire types only, so this package
+// never imports internal/ledger.
 type WorkspaceReader interface {
 	// WorkspaceTakes returns one track per target language.
 	WorkspaceTakes(ctx context.Context, dubID string) ([]LanguageTrack, error)
@@ -22,6 +24,10 @@ type WorkspaceReader interface {
 	RunningTotal(ctx context.Context, dubID string) (Total, error)
 	// Languages returns the target language codes.
 	Languages(ctx context.Context, dubID string) ([]string, error)
+	// StoredTargetLanguage returns the target language the upload record
+	// names. The empty string means no stored record names one, so the
+	// ledger stays the only source of the language list.
+	StoredTargetLanguage(ctx context.Context, dubID string) (string, error)
 	// ProjectMetadata returns the identity and the timestamps.
 	ProjectMetadata(ctx context.Context, dubID string) (DubSummary, error)
 }
@@ -76,11 +82,13 @@ func WorkspaceHandlerFrom(reader WorkspaceReader, history HistoryReader, lookup 
 	})
 }
 
-// assembleWorkspace builds one Dub from the ledger reads.
+// assembleWorkspace builds one Dub from the ledger reads and the upload record.
 //
 // A nil result means no upload record and no ledger row names this project, so
 // the route answers 404. Every slice is non-nil, because the wire declares each
-// one as an array.
+// one as an array. A stored project the ledger holds no take for still carries
+// its target language as a track with no lines, so the page can start its
+// first run.
 func assembleWorkspace(ctx context.Context, reader WorkspaceReader, history HistoryReader, lookup ProjectLookup, running bool, dubID string) (*Dub, error) {
 	tracks, err := reader.WorkspaceTakes(ctx, dubID)
 	if err != nil {
@@ -106,17 +114,23 @@ func assembleWorkspace(ctx context.Context, reader WorkspaceReader, history Hist
 	if err != nil {
 		return nil, err
 	}
-	segments, err := workspaceSegments(ctx, history, dubID, tracks, commits)
-	if err != nil {
-		return nil, err
-	}
-
 	title := ""
 	recordCreatedAt := ""
 	sourceLanguage := ""
 	stored := false
 	if lookup != nil {
 		title, recordCreatedAt, sourceLanguage, stored = lookup(dubID)
+	}
+	if stored {
+		language, err := reader.StoredTargetLanguage(ctx, dubID)
+		if err != nil {
+			return nil, fmt.Errorf("read the stored target language: %w", err)
+		}
+		tracks = withStoredTrack(tracks, language)
+	}
+	segments, err := workspaceSegments(ctx, history, dubID, tracks, commits)
+	if err != nil {
+		return nil, err
 	}
 	if !stored && len(commits) == 0 && len(languages) == 0 && len(tracks) == 0 {
 		return nil, nil
@@ -148,6 +162,23 @@ func assembleWorkspace(ctx context.Context, reader WorkspaceReader, history Hist
 		CreatedAt:      createdAt,
 		UpdatedAt:      updatedAt,
 	}, nil
+}
+
+// withStoredTrack carries the stored target language as a track with no lines
+// when the ledger holds no take for it. A project that has never run has no
+// ledger row at all, so the upload record is the only source for the language
+// its first run must target. A track the ledger already holds wins, because a
+// recorded take is the truth.
+func withStoredTrack(tracks []LanguageTrack, language string) []LanguageTrack {
+	if language == "" {
+		return tracks
+	}
+	for _, track := range tracks {
+		if track.Language == language {
+			return tracks
+		}
+	}
+	return append(tracks, LanguageTrack{Language: language, Lines: []Line{}, Segments: []Segment{}})
 }
 
 // workspaceCommits reads the commit DAG oldest first. Without a history reader
@@ -254,19 +285,40 @@ func workspaceReadiness(tracks []LanguageTrack, segments []Segment, running bool
 // project.
 func UploadProjectLookup(storageDir string) ProjectLookup {
 	return func(id string) (string, string, string, bool) {
-		if storageDir == "" || !safeProjectID(id) {
-			return "", "", "", false
-		}
-		payload, err := os.ReadFile(filepath.Join(storageDir, id, uploadRecordName))
-		if err != nil {
-			return "", "", "", false
-		}
-		var record uploadRecord
-		if err := json.Unmarshal(payload, &record); err != nil || record.ID == "" {
+		record, ok := loadUploadRecord(storageDir, id)
+		if !ok {
 			return "", "", "", false
 		}
 		return record.Title, record.CreatedAt, record.SourceLanguage, true
 	}
+}
+
+// UploadTargetLanguage returns the target language one stored upload record
+// names. The empty string means no stored record names one, so a project the
+// ledger holds no take for stays unnameable rather than mislabelled.
+func UploadTargetLanguage(storageDir, id string) string {
+	record, ok := loadUploadRecord(storageDir, id)
+	if !ok {
+		return ""
+	}
+	return record.Language
+}
+
+// loadUploadRecord reads one stored upload record. A missing, unreadable, or
+// unnamed record reports false, so a partial write never claims a project.
+func loadUploadRecord(storageDir, id string) (uploadRecord, bool) {
+	if storageDir == "" || !safeProjectID(id) {
+		return uploadRecord{}, false
+	}
+	payload, err := os.ReadFile(filepath.Join(storageDir, id, uploadRecordName))
+	if err != nil {
+		return uploadRecord{}, false
+	}
+	var record uploadRecord
+	if err := json.Unmarshal(payload, &record); err != nil || record.ID == "" {
+		return uploadRecord{}, false
+	}
+	return record, true
 }
 
 // safeProjectID rejects an id that could name another file. A stored project

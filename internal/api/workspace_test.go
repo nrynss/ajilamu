@@ -20,13 +20,14 @@ import (
 // standInWorkspaceReader answers the workspace reads without a ledger.
 // It counts calls, so a rejected request can prove it never read.
 type standInWorkspaceReader struct {
-	tracks    []api.LanguageTrack
-	charges   []api.Charge
-	total     api.Total
-	languages []string
-	metadata  api.DubSummary
-	err       error
-	calls     int
+	tracks         []api.LanguageTrack
+	charges        []api.Charge
+	total          api.Total
+	languages      []string
+	metadata       api.DubSummary
+	storedLanguage string
+	err            error
+	calls          int
 }
 
 func (s *standInWorkspaceReader) WorkspaceTakes(context.Context, string) ([]api.LanguageTrack, error) {
@@ -59,6 +60,14 @@ func (s *standInWorkspaceReader) Languages(context.Context, string) ([]string, e
 		return nil, s.err
 	}
 	return s.languages, nil
+}
+
+func (s *standInWorkspaceReader) StoredTargetLanguage(context.Context, string) (string, error) {
+	s.calls++
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.storedLanguage, nil
 }
 
 func (s *standInWorkspaceReader) ProjectMetadata(context.Context, string) (api.DubSummary, error) {
@@ -353,6 +362,158 @@ func TestWorkspaceRouteServesEmptyDubForStoredProject(t *testing.T) {
 	for _, marker := range []string{`"segments":[]`, `"languages":[]`, `"charges":[]`, `"commits":[]`} {
 		if !strings.Contains(raw, marker) {
 			t.Errorf("body = %s, want %s", raw, marker)
+		}
+	}
+}
+
+// storeUploadedProject writes one upload record through the upload route and
+// returns the project id. The workspace reads the file the server wrote, so the
+// test exercises the real stored record.
+func storeUploadedProject(t *testing.T, storage, language, sourceLanguage string) string {
+	t.Helper()
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	video, err := form.CreateFormFile("video", "stored.mp4")
+	if err != nil {
+		t.Fatalf("create video part: %v", err)
+	}
+	if _, err := video.Write([]byte("video bytes")); err != nil {
+		t.Fatalf("write video part: %v", err)
+	}
+	if sourceLanguage != "" {
+		if err := form.WriteField("source_language", sourceLanguage); err != nil {
+			t.Fatalf("write source language field: %v", err)
+		}
+	}
+	if err := form.WriteField("language", language); err != nil {
+		t.Fatalf("write language field: %v", err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatalf("close form: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/dubs/new", &body)
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	response := httptest.NewRecorder()
+	api.NewUploadHandler(storage).ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d, want 201: %s", response.Code, response.Body.String())
+	}
+	var upload struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&upload); err != nil {
+		t.Fatalf("decode upload: %v", err)
+	}
+	return upload.ID
+}
+
+// TestWorkspaceRouteCarriesStoredTargetLanguageWithoutTakes proves a freshly
+// uploaded project renders its workspace. The ledger holds no take, so the
+// route carries the record's target language as a track with no lines. The page
+// then names the language and can start the first run.
+func TestWorkspaceRouteCarriesStoredTargetLanguageWithoutTakes(t *testing.T) {
+	storage := t.TempDir()
+	id := storeUploadedProject(t, storage, "de-DE", "en-US")
+	reader := &standInWorkspaceReader{
+		storedLanguage: "de-DE",
+		total:          api.Total{Covers: "0 segment calls, 0 translation calls, and 0 render calls."},
+	}
+	handler := api.WorkspaceHandlerFrom(reader, nil, api.UploadProjectLookup(storage), nil, nil)
+	response := serveWorkspace(t, handler, id)
+	var dub api.Dub
+	raw := decodeHistoryBody(t, response, &dub)
+	t.Logf("response: %s", raw)
+	if len(dub.Languages) != 1 {
+		t.Fatalf("languages = %d, want the stored target language track", len(dub.Languages))
+	}
+	track := dub.Languages[0]
+	if track.Language != "de-DE" {
+		t.Errorf("language = %q, want de-DE", track.Language)
+	}
+	if track.Lines == nil || len(track.Lines) != 0 {
+		t.Errorf("lines = %v, want an empty array", track.Lines)
+	}
+	if track.Segments == nil || len(track.Segments) != 0 {
+		t.Errorf("segments = %v, want an empty array", track.Segments)
+	}
+	if dub.Segments == nil || len(dub.Segments) != 0 {
+		t.Errorf("dub segments = %v, want an empty array", dub.Segments)
+	}
+	if dub.Readiness != api.ReadinessPending {
+		t.Errorf("readiness = %q, want %s", dub.Readiness, api.ReadinessPending)
+	}
+	for _, marker := range []string{`"language":"de-DE"`, `"lines":[]`, `"segments":[]`} {
+		if !strings.Contains(raw, marker) {
+			t.Errorf("body = %s, want %s", raw, marker)
+		}
+	}
+}
+
+// TestWorkspaceRouteKeepsLedgerTrackOverStoredLanguage proves a project with a
+// take renders exactly as before. The stored language names the track the
+// ledger already holds, so the route adds no second empty track.
+func TestWorkspaceRouteKeepsLedgerTrackOverStoredLanguage(t *testing.T) {
+	reader := &standInWorkspaceReader{
+		tracks: []api.LanguageTrack{{Language: "de-DE", Lines: []api.Line{{
+			SegmentID: 1,
+			Takes:     []api.Take{{File: "seg_1_try1.wav", Charges: []api.Charge{}}},
+		}}}},
+		languages:      []string{"de-DE"},
+		storedLanguage: "de-DE",
+	}
+	handler := api.WorkspaceHandlerFrom(reader, nil, func(string) (string, string, string, bool) {
+		return "Stored.mp4", "", "", true
+	}, nil, nil)
+	response := serveWorkspace(t, handler, "dub-1")
+	var dub api.Dub
+	raw := decodeHistoryBody(t, response, &dub)
+	t.Logf("response: %s", raw)
+	if len(dub.Languages) != 1 {
+		t.Fatalf("languages = %d, want the one ledger track", len(dub.Languages))
+	}
+	if len(dub.Languages[0].Lines) != 1 {
+		t.Errorf("lines = %d, want the one ledger line", len(dub.Languages[0].Lines))
+	}
+}
+
+// TestUploadTargetLanguageReadsStoredRecord proves the lookup names the record
+// language and never invents one. A missing record, an unsafe id, and a record
+// without a language all answer empty.
+func TestUploadTargetLanguageReadsStoredRecord(t *testing.T) {
+	storage := t.TempDir()
+	named := filepath.Join(storage, "named-record")
+	nameless := filepath.Join(storage, "nameless-record")
+	for _, dir := range []string{named, nameless} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create project directory: %v", err)
+		}
+	}
+	if err := os.WriteFile(
+		filepath.Join(named, "project.json"),
+		[]byte(`{"id":"named-record","title":"Stored.mp4","language":"de-DE","created_at":"2026-09-01T00:00:00Z"}`),
+		0o644,
+	); err != nil {
+		t.Fatalf("write record: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(nameless, "project.json"),
+		[]byte(`{"id":"nameless-record","title":"Old.mp4","created_at":"2026-09-01T00:00:00Z"}`),
+		0o644,
+	); err != nil {
+		t.Fatalf("write nameless record: %v", err)
+	}
+	for _, test := range []struct {
+		name string
+		id   string
+		want string
+	}{
+		{"stored language", "named-record", "de-DE"},
+		{"record without a language", "nameless-record", ""},
+		{"missing project", "missing", ""},
+		{"unsafe id", "..", ""},
+	} {
+		if got := api.UploadTargetLanguage(storage, test.id); got != test.want {
+			t.Errorf("%s: language = %q, want %q", test.name, got, test.want)
 		}
 	}
 }

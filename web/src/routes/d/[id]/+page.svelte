@@ -182,6 +182,14 @@
   let sharedReferenceSlotMs = $derived(activeDub ? referenceSlotMs(activeDub) : 1)
   let sharedPictureDurationMs = $derived(activeDub ? pictureDurationMs(activeDub) : 0)
   let flaggedNotes = $derived(lineRows.filter((row) => row.line?.flagged).map(flagSentence))
+
+  // A project the ledger holds no line or take for shows the waiting sentence
+  // inside its workspace, because the run control must still render.
+  let waitingForDubbing = $derived(
+    !!dub
+    && dub.segments.length === 0
+    && dub.languages.every((track) => track.lines.length === 0)
+  )
   let runStep = $derived.by((): ProcessingStep | undefined => {
     const event = runEvent
     if (!event) return undefined
@@ -861,7 +869,10 @@
         dub = loaded
         selectedSegmentId = loaded.segments[0]?.id ?? 0
         activeLanguage = loaded.languages[0]?.language ?? ""
-        workspaceState = loaded.segments.length > 0 && loaded.languages.length > 0
+        // A stored project with no take still renders its workspace. The
+        // payload names its target language, so the run control has a
+        // language to start into.
+        workspaceState = loaded.languages.length > 0
           ? { kind: "populated" }
           : { kind: "empty", sentence: pendingProjectSentence }
       })
@@ -915,6 +926,9 @@
         <section class="workspace" aria-label={`${dub.title} dubbing workspace`} data-project-id={projectID}>
         <section class="picture-area" aria-label="Picture and playback">
           <h1 class="project-title">{dub.title}</h1>
+          {#if waitingForDubbing}
+            <p class="waiting-note" role="status">{pendingProjectSentence}</p>
+          {/if}
           <div class="run-panel">
             {#if !runWatching}
               <button type="button" class="run-start" onclick={startRun} disabled={runStarting}>
@@ -1163,6 +1177,17 @@
   .project-title {
     font-size: 14px;
     margin: 0 0 10px;
+  }
+
+  .waiting-note {
+    background: var(--raised);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-panel);
+    color: var(--dim);
+    font-size: 12.5px;
+    line-height: 1.5;
+    margin: 0 0 12px;
+    padding: 12px;
   }
 
   .playback-note {

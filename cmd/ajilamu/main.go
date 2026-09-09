@@ -52,6 +52,9 @@ func run() error {
 		return err
 	}
 
+	// The upload directory holds the stored records the workspace reads for a
+	// project the ledger has no take for yet.
+	uploadDir := filepath.Join(cfg.DataDir, "uploads")
 	dub, err := fixtures.LoadDub()
 	if err != nil {
 		return fmt.Errorf("load fixture workspace: %w", err)
@@ -73,7 +76,7 @@ func run() error {
 		defer eventLedger.Close()
 		ledgerFlusher = eventLedger
 		history = newHistoryReader(eventLedger)
-		workspace = newWorkspaceReader(eventLedger)
+		workspace = newWorkspaceReader(eventLedger, uploadDir)
 		runRecorder = newRunRecorder(eventLedger, cfg.GeminiModel, slog.Default())
 		editRecorder = newEditRecorder(eventLedger)
 		agentChargeRecorder = newAgentChargeRecorder(eventLedger, cfg.GeminiModel)
@@ -98,8 +101,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open settings store: %w", err)
 	}
-
-	uploadDir := filepath.Join(cfg.DataDir, "uploads")
 	fixtureSummary := api.DubSummary{
 		ID:               dub.ID,
 		Title:            dub.Title,
@@ -337,22 +338,25 @@ func branchSummary(view ledger.BranchView) api.BranchSummary {
 	}
 }
 
-// workspaceReader adapts the ledger client to the api workspace interface.
-// The ledger reads already return wire types, so each method forwards.
+// workspaceReader adapts the ledger client and the stored upload record to the
+// api workspace interface. The ledger reads already return wire types, so each
+// method forwards. The upload record supplies the target language of a project
+// the ledger holds no take for.
 type workspaceReader struct {
-	client *ledger.Client
+	client     *ledger.Client
+	storageDir string
 }
 
 // The adapter satisfies the workspace route without internal/api importing internal/ledger.
 var _ api.WorkspaceReader = (*workspaceReader)(nil)
 
-// newWorkspaceReader returns a reader for client.
+// newWorkspaceReader returns a reader for client and the upload storage.
 // A nil client returns a nil interface, so a typed nil never reaches the route.
-func newWorkspaceReader(client *ledger.Client) api.WorkspaceReader {
+func newWorkspaceReader(client *ledger.Client, storageDir string) api.WorkspaceReader {
 	if client == nil {
 		return nil
 	}
-	return &workspaceReader{client: client}
+	return &workspaceReader{client: client, storageDir: storageDir}
 }
 
 // WorkspaceTakes returns one track per target language.
@@ -373,6 +377,13 @@ func (w *workspaceReader) RunningTotal(ctx context.Context, dubID string) (api.T
 // Languages returns the target language codes.
 func (w *workspaceReader) Languages(ctx context.Context, dubID string) ([]string, error) {
 	return w.client.Languages(ctx, dubID)
+}
+
+// StoredTargetLanguage returns the target language the upload record names.
+// The ledger holds no language until a run writes a take, so a fresh project
+// names its language here.
+func (w *workspaceReader) StoredTargetLanguage(_ context.Context, dubID string) (string, error) {
+	return api.UploadTargetLanguage(w.storageDir, dubID), nil
 }
 
 // ProjectMetadata returns the identity and the timestamps.
