@@ -269,8 +269,10 @@
     clip: rect(0 0 0 0);
     clip-path: inset(50%);
     height: 1px;
+    left: 0;
     overflow: hidden;
-    position: absolute;
+    position: fixed;
+    top: 0;
     white-space: nowrap;
     width: 1px;
   }

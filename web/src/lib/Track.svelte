@@ -86,7 +86,7 @@
           data-segment-id={segment.id}
           data-take-state="ghost"
           style={ghostStyle(segment, ghost, takes.length - 2 - index)}
-          title="Line {segment.id}, attempt {ghost.attempt}, {ghost.fit.measured_ms} ms"
+          title="Try {ghost.attempt} for line {segment.id} lasts {ghost.fit.measured_ms} milliseconds."
         ></div>
       {/each}
 
@@ -101,7 +101,7 @@
           data-segment-id={segment.id}
           data-take-state="active"
           style={audioStyle(segment, take.fit.measured_ms)}
-          title="Line {segment.id}, {take.fit.measured_ms} ms"
+          title="The active take for line {segment.id} lasts {take.fit.measured_ms} milliseconds."
         >
           {#if take.peaks?.length}
             <svg aria-hidden="true" class="waveform" preserveAspectRatio="none" viewBox="0 0 100 100">

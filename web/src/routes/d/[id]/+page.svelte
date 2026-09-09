@@ -1114,10 +1114,14 @@
     padding: 20px;
   }
 
+  /* The editor row carries a command bar, three line panels, take history, and
+     the timeline. An auto track let that stack grow past the workspace height
+     and squeeze the picture and rail row to nothing. Capping the second track
+     keeps both rows on screen, and the editor scrolls inside its own band. */
   .workspace {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 352px;
-    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-rows: minmax(220px, 1fr) minmax(156px, 46vh);
     height: calc(100vh - 46px);
     min-height: 620px;
   }
@@ -1305,17 +1309,25 @@
     margin: 0;
   }
 
+  /* A column flex box lets the line panels absorb the shortfall. The command
+     bar, take history, and timeline stop at their own minimums, so all three
+     stay on screen. The timeline keeps its own 156px floor. */
   .editor {
     background: var(--surface);
     border-top: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
     grid-column: 1 / -1;
     min-height: 156px;
+    overflow: auto;
   }
 
   .editor-panels {
     display: grid;
     gap: 12px;
     grid-template-columns: minmax(0, 1fr) 300px;
+    min-height: 0;
+    overflow: auto;
     padding: 12px 16px;
   }
 
