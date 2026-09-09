@@ -295,6 +295,50 @@ func discardOrphanTakes(ctx context.Context, ownedTake string, freshTakes ...str
 	}
 }
 
+// freeAttemptScan bounds the search for a free attempt window. A record owns
+// at most one take, and the cleanup clears every other path, so the first free
+// window starts within a couple of attempts. The bound keeps a builder that
+// ignores the attempt number from spinning.
+const freeAttemptScan = 1024
+
+// firstFreeAttempt returns the first attempt number whose whole window holds
+// no take file. The window covers attempts start to start+count-1 in the raw
+// and the stretched form. A fresh render claims that window, so it never
+// overwrites a take that already exists, whether or not a ledger row
+// references it. A window the scan never finds returns one, and the render
+// then fails loudly on the existing file.
+func firstFreeAttempt(builder PathBuilder, workDir string, segmentID, count int) int {
+	if count < 1 {
+		return 1
+	}
+	for start := 1; start <= freeAttemptScan; start++ {
+		if attemptWindowFree(builder, workDir, segmentID, start, count) {
+			return start
+		}
+	}
+	return 1
+}
+
+// attemptWindowFree reports whether every take path of one attempt window is
+// unclaimed.
+func attemptWindowFree(builder PathBuilder, workDir string, segmentID, start, count int) bool {
+	for attempt := start; attempt < start+count; attempt++ {
+		if takePathExists(resolveTakePath(builder, workDir, segmentID, attempt, false)) {
+			return false
+		}
+		if takePathExists(resolveTakePath(builder, workDir, segmentID, attempt, true)) {
+			return false
+		}
+	}
+	return true
+}
+
+// takePathExists reports whether a take path already holds a file.
+func takePathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // readSegmentRecord loads the resume state of one line.
 // freshTakes names every take path the fresh render can claim. Each attempt
 // claims a raw take, and an atempo repair claims a stretched take. The caller
@@ -1108,6 +1152,8 @@ func (p *Pipeline) Run(ctx context.Context) (*PipelineResult, error) {
 // synthesis that produced it. Every other recorded line replays its stored
 // result, because RepairLine cannot consume that take. A line with no usable
 // record renders fresh after the loop clears every take that no record owns.
+// The fresh render then claims the first free attempt window, so a take the
+// cleanup kept, such as one a ledger row references, never blocks it.
 // A clamped line ends past the film, so the loop flags it after the repair
 // and stores that flag in the resume record.
 func (p *Pipeline) repairSegment(ctx context.Context, seg types.Segment, cfg RewriteConfig, clamped bool) (LineResult, error) {
@@ -1129,6 +1175,12 @@ func (p *Pipeline) repairSegment(ctx context.Context, seg types.Segment, cfg Rew
 		}
 		cfg.InitialTake = take
 		cfg.InitialText = recordedText(recorded)
+	} else {
+		// No usable record, so this line renders fresh. A stale take the
+		// record could not consume still holds its own path, and a take a
+		// ledger row references must keep its bytes. The render therefore
+		// claims the first free attempt window instead of overwriting one.
+		cfg.FirstAttempt = firstFreeAttempt(p.cfg.PathBuilder, p.cfg.WorkDir, seg.ID, attempts)
 	}
 
 	res, err := RepairLine(ctx, seg, cfg)

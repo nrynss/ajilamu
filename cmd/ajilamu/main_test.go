@@ -2302,3 +2302,145 @@ func TestRunFlagsLineOnPersistentRateLimit(t *testing.T) {
 	}
 	t.Logf("persisted %d takes and %d charges", len(takes), len(charges))
 }
+
+// startRunAndReadStream starts one run over the API and returns the event
+// stream it produced.
+func startRunAndReadStream(t *testing.T, base, dubID string) string {
+	t.Helper()
+	response, err := http.Post(base+"/api/dubs/"+dubID+"/run?language=ml", "text/plain", nil)
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", response.StatusCode)
+	}
+	streamResponse, err := http.Get(base + "/api/dubs/" + dubID + "/events")
+	if err != nil {
+		t.Fatalf("read event stream: %v", err)
+	}
+	stream, err := io.ReadAll(streamResponse.Body)
+	streamResponse.Body.Close()
+	if err != nil {
+		t.Fatalf("read event body: %v", err)
+	}
+	return string(stream)
+}
+
+// TestRunRetriesAfterStaleRecordTake proves the run route can start a line
+// again after a re-segmentation left a record that no longer describes it.
+// The first run writes the record and its take. The second run returns the
+// same line id under new text, so the record cannot resume it. The run still
+// reaches done, the fresh render lands beside the stale take, and the ledger
+// receives the new take rows.
+func TestRunRetriesAfterStaleRecordTake(t *testing.T) {
+	storage := t.TempDir()
+	const dubID = "dub-stale-take"
+	projectDir := filepath.Join(storage, dubID)
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("create project directory: %v", err)
+	}
+	source := filepath.Join(projectDir, "source.mp4")
+	synthAssemblyFilm(t, source)
+
+	router := &chargeRouter{}
+	segmenter := &chargeWiringSegmenter{rec: router, segments: []types.Segment{{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "source one",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}}}
+	translator := &chargeWiringTranslator{rec: router}
+	client := &runnerTestTTSClient{audio: wavOfMillis(2000)}
+	runner := newChargeRoutedRunner(router, segmenter, translator,
+		runSynthesizerFactory(&config.Config{GoogleCloudProject: "test-project"}, cost.DefaultRateCard(), client))
+
+	ledgerClient, captured := standInClickHouse(t, "")
+	defer ledgerClient.Close()
+	recorder := newRunRecorder(ledgerClient, "gemini-3.8-flash", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	var logs bytes.Buffer
+	server, err := api.NewServer(&config.Config{Env: "development"}, api.ServerOptions{
+		Runner:     runner,
+		Recorder:   recorder,
+		StorageDir: storage,
+		Logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	workDir := filepath.Join(projectDir, "work", "ml-IN")
+	stalePath := filepath.Join(workDir, "seg_1_try1.wav")
+
+	firstStream := startRunAndReadStream(t, httpServer.URL, dubID)
+	t.Logf("first run stream:\n%s", firstStream)
+	if !strings.Contains(firstStream, `"type":"done"`) {
+		t.Fatalf("first run misses the done event: %s", firstStream)
+	}
+	staleBytes, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatalf("first run wrote no take at %s: %v", stalePath, err)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "seg_1_result.json")); err != nil {
+		t.Fatalf("first run wrote no resume record: %v", err)
+	}
+	firstCalls := client.calls
+
+	// The next segmentation names the same line under new text.
+	segmenter.segments = []types.Segment{{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "source one, reworded",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}}
+
+	secondStream := startRunAndReadStream(t, httpServer.URL, dubID)
+	t.Logf("retry stream:\n%s", secondStream)
+	if !strings.Contains(secondStream, `"type":"done"`) {
+		t.Fatalf("retry misses the done event: %s", secondStream)
+	}
+	if strings.Contains(secondStream, `"type":"error"`) {
+		t.Fatalf("retry carries an error event: %s", secondStream)
+	}
+	if strings.Contains(logs.String(), "run failed") {
+		t.Fatalf("server log reports a failed run: %s", logs.String())
+	}
+	if client.calls != firstCalls+1 {
+		t.Errorf("Cloud TTS calls = %d, want one fresh render above the first run's %d", client.calls, firstCalls)
+	}
+	freshPath := filepath.Join(workDir, "seg_1_try2.wav")
+	if _, err := os.Stat(freshPath); err != nil {
+		t.Fatalf("retry wrote no fresh take beside the stale one: %v", err)
+	}
+	kept, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatalf("stale take gone after the retry: %v", err)
+	}
+	if string(kept) != string(staleBytes) {
+		t.Errorf("stale take bytes changed, want them untouched")
+	}
+	export := filepath.Join(workDir, assemble.DubbedDucked)
+	t.Logf("ffprobe export duration = %.3fs", probeMediaSeconds(t, export))
+
+	takes := insertRows(t, captured(), "takes_raw")
+	if len(takes) < 2 {
+		t.Fatalf("take rows = %d, want the first run's take and the retry's take", len(takes))
+	}
+	// The first run's take row references the stale path, and the retry left
+	// that file byte for byte.
+	referenced := false
+	for _, row := range takes {
+		if path, _ := row["audio_path"].(string); strings.HasSuffix(path, "seg_1_try1.wav") {
+			referenced = true
+		}
+	}
+	if !referenced {
+		t.Errorf("no take row references the stale path: %#v", takes)
+	}
+	t.Logf("persisted %d take rows, the stale take stays referenced, Cloud TTS calls = %d", len(takes), client.calls)
+}

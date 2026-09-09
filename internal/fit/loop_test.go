@@ -1355,6 +1355,131 @@ func TestPipelineResumesAfterCompletedTake(t *testing.T) {
 	}
 }
 
+// TestPipelineRendersFreshBesideStaleRecordTake proves a record that no
+// longer describes the line never blocks a later run. The segmenter is a
+// model, so a re-run can return a different line for the same id. The old
+// record keeps the take it names, and the fresh render claims the next free
+// attempt window, so the stale take keeps its bytes. The run after that one
+// matches the new record and resumes without a render.
+func TestPipelineRendersFreshBesideStaleRecordTake(t *testing.T) {
+	workDir := t.TempDir()
+	slot := 2000 * time.Millisecond
+	seg := types.Segment{
+		ID:      1,
+		StartMs: 0,
+		EndMs:   2000,
+		Text:    "first line",
+		Speaker: types.Speaker{Name: "Suni Williams"},
+	}
+
+	first := &refusingSynthesizer{inner: newMockPipelineSynthesizer("", nil)}
+	first.inner.durations[1] = []time.Duration{slot}
+	cfg := PipelineConfig{
+		Language:           tts.Malayalam,
+		TargetLanguageName: "Malayalam",
+
+		Segments:    []types.Segment{seg},
+		Translator:  newMockPipelineTranslator(nil),
+		Synthesizer: first,
+		WorkDir:     workDir,
+	}
+	if _, err := RunPipeline(context.Background(), cfg); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	stalePath := filepath.Join(workDir, "seg_1_try1.wav")
+	staleBytes, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatalf("read the first take: %v", err)
+	}
+
+	// The next segmentation returns the same line id under new text.
+	changed := seg
+	changed.Text = "first line, reworded"
+	second := &refusingSynthesizer{inner: newMockPipelineSynthesizer("", nil)}
+	second.inner.durations[1] = []time.Duration{slot}
+	cfg.Segments = []types.Segment{changed}
+	cfg.Synthesizer = second
+
+	res, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run after the stale record failed: %v", err)
+	}
+	if len(second.inner.requests) != 1 {
+		t.Fatalf("synth requests = %d, want 1 to render the line fresh", len(second.inner.requests))
+	}
+	freshPath := second.inner.requests[0].OutPath
+	if freshPath == stalePath {
+		t.Errorf("fresh render claimed the stale take path %s", stalePath)
+	}
+	line, ok := res.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in results")
+	}
+	if line.ChosenTake.File != freshPath {
+		t.Errorf("line 1 take = %s, want the fresh take %s", line.ChosenTake.File, freshPath)
+	}
+	kept, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatalf("stale take gone after the fresh render: %v", err)
+	}
+	if string(kept) != string(staleBytes) {
+		t.Errorf("stale take bytes changed, want them untouched")
+	}
+
+	// The third run reads the new record and renders nothing.
+	third := &refusingSynthesizer{inner: newMockPipelineSynthesizer("", nil)}
+	third.inner.durations[1] = []time.Duration{slot}
+	cfg.Synthesizer = third
+	resumed, err := RunPipeline(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("resumed run failed: %v", err)
+	}
+	if len(third.inner.requests) != 0 {
+		t.Fatalf("resumed synth requests = %d, want 0", len(third.inner.requests))
+	}
+	resumedLine, ok := resumed.Line(1)
+	if !ok {
+		t.Fatal("missing line 1 in the resumed results")
+	}
+	if resumedLine.ChosenTake.File != freshPath {
+		t.Errorf("resumed take = %s, want the recorded take %s", resumedLine.ChosenTake.File, freshPath)
+	}
+	t.Logf("fresh take = %s, stale take kept = %s, resumed synth requests = %d",
+		filepath.Base(freshPath), filepath.Base(stalePath), len(third.inner.requests))
+}
+
+// TestFirstFreeAttemptSkipsClaimedRawAndStretchedPaths proves the window scan
+// reads both take forms. A raw take the window covers and a stretched take the
+// window covers each push the fresh render to the next window.
+func TestFirstFreeAttemptSkipsClaimedRawAndStretchedPaths(t *testing.T) {
+	slot := 2000 * time.Millisecond
+	cases := []struct {
+		name    string
+		claimed []string
+		want    int
+	}{
+		{name: "empty directory", want: 1},
+		{name: "raw take at two", claimed: []string{"seg_1_try2.wav"}, want: 3},
+		{name: "stretched take at one", claimed: []string{"seg_1_stretched.wav"}, want: 2},
+		{name: "stretched take at three", claimed: []string{"seg_1_try3_stretched.wav"}, want: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			for _, name := range tc.claimed {
+				if err := writeTestWAV(filepath.Join(workDir, name), slot); err != nil {
+					t.Fatalf("write claimed take %s: %v", name, err)
+				}
+			}
+			got := firstFreeAttempt(PipelineTakeName, workDir, 1, DefaultMaxAttempts)
+			t.Logf("claimed %v, first free attempt = %d", tc.claimed, got)
+			if got != tc.want {
+				t.Errorf("firstFreeAttempt = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestPipelineDiscardsOrphanTakeWithoutRecord proves a take left without its
 // record does not block the next run. The loop clears the orphaned take, so
 // the fresh render claims the path and completes.

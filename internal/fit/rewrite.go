@@ -56,6 +56,11 @@ type RewriteConfig struct {
 	MaxAttempts int
 	InitialTake *types.Take
 	InitialText string
+	// FirstAttempt numbers the first attempt of a fresh render. The loop sets
+	// it past every take file the work directory already holds, so a fresh
+	// render claims free paths instead of overwriting a stale take. Zero
+	// means one.
+	FirstAttempt int
 	// AuthoritativeText keeps InitialText as the spoken text on every
 	// attempt. The loop never calls the translator when it is set.
 	AuthoritativeText bool
@@ -249,7 +254,9 @@ func setChargeAttempt(client any, attempt int) {
 	}
 }
 
-// RepairLine runs up to three attempts to fit a dialogue line.
+// RepairLine runs up to MaxAttempts attempts to fit a dialogue line. It
+// numbers the attempts from FirstAttempt, so a fresh render the loop starts
+// past a stale take names its files above that take.
 func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (LineResult, error) {
 	if seg.ID < 0 {
 		return LineResult{}, errors.New("segment ID cannot be negative")
@@ -281,10 +288,14 @@ func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (Line
 		return filename
 	}
 
+	firstAttempt := cfg.FirstAttempt
+	if firstAttempt < 1 {
+		firstAttempt = 1
+	}
 	attempts := make([]LineAttempt, 0, cfg.MaxAttempts)
 	result := LineResult{Segment: seg}
 
-	for attemptNum := 1; attemptNum <= cfg.MaxAttempts; attemptNum++ {
+	for attemptNum := firstAttempt; attemptNum < firstAttempt+cfg.MaxAttempts; attemptNum++ {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
@@ -297,10 +308,10 @@ func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (Line
 		case cfg.AuthoritativeText:
 			// The creator's text is authoritative, so no rewrite mode applies.
 			mode = gemini.ModeNormal
-		case attemptNum == 1:
+		case attemptNum == firstAttempt:
 			mode = gemini.ModeNormal
 		default:
-			prevFit := attempts[attemptNum-2].Fit
+			prevFit := attempts[attemptNum-firstAttempt-1].Fit
 			miss := prevFit.Measured - prevFit.Slot
 			if miss > 0 {
 				mode = gemini.ModeShorter
@@ -313,7 +324,7 @@ func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (Line
 		var audioPath string
 		var fit types.Fit
 
-		if attemptNum == 1 && cfg.InitialTake != nil {
+		if attemptNum == firstAttempt && cfg.InitialTake != nil {
 			audioPath = cfg.InitialTake.File
 			text = cfg.InitialText
 			measured, err := media.Duration(ctx, audioPath)
@@ -327,7 +338,7 @@ func RepairLine(ctx context.Context, seg types.Segment, cfg RewriteConfig) (Line
 				// A corrected target line stays the spoken line on every
 				// attempt, so the loop never translates the source.
 				text = cfg.InitialText
-			case attemptNum == 1 && cfg.InitialText != "":
+			case attemptNum == firstAttempt && cfg.InitialText != "":
 				text = cfg.InitialText
 			default:
 				if cfg.Translator == nil {
