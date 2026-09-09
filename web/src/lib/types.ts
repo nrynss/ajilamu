@@ -88,7 +88,9 @@ export interface Dub {
   source_language: string
   /** Readiness reports the processing state. */
   readiness: Readiness
-  /** Segments lists the source track lines. */
+  /** Segments holds the source track lines. It mirrors the first target
+   * language's timeline, because the ledger copies the source fields there.
+   * Each language track carries its own segments. */
   segments: Segment[]
   /** Languages holds one track per target language. */
   languages: LanguageTrack[]
@@ -128,6 +130,10 @@ export interface LanguageTrack {
   language: string
   /** Lines holds one entry per source segment. */
   lines: Line[]
+  /** Segments holds this language's own line timing at the head commit.
+   * It carries the bounds, the speaker and the source text that language
+   * last stored, so an editor reads the track it writes. */
+  segments: Segment[]
 }
 
 // Line is one translated line bound to a segment.

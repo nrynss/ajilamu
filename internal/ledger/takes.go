@@ -19,13 +19,15 @@ const takeInsert = "INSERT INTO takes_raw (take_id, commit_id, project_id, dub_i
 // TakeAttempt contains the provenance of one rendered take and its own API charges.
 // Charges never include a project running total.
 type TakeAttempt struct {
-	TakeID         string
-	CommitID       string
-	ProjectID      string
-	DubID          string
-	OwnerID        string
-	Language       string
-	Voice          string
+	TakeID    string
+	CommitID  string
+	ProjectID string
+	DubID     string
+	OwnerID   string
+	Language  string
+	Voice     string
+	// Text is the target-language line the take speaks.
+	Text           string
 	ChargeProvider string
 	RepairDetail   string
 	Repair         types.Repair
@@ -123,8 +125,8 @@ func (a TakeAttempt) rows() (takeRow, []chargeRow, error) {
 	if strings.TrimSpace(a.TakeID) == "" || strings.TrimSpace(a.CommitID) == "" ||
 		strings.TrimSpace(a.ProjectID) == "" || strings.TrimSpace(a.DubID) == "" ||
 		strings.TrimSpace(a.OwnerID) == "" || strings.TrimSpace(a.Language) == "" ||
-		strings.TrimSpace(a.Voice) == "" {
-		return takeRow{}, nil, errors.New("take row has an empty identity or voice field")
+		strings.TrimSpace(a.Voice) == "" || strings.TrimSpace(a.Text) == "" {
+		return takeRow{}, nil, errors.New("take row has an empty identity, voice or text field")
 	}
 	if a.Segment.ID < 0 || a.Take.SegmentID != a.Segment.ID {
 		return takeRow{}, nil, errors.New("take segment does not match its provenance segment")
@@ -182,7 +184,7 @@ func (a TakeAttempt) rows() (takeRow, []chargeRow, error) {
 		Attempt:      uint8(a.Take.Attempt),
 		Speaker:      a.Segment.Speaker.Name,
 		Voice:        a.Voice,
-		Text:         a.Segment.Text,
+		Text:         a.Text,
 		SlotStartMs:  a.Segment.StartMs,
 		SlotMs:       slotMs,
 		MeasuredMs:   measuredMs,

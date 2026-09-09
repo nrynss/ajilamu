@@ -150,7 +150,9 @@ type Dub struct {
 	SourceLanguage string `json:"source_language"`
 	// Readiness reports the processing state.
 	Readiness string `json:"readiness"`
-	// Segments lists the source track lines.
+	// Segments holds the source track lines. It mirrors the first target
+	// language's timeline, because the ledger copies the source fields there.
+	// Each language track carries its own segments.
 	Segments []Segment `json:"segments"`
 	// Languages holds one track per target language.
 	Languages []LanguageTrack `json:"languages"`
@@ -190,6 +192,10 @@ type LanguageTrack struct {
 	Language string `json:"language"`
 	// Lines holds one entry per source segment.
 	Lines []Line `json:"lines"`
+	// Segments holds this language's own line timing at the head commit.
+	// It carries the bounds, the speaker and the source text that language
+	// last stored, so an editor reads the track it writes.
+	Segments []Segment `json:"segments"`
 }
 
 // Line is one translated line bound to a segment.

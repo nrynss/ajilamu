@@ -439,6 +439,7 @@ func rerenderResult(segmentID int, segment types.Segment, rendered LineRenderRes
 	result := RunResult{
 		TotalCost: rendered.Total,
 		Takes: []RunTake{{
+			Text:         rendered.Text,
 			Segment:      segment,
 			Take:         take,
 			Voice:        rendered.Voice,

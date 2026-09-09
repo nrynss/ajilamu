@@ -166,11 +166,21 @@
   let lineNote = $state("")
   let boundaryRevision = $state(0)
 
-  let lineRows = $derived(dub ? fixtureLineRows(dub, activeLanguage) : [])
+  // The editor works on one language track. Every timing read and every write
+  // uses the active track, so a two-language dub cannot show one track and save
+  // another.
+  let activeTrack = $derived(dub?.languages.find((track) => track.language === activeLanguage))
+  let activeSegments = $derived(activeTrack?.segments ?? dub?.segments ?? [])
+  let activeDub = $derived.by((): Dub | undefined => {
+    const current = dub
+    if (!current) return undefined
+    return { ...current, segments: activeSegments }
+  })
+  let lineRows = $derived(activeDub ? fixtureLineRows(activeDub, activeLanguage) : [])
   let selectedRow = $derived(lineRows.find((row) => row.segment.id === selectedSegmentId))
   let selectedTake = $derived(selectedRow?.take)
-  let sharedReferenceSlotMs = $derived(dub ? referenceSlotMs(dub) : 1)
-  let sharedPictureDurationMs = $derived(dub ? pictureDurationMs(dub) : 0)
+  let sharedReferenceSlotMs = $derived(activeDub ? referenceSlotMs(activeDub) : 1)
+  let sharedPictureDurationMs = $derived(activeDub ? pictureDurationMs(activeDub) : 0)
   let flaggedNotes = $derived(lineRows.filter((row) => row.line?.flagged).map(flagSentence))
   let runStep = $derived.by((): ProcessingStep | undefined => {
     const event = runEvent
@@ -183,10 +193,10 @@
     }
   })
   let railDub = $derived.by((): Dub | undefined => {
-    if (!dub) return undefined
+    if (!activeDub) return undefined
     return {
-      ...dub,
-      languages: dub.languages.filter((track) => track.language === activeLanguage)
+      ...activeDub,
+      languages: activeDub.languages.filter((track) => track.language === activeLanguage)
     }
   })
 
@@ -228,18 +238,19 @@
   }
 
   async function selectSegment(segmentID: number, source: SelectionSource = "user"): Promise<void> {
-    if (!dub?.segments.some((segment) => segment.id === segmentID)) return
+    const current = activeDub
+    if (!current?.segments.some((segment) => segment.id === segmentID)) return
     selectedSegmentId = segmentID
     lineNote = ""
     await tick()
     revealSelectedLengthRow()
     if (source !== "user") return
-    const segment = dub.segments.find((candidate) => candidate.id === segmentID)
+    const segment = current.segments.find((candidate) => candidate.id === segmentID)
     if (segment) preview?.seek(segment.start_ms / 1000)
   }
 
   function moveSelection(direction: "previous" | "next" | "left" | "right" | "up" | "down"): void {
-    const segments = dub?.segments ?? []
+    const segments = activeDub?.segments ?? []
     const currentIndex = Math.max(0, segments.findIndex((segment) => segment.id === selectedSegmentId))
     const step = direction === "previous" || direction === "left" || direction === "up" ? -1 : 1
     const next = segments[Math.min(segments.length - 1, Math.max(0, currentIndex + step))]
@@ -290,9 +301,10 @@
 
   function handlePlaybackChange(snapshot: PlaybackSnapshot): void {
     playback = snapshot
-    if (snapshot.paused || !dub) return
+    const current = activeDub
+    if (snapshot.paused || !current) return
     const ms = snapshot.currentTime * 1000
-    const hit = dub.segments.find((segment) => ms >= segment.start_ms && ms < segment.end_ms)
+    const hit = current.segments.find((segment) => ms >= segment.start_ms && ms < segment.end_ms)
     if (hit) selectSegment(hit.id, "playhead")
   }
 
@@ -319,7 +331,7 @@
       segmentId: change.segment.id,
       startMs: change.segment.start_ms,
       endMs: change.segment.end_ms,
-      allowOverlap: overlapsAnotherLine(change.segment, dub.segments)
+      allowOverlap: overlapsAnotherLine(change.segment, activeSegments)
     })
     if ("error" in reply) {
       // Remount Boundary from the unchanged payload, so a failed write
@@ -384,42 +396,56 @@
       && typeof segment.speaker === "string"
   }
 
-  function applyEditedSegment(segment: EditSegment): void {
+  // patchActiveSegment folds one change into the active language track, so the
+  // editor shows the track it wrote and the change survives without a refetch.
+  // The top-level segments mirror the first track, which is the source track.
+  function patchActiveSegment(segmentID: number, patch: (segment: Segment) => Segment): void {
     const currentDub = dub
     if (!currentDub) return
+    const tracks = currentDub.languages.map((track) => (
+      track.language === activeLanguage
+        ? {
+            ...track,
+            segments: track.segments.map((segment) => (
+              segment.id === segmentID ? patch(segment) : segment
+            ))
+          }
+        : track
+    ))
     dub = {
       ...currentDub,
-      segments: currentDub.segments.map((candidate) => (
-        candidate.id === segment.id
-          ? {
-              ...candidate,
-              start_ms: segment.start_ms,
-              end_ms: segment.end_ms,
-              duration_ms: segment.duration_ms,
-              speaker: segment.speaker
-            }
-          : candidate
-      ))
+      segments: tracks[0]?.segments ?? currentDub.segments,
+      languages: tracks
     }
+  }
+
+  function applyEditedSegment(segment: EditSegment): void {
+    patchActiveSegment(segment.id, (candidate) => ({
+      ...candidate,
+      start_ms: segment.start_ms,
+      end_ms: segment.end_ms,
+      duration_ms: segment.duration_ms,
+      speaker: segment.speaker
+    }))
   }
 
   async function handleSpeakerChange(change: SpeakerChange): Promise<SpeakerChangeResult> {
     if (readOnly) return { error: fixtureReadOnlySentence }
-    const currentDub = dub
-    if (!currentDub) return { error: "This workspace is not ready for a re-render." }
+    if (!dub) return { error: "This workspace is not ready for a re-render." }
     commandPreview = undefined
     lineNote = ""
-    dub = {
-      ...currentDub,
-      segments: currentDub.segments.map((segment) => (
-        segment.id === change.segment.id ? change.segment : segment
-      ))
-    }
+    // A failed re-render must not leave the new speaker on screen. Boundary
+    // reverts the same way, so the two controls agree.
+    const stored = activeSegments.find((segment) => segment.id === change.segment.id)
+    patchActiveSegment(change.segment.id, () => change.segment)
     const reply = await rerenderLine({
       segmentId: change.segment.id,
       language: activeLanguage,
       speaker: change.speaker
     })
+    if ("error" in reply && stored) {
+      patchActiveSegment(change.segment.id, () => stored)
+    }
     if (selectedSegmentId === change.segment.id) {
       lineNote = "error" in reply ? reply.error : reply.sentence
     }
@@ -486,25 +512,27 @@
     const take = takeFromRerender(payload.take)
     const correctedSource = request.sourceText
     const nextSpeaker = request.speaker
+    const tracks = currentDub.languages.map((track) => {
+      if (track.language !== request.language) return track
+      return {
+        ...track,
+        segments: track.segments.map((segment) => {
+          if (segment.id !== payload.segment_id) return segment
+          if (correctedSource !== undefined) return { ...segment, text: correctedSource }
+          if (nextSpeaker !== undefined) return { ...segment, speaker: nextSpeaker }
+          return segment
+        }),
+        lines: track.lines.map((line) => (
+          line.segment_id === payload.segment_id
+            ? { ...line, text: payload.text, flagged: payload.take.flagged, takes: [...line.takes, take] }
+            : line
+        ))
+      }
+    })
     dub = {
       ...currentDub,
-      segments: currentDub.segments.map((segment) => {
-        if (segment.id !== payload.segment_id) return segment
-        if (correctedSource !== undefined) return { ...segment, text: correctedSource }
-        if (nextSpeaker !== undefined) return { ...segment, speaker: nextSpeaker }
-        return segment
-      }),
-      languages: currentDub.languages.map((track) => {
-        if (track.language !== request.language) return track
-        return {
-          ...track,
-          lines: track.lines.map((line) => (
-            line.segment_id === payload.segment_id
-              ? { ...line, text: payload.text, flagged: payload.take.flagged, takes: [...line.takes, take] }
-              : line
-          ))
-        }
-      })
+      segments: tracks[0]?.segments ?? currentDub.segments,
+      languages: tracks
     }
   }
 
@@ -557,8 +585,8 @@
 
   async function previewCommand(command: string): Promise<CommandIntent | CommandParseFailure> {
     if (readOnly) return { error: fixtureReadOnlySentence }
-    const currentDub = dub
-    if (!currentDub) return { error: "This timeline is not ready for editing." }
+    const current = activeDub
+    if (!current) return { error: "This timeline is not ready for editing." }
 
     try {
       const response = await fetch("/api/editor/commands/preview", {
@@ -567,8 +595,8 @@
         body: JSON.stringify({
           command,
           timeline: {
-            duration_ms: pictureDurationMs(currentDub),
-            segments: currentDub.segments.map(({ id, start_ms, end_ms, speaker }) => ({ id, start_ms, end_ms, speaker }))
+            duration_ms: pictureDurationMs(current),
+            segments: current.segments.map(({ id, start_ms, end_ms, speaker }) => ({ id, start_ms, end_ms, speaker }))
           }
         })
       })
@@ -999,7 +1027,7 @@
                 {#key boundaryRevision}
                   <Boundary
                     segment={selectedRow.segment}
-                    segments={dub.segments}
+                    segments={activeSegments}
                     takes={selectedRow.line?.takes ?? []}
                     timelineDurationMs={sharedPictureDurationMs}
                     onchange={handleBoundaryChange}
@@ -1010,7 +1038,7 @@
                 {#if readOnly}<p class="read-only-note" id="speaker-read-only">{fixtureReadOnlySentence}</p>{/if}
                 <Speaker
                   segment={selectedRow.segment}
-                  segments={dub.segments}
+                  segments={activeSegments}
                   takes={selectedRow.line?.takes ?? []}
                   onchange={handleSpeakerChange}
                 />
@@ -1064,7 +1092,7 @@
           {/if}
 
           <Timeline
-            segments={dub.segments}
+            segments={activeSegments}
             tracks={dub.languages}
             durationMs={sharedPictureDurationMs}
           />

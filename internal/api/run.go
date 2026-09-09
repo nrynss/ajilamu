@@ -78,6 +78,8 @@ type RunTake struct {
 	TakeID string
 	// Segment is the source line the take speaks.
 	Segment types.Segment
+	// Text is the target-language line the take speaks.
+	Text string
 	// Take is the rendered attempt.
 	Take types.Take
 	// Voice names the voice profile used.

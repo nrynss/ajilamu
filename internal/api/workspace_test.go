@@ -69,16 +69,18 @@ func (s *standInWorkspaceReader) ProjectMetadata(context.Context, string) (api.D
 	return s.metadata, nil
 }
 
-// standInWorkspaceHistory records the timeline read, so a test can pin that the
-// segments come from the newest commit of the first language.
+// standInWorkspaceHistory records every timeline read, so a test can pin that
+// each track carries the timeline of its own language at the head commit.
 type standInWorkspaceHistory struct {
 	commits       []api.Commit
 	segments      []api.TimelineEntry
+	tracks        map[string][]api.TimelineEntry
 	err           error
 	timelineCalls int
 	timelineDub   string
 	timelineLang  string
 	timelineHead  string
+	asked         []string
 }
 
 func (s *standInWorkspaceHistory) ListCommits(context.Context, string) ([]api.Commit, error) {
@@ -91,8 +93,12 @@ func (s *standInWorkspaceHistory) ListCommits(context.Context, string) ([]api.Co
 func (s *standInWorkspaceHistory) TimelineAt(_ context.Context, dubID, language, commitID string) ([]api.TimelineEntry, error) {
 	s.timelineCalls++
 	s.timelineDub, s.timelineLang, s.timelineHead = dubID, language, commitID
+	s.asked = append(s.asked, language)
 	if s.err != nil {
 		return nil, s.err
+	}
+	if entries, ok := s.tracks[language]; ok {
+		return entries, nil
 	}
 	return s.segments, nil
 }
@@ -258,12 +264,74 @@ func TestWorkspaceRouteServesAssembledDub(t *testing.T) {
 	}
 }
 
+// TestWorkspaceRouteCarriesEachLanguageTimeline pins the round 6 close finding.
+// A two-language dub must serve each track's own bounds, so the editor shows
+// the language it writes instead of the first language's timeline.
+func TestWorkspaceRouteCarriesEachLanguageTimeline(t *testing.T) {
+	reader := readyWorkspaceReader()
+	reader.tracks = append(reader.tracks, api.LanguageTrack{
+		Language: "ta",
+		Lines: []api.Line{
+			{SegmentID: 1, Text: "வணக்கம்", Takes: []api.Take{{File: "seg_1_try1.wav", Charges: []api.Charge{}}}},
+			{SegmentID: 2, Text: "நான் ஒரு விண்வெளி வீரர்", Takes: []api.Take{{File: "seg_2_try1.wav", Charges: []api.Charge{}}}},
+		},
+	})
+	reader.languages = []string{"ml", "ta"}
+	history := &standInWorkspaceHistory{
+		commits: []api.Commit{{CommitID: "commit-1", VersionNumber: 1, Action: api.ActionSegmentCreated, Author: api.AuthorAgent}},
+		tracks: map[string][]api.TimelineEntry{
+			"ml": {
+				{SegmentIndex: 1, StartMs: 0, EndMs: 4000, Speaker: "Suni Williams", SourceText: "Hi, I'm Suni Williams"},
+				{SegmentIndex: 2, StartMs: 4000, EndMs: 9000, Speaker: "Suni Williams", SourceText: "and I'm an astronaut"},
+			},
+			"ta": {
+				{SegmentIndex: 1, StartMs: 0, EndMs: 2000, Speaker: "Suni Williams", SourceText: "Hi, I'm Suni Williams"},
+				{SegmentIndex: 2, StartMs: 2000, EndMs: 7000, Speaker: "Suni Williams", SourceText: "and I'm an astronaut"},
+			},
+		},
+	}
+	handler := api.WorkspaceHandlerFrom(
+		reader,
+		history,
+		func(string) (string, string, string, bool) { return "Two languages.mp4", "", "", true },
+		nil,
+		nil,
+	)
+	response := serveWorkspace(t, handler, "dub-2l")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	var dub api.Dub
+	decodeHistoryBody(t, response, &dub)
+	if len(dub.Languages) != 2 {
+		t.Fatalf("languages = %d, want 2", len(dub.Languages))
+	}
+	ml, ta := dub.Languages[0], dub.Languages[1]
+	if ml.Language != "ml" || ta.Language != "ta" {
+		t.Fatalf("track order = %s, %s, want ml, ta", ml.Language, ta.Language)
+	}
+	if len(ml.Segments) != 2 || ml.Segments[0].EndMs != 4000 {
+		t.Errorf("ml segments = %+v, want line 1 ending at 4000", ml.Segments)
+	}
+	if len(ta.Segments) != 2 || ta.Segments[0].EndMs != 2000 || ta.Segments[0].DurationMs != 2000 {
+		t.Errorf("ta segments = %+v, want line 1 at 0..2000", ta.Segments)
+	}
+	if len(dub.Segments) != 2 || dub.Segments[0].EndMs != ml.Segments[0].EndMs {
+		t.Errorf("source segments = %+v, want the first track's timeline", dub.Segments)
+	}
+	if strings.Join(history.asked, ",") != "ml,ta" {
+		t.Errorf("timeline languages asked = %v, want ml then ta", history.asked)
+	}
+}
+
 func TestWorkspaceRouteServesEmptyDubForStoredProject(t *testing.T) {
 	reader := &standInWorkspaceReader{total: api.Total{Covers: "0 segment calls, 0 translation calls, and 0 render calls."}}
 	handler := api.WorkspaceHandlerFrom(
 		reader,
 		nil,
-		func(string) (string, string, string, bool) { return "Fresh upload.mp4", "2026-09-03T00:00:00Z", "", true },
+		func(string) (string, string, string, bool) {
+			return "Fresh upload.mp4", "2026-09-03T00:00:00Z", "", true
+		},
 		nil,
 		nil,
 	)

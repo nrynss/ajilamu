@@ -119,6 +119,9 @@ func TestRecordTakeFixtureCapture(t *testing.T) {
 	if got := firstTake["peaks"]; !equalJSONPeaks(got, peaks) {
 		t.Errorf("segment 1 peaks = %v, want %v", got, peaks)
 	}
+	if got := firstTake["text"]; got != "target line 1" {
+		t.Errorf("segment 1 text = %v, want the spoken target line", got)
+	}
 	secondTake := takeBySegment(t, takes, 2)
 	if got := secondTake["peaks"]; !equalJSONPeaks(got, nil) {
 		t.Errorf("segment 2 empty peaks = %v, want []", got)
@@ -168,6 +171,16 @@ func TestRecordTakeFixtureCapture(t *testing.T) {
 	}
 	if got := captureCount(&captured, &capturedMu); got != beforeInvalid {
 		t.Fatalf("129 peaks made %d transport requests, want none", got-beforeInvalid)
+	}
+
+	beforeInvalid = captureCount(&captured, &capturedMu)
+	invalid = attempts[0]
+	invalid.Text = "   "
+	if err := client.RecordTake(context.Background(), invalid); err == nil {
+		t.Fatal("RecordTake accepted a blank target text")
+	}
+	if got := captureCount(&captured, &capturedMu); got != beforeInvalid {
+		t.Fatalf("blank target text made %d transport requests, want none", got-beforeInvalid)
 	}
 
 	beforeInvalid = captureCount(&captured, &capturedMu)
@@ -449,6 +462,7 @@ func fixtureTakeAttempt(segment types.Segment, number int, measuredMS int64, rep
 		TakeID: fmt.Sprintf("take-%d-%d", segment.ID, number), CommitID: "commit-fixture", ProjectID: "project-fixture",
 		DubID: "dub-fixture", OwnerID: "owner-fixture", Language: "ml-IN", Voice: "ml-IN-Chirp3-HD", ChargeProvider: "fixture-provider", Repair: repair,
 		Segment: segment,
+		Text:    fmt.Sprintf("target line %d", segment.ID),
 		Take:    types.Take{SegmentID: segment.ID, Attempt: number, File: "testdata/takes/segment.wav", Fit: types.NewFit(slot, time.Duration(measuredMS)*time.Millisecond)},
 		Charges: []cost.Charge{
 			{Kind: cost.ChargeTranslate, TakeID: segment.ID, PromptTokens: 100 + segment.ID, CandidateTokens: 20 + segment.ID, PromptUnitPrice: 150, CandidateUnitPrice: 600},

@@ -848,6 +848,7 @@ func pipelineRunResult(ctx context.Context, result *fit.PipelineResult, peaks pe
 			waveform = sketch
 		}
 		out.Takes = append(out.Takes, api.RunTake{
+			Text:         attempt.Text,
 			Segment:      line.Segment,
 			Take:         take,
 			Voice:        voiceName(result.Voices, line.Segment.Speaker.Name),
@@ -1003,6 +1004,7 @@ func (r *runRecorder) persist(ctx context.Context, req api.RunRequest, result ap
 			RepairDetail:   take.RepairDetail,
 			Repair:         take.Repair,
 			Segment:        take.Segment,
+			Text:           take.Text,
 			Take:           take.Take,
 			Charges:        charges,
 			Peaks:          take.Peaks,

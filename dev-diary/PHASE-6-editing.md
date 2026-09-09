@@ -477,12 +477,12 @@ read-only sentence. On a project with a ledger a boundary drag still writes one 
 
 ## Exit Criteria
 
-- [ ] Boundaries, speakers, and text support manual user editing.
-- [ ] Billable operations display itemized prices before execution.
-- [ ] Command bar parses instructions into validated deterministic mutations.
-- [ ] Timeline edits preserve prior takes without destructive overwrites.
-- [ ] All mutations write author-attributed commits to ClickHouse.
-- [ ] The editor agent reads the ledger through mcp-clickhouse and writes nothing.
+- [x] Boundaries, speakers, and text support manual user editing.
+- [x] Billable operations display itemized prices before execution.
+- [x] Command bar parses instructions into validated deterministic mutations.
+- [x] Timeline edits preserve prior takes without destructive overwrites.
+- [x] All mutations write author-attributed commits to ClickHouse.
+- [x] The editor agent reads the ledger through mcp-clickhouse and writes nothing.
 
 ---
 
@@ -1133,3 +1133,18 @@ column in the same statement's WHERE, because `prefer_column_name_to_alias` defa
 live fold test behind `//go:build live` pins the arithmetic against a real ClickHouse. A second
 run of a dub reuses the per-dub work directory, so two take rows can share one `audio_path`,
 and every keyed take list appends the array position to stay unique.
+
+### P6 closed 2026-09-09
+
+The close ran eight rounds. Rounds 1 to 5 fixed the boundary commit path, the confirmed
+overlap rule and the T6.6c filing. Round 6 fixed a per-language timeline mismatch. Round 7
+made `takes_raw.text` hold the translated line. Round 8 found a failed speaker re-render
+staying on screen, which the orchestrator fixed directly at the user's direction.
+
+All six exit criteria are met. The last close review is `p6-close-round8.md`, and its one M
+is closed by `p6-close-remediation-round8.md`.
+
+**What the next agent should not work out again.** `Dub.Segments` mirrors the first target
+track, and each `LanguageTrack` now carries its own segments, so every editor reads the active
+track. `takes_raw.text` is the translated line, and the workspace `Line.Text` reads it. Every
+keyed take list appends the array position, because a second run can reuse one take file.

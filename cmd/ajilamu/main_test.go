@@ -416,6 +416,7 @@ func TestRunRecorderPersistWritesFreshRun(t *testing.T) {
 
 	take := firstInsert(t, captured(), "takes_raw")
 	assertField(t, take, "take_id", result.Takes[0].TakeID)
+	assertField(t, take, "text", "നമസ്കാരം")
 	assertField(t, take, "commit_id", result.CommitID)
 
 	charges := insertRows(t, captured(), "charges_raw")
@@ -484,6 +485,7 @@ func persistFixture() (api.RunRequest, api.RunResult) {
 		OwnerID:   "local",
 		Takes: []api.RunTake{{
 			TakeID:  "take-1",
+			Text:    "നമസ്കാരം",
 			Segment: segment,
 			Take:    types.Take{SegmentID: 1, Attempt: 1, File: "/work/seg_1.wav", Duration: 2 * time.Second, Fit: fitValue},
 			Voice:   "ml-IN-Chirp3-HD-Achernar",

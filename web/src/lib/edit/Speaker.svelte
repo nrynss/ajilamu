@@ -103,6 +103,10 @@
       return
     }
 
+    // The panel shows the choice before the route answers, so a failure must
+    // put the stored speaker back.
+    const previousSpeaker = appliedSpeaker
+    const previousSignature = sourceSignature
     const next = { ...segment, speaker: choice }
     appliedSpeaker = choice
     pendingSpeaker = undefined
@@ -120,11 +124,15 @@
       })
       if (segment.id !== targetSegment.id) return
       if ("error" in result) {
+        appliedSpeaker = previousSpeaker
+        sourceSignature = previousSignature
         error = result.error
         return
       }
       note = result.sentence || `Line ${targetSegment.id} re-rendered as ${result.take.file}.`
     } catch {
+      appliedSpeaker = previousSpeaker
+      sourceSignature = previousSignature
       error = "We could not re-render that line. The take is unchanged."
     } finally {
       const settled = new Set(renderingSegmentIds)

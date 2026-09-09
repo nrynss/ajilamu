@@ -106,7 +106,7 @@ func assembleWorkspace(ctx context.Context, reader WorkspaceReader, history Hist
 	if err != nil {
 		return nil, err
 	}
-	segments, err := workspaceSegments(ctx, history, dubID, languages, commits)
+	segments, err := workspaceSegments(ctx, history, dubID, tracks, commits)
 	if err != nil {
 		return nil, err
 	}
@@ -166,21 +166,35 @@ func workspaceCommits(ctx context.Context, history HistoryReader, dubID string) 
 	return commits, nil
 }
 
-// workspaceSegments reads the source track at the head commit.
+// workspaceSegments reads each target language's timeline at the head commit
+// and attaches it to that track. It returns the first track's segments, which
+// the payload carries as the source track.
 //
-// The ledger stores segment timing and source text on the timeline, per
-// language. The first target language carries the same copied source fields, so
-// the route reads that track at the newest commit. Without a commit or a
-// language there is nothing to read and the segment list stays empty.
-func workspaceSegments(ctx context.Context, history HistoryReader, dubID string, languages []string, commits []Commit) ([]Segment, error) {
-	if history == nil || len(languages) == 0 || len(commits) == 0 {
+// The ledger stores segment timing and source text per language. Each track
+// therefore carries its own bounds, so an editor shows the language it writes.
+// Without a history reader, a track or a commit there is nothing to read and
+// every track keeps an empty segment list.
+func workspaceSegments(ctx context.Context, history HistoryReader, dubID string, tracks []LanguageTrack, commits []Commit) ([]Segment, error) {
+	for i := range tracks {
+		tracks[i].Segments = []Segment{}
+	}
+	if history == nil || len(tracks) == 0 || len(commits) == 0 {
 		return []Segment{}, nil
 	}
 	head := commits[len(commits)-1].CommitID
-	entries, err := history.TimelineAt(ctx, dubID, languages[0], head)
-	if err != nil {
-		return nil, fmt.Errorf("read the source timeline: %w", err)
+	for i := range tracks {
+		entries, err := history.TimelineAt(ctx, dubID, tracks[i].Language, head)
+		if err != nil {
+			return nil, fmt.Errorf("read the language timeline: %w", err)
+		}
+		tracks[i].Segments = timelineSegments(entries)
 	}
+	return tracks[0].Segments, nil
+}
+
+// timelineSegments maps one language's timeline entries onto wire segments.
+// The duration is derived from the bounds, never read, so the pair agrees.
+func timelineSegments(entries []TimelineEntry) []Segment {
 	segments := make([]Segment, 0, len(entries))
 	for _, entry := range entries {
 		segments = append(segments, Segment{
@@ -193,7 +207,7 @@ func workspaceSegments(ctx context.Context, history HistoryReader, dubID string,
 			Emotion:    entry.Emotion,
 		})
 	}
-	return segments, nil
+	return segments
 }
 
 // workspaceReadiness derives the wire readiness from the assembled tracks.

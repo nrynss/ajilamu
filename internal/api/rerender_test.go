@@ -264,6 +264,9 @@ func TestRerenderWritesNewTakeBesidePrevious(t *testing.T) {
 	if persisted.Takes[0].Take.Attempt != 2 {
 		t.Errorf("recorded attempt = %d, want 2 to match the file", persisted.Takes[0].Take.Attempt)
 	}
+	if persisted.Takes[0].Text != "stored target line" {
+		t.Errorf("recorded take text = %q, want the spoken target line", persisted.Takes[0].Text)
+	}
 	if len(persisted.Timeline) != 1 || persisted.Timeline[0].Text != "stored target line" {
 		t.Errorf("recorded timeline = %+v, want one entry with the spoken text", persisted.Timeline)
 	}
