@@ -11,7 +11,7 @@ Where a phase document and specification conflict, the specification wins. Recor
 
 Each document provides complete context for an engineer starting cold.
 
-**Current status:** P6 is closed. P8 Ship is in progress. T8.1 closed with live proof on the deployed host. T8.2 deployed to Google Compute Engine and T8.3 landed the documentation site. T8.4 has not started.
+**Current status:** P6 is closed. P8 Ship is in progress. T8.1 closed with live proof on the deployed host. T8.2 deployed to Google Compute Engine and T8.3 landed the documentation site. T8.4 artifacts are ready and the submission is the user's action.
 
 ---
 

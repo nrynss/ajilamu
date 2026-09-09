@@ -202,3 +202,25 @@ The recording rig lives in the user's own shoot folder, so this repository carri
 
 The task stays open because its done condition is a submitted entry. The remaining actions are
 the user's: record the video, upload it, paste the entry, and submit before the deadline.
+
+### Live hardening 2026-09-09
+
+Running the product on the deployed host exposed four defects the offline suite could not see.
+All are fixed and redeployed at `ca82c9a`.
+
+- **Out-of-range segmentation.** Gemini returned a segment at 106 to 115 seconds for a 75 second
+  film. The assembler refused it and the run died after the creator paid. The fit loop now flags a
+  segment outside the film and clamps one that ends past it, so the run finishes.
+- **Transient upstream errors.** A Vertex 429 killed a run. Transient errors now retry with
+  bounded backoff, and an exhausted line is flagged rather than fatal. The browser sentence names
+  the cause in plain words.
+- **Stale work files.** A failed run left a partial take, and every retry refused to overwrite it.
+  A fresh render now claims the first free attempt window, so a retry works while a take the
+  ledger references stays protected.
+- **Product surface.** A fresh project renders the run control labelled with its target language.
+  Projects can be named and renamed. The player fits its area, and the language strip says what
+  actually plays.
+
+A completed German run reconciles exactly. The charges view holds 50 rows with 50 distinct event
+keys summing to 54,471,600 nanodollars, equal to the run-reported total. The index and the
+workspace both read review and the same total.
