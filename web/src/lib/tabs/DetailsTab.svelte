@@ -49,7 +49,20 @@
   }
 
   function chargeName(charge: Charge): string {
-    return charge.kind === "segment" ? "Finding lines" : charge.kind === "translate" ? "Translation" : "Voice render"
+    switch (charge.kind) {
+      case "segment":
+        return "Finding lines"
+      case "translate":
+        return "Translation"
+      case "synthesize":
+        return "Voice render"
+      case "agent":
+        return "Editor agent turn"
+      default: {
+        const unhandledKind: never = charge.kind
+        throw new Error(`Missing charge label for ${unhandledKind}`)
+      }
+    }
   }
 </script>
 
