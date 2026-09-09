@@ -10,11 +10,8 @@
     referenceSlotMs
   } from "$lib/fixture"
   import Boundary, { type BoundaryChange } from "$lib/edit/Boundary.svelte"
-  import Speaker, { type SpeakerChange } from "$lib/edit/Speaker.svelte"
-  import Text, {
-    type TextRerenderReply,
-    type TextRerenderRequest
-  } from "$lib/edit/Text.svelte"
+  import Speaker, { type SpeakerChange, type SpeakerChangeResult } from "$lib/edit/Speaker.svelte"
+  import Text, { type TextRerenderReply } from "$lib/edit/Text.svelte"
   import CommandBar, {
     type CommandIntent,
     type CommandParseFailure
@@ -65,6 +62,14 @@
     text: string
     source_text?: string
     take: RerenderTakePayload
+  }
+
+  interface LineRerenderRequest {
+    segmentId: number
+    language: string
+    text?: string
+    sourceText?: string
+    speaker?: string
   }
 
   const loadingSentence = "We are loading this workspace from the offline project fixture."
@@ -127,6 +132,7 @@
   let runEvent = $state<ProgressEvent | undefined>()
   let runCost = $state<number | undefined>()
   let runSentence = $state("")
+  let lineNote = $state("")
 
   let lineRows = $derived(dub ? fixtureLineRows(dub, activeLanguage) : [])
   let selectedRow = $derived(lineRows.find((row) => row.segment.id === selectedSegmentId))
@@ -192,6 +198,7 @@
   async function selectSegment(segmentID: number, source: SelectionSource = "user"): Promise<void> {
     if (!dub?.segments.some((segment) => segment.id === segmentID)) return
     selectedSegmentId = segmentID
+    lineNote = ""
     await tick()
     revealSelectedLengthRow()
     if (source !== "user") return
@@ -222,7 +229,11 @@
     preview?.pause()
     stopTake()
     const source = fixtureTakeSource(take)
-    if (!source) return
+    if (!source) {
+      lineNote = `The take ${take.file} has no browser audio URL.`
+      return
+    }
+    lineNote = ""
     const audio = new Audio(source)
     takeAudio = audio
     audio.addEventListener("ended", () => {
@@ -250,18 +261,29 @@
     }
   }
 
-  function handleSpeakerChange(change: SpeakerChange): void {
-    if (!dub) return
+  async function handleSpeakerChange(change: SpeakerChange): Promise<SpeakerChangeResult> {
+    const currentDub = dub
+    if (!currentDub) return { error: "This workspace is not ready for a re-render." }
     commandPreview = undefined
+    lineNote = ""
     dub = {
-      ...dub,
-      segments: dub.segments.map((segment) => (
+      ...currentDub,
+      segments: currentDub.segments.map((segment) => (
         segment.id === change.segment.id ? change.segment : segment
       ))
     }
+    const reply = await rerenderLine({
+      segmentId: change.segment.id,
+      language: activeLanguage,
+      speaker: change.speaker
+    })
+    if (selectedSegmentId === change.segment.id) {
+      lineNote = "error" in reply ? reply.error : reply.sentence
+    }
+    return reply
   }
 
-  async function rerenderLine(request: TextRerenderRequest): Promise<TextRerenderReply> {
+  async function rerenderLine(request: LineRerenderRequest): Promise<TextRerenderReply> {
     const currentDub = dub
     if (!currentDub) return { error: "This workspace is not ready for a re-render." }
     if (!request.language) return { error: "This project has no target language, so the line cannot re-render." }
@@ -270,8 +292,11 @@
       body.source_text = request.sourceText
     } else if (request.text !== undefined) {
       body.text = request.text
-    } else {
-      return { error: "This line has no corrected text to send." }
+    } else if (request.speaker === undefined) {
+      return { error: "This line has no correction to send." }
+    }
+    if (request.speaker !== undefined) {
+      body.speaker = request.speaker
     }
 
     try {
@@ -311,18 +336,20 @@
     return `The line did not re-render (${response.status}).`
   }
 
-  function applyRerenderedTake(payload: RerenderPayload, request: TextRerenderRequest): void {
+  function applyRerenderedTake(payload: RerenderPayload, request: LineRerenderRequest): void {
     const currentDub = dub
     if (!currentDub) return
     const take = takeFromRerender(payload.take)
     const correctedSource = request.sourceText
+    const nextSpeaker = request.speaker
     dub = {
       ...currentDub,
-      segments: correctedSource === undefined
-        ? currentDub.segments
-        : currentDub.segments.map((segment) => (
-            segment.id === payload.segment_id ? { ...segment, text: correctedSource } : segment
-          )),
+      segments: currentDub.segments.map((segment) => {
+        if (segment.id !== payload.segment_id) return segment
+        if (correctedSource !== undefined) return { ...segment, text: correctedSource }
+        if (nextSpeaker !== undefined) return { ...segment, speaker: nextSpeaker }
+        return segment
+      }),
       languages: currentDub.languages.map((track) => {
         if (track.language !== request.language) return track
         return {
@@ -447,6 +474,10 @@
 
   function formatCost(nanodollars: number): string {
     return `$${(nanodollars / 1_000_000_000).toFixed(2)}`
+  }
+
+  function formatTakeLength(milliseconds: number): string {
+    return `${(milliseconds / 1000).toFixed(2)}s`
   }
 
   function stopRunStream(): void {
@@ -780,6 +811,42 @@
               />
             </div>
           {/if}
+          {#if selectedRow}
+            {@const takes = selectedRow.line?.takes ?? []}
+            <section
+              class="take-history"
+              aria-label={`Take history for line ${selectedRow.segment.id}`}
+              data-selected-line={selectedRow.segment.id}
+            >
+              <p class="label">Take history</p>
+              {#if takes.length > 0}
+                <div class="take-list">
+                  {#each takes as take, index (take.file)}
+                    {@const isActive = index === takes.length - 1}
+                    <button
+                      type="button"
+                      class:active={isActive}
+                      class:ghost={!isActive}
+                      class="take-chip"
+                      data-take-attempt={take.attempt}
+                      data-take-file={take.file}
+                      data-take-state={isActive ? "active" : "ghost"}
+                      aria-pressed={isActive}
+                      onclick={() => playTake(take)}
+                    >
+                      Try {take.attempt} · {formatTakeLength(take.fit.measured_ms)}
+                    </button>
+                  {/each}
+                </div>
+              {:else}
+                <p class="no-take">No take is ready for this line.</p>
+              {/if}
+              {#if lineNote}
+                <p class="take-note" role="status">{lineNote}</p>
+              {/if}
+            </section>
+          {/if}
+
           <Timeline
             segments={dub.segments}
             tracks={dub.languages}
@@ -973,6 +1040,53 @@
   .no-take {
     color: var(--dim);
     font-size: 11.5px;
+  }
+
+  .take-history {
+    align-items: center;
+    border-top: 1px solid var(--line-soft);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 16px 0;
+  }
+
+  .take-history .label {
+    margin: 0;
+  }
+
+  .take-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .take-chip {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    color: var(--text);
+    font-size: 11px;
+    padding: 3px 8px;
+  }
+
+  .take-chip.ghost {
+    background: transparent;
+    border-style: dashed;
+    color: var(--dim);
+    opacity: 0.72;
+  }
+
+  .take-chip.active {
+    background: var(--fit);
+    border-color: color-mix(in srgb, var(--fit), var(--text) 16%);
+    font-weight: 650;
+  }
+
+  .take-note {
+    color: var(--dim);
+    font-size: 11.5px;
+    margin: 0;
   }
 
   .editor {

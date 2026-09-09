@@ -11,6 +11,20 @@
     takeFile: string
   }
 
+  /** SpeakerChangeReply reports the take the re-render route recorded. */
+  export interface SpeakerChangeReply {
+    sentence: string
+    take: Take
+    totalNanodollars: number
+  }
+
+  /** SpeakerChangeFailure explains why the line did not re-render. */
+  export interface SpeakerChangeFailure {
+    error: string
+  }
+
+  export type SpeakerChangeResult = SpeakerChangeReply | SpeakerChangeFailure
+
   interface Props {
     /** The timeline segment whose speaker the editor changes. */
     segment: Segment
@@ -18,8 +32,8 @@
     segments: readonly Segment[]
     /** The selected line's takes supply the measured estimate. */
     takes?: readonly Take[]
-    /** The parent persists a confirmed change. */
-    onchange?: (change: SpeakerChange) => void
+    /** The parent calls the re-render route and returns its reply. */
+    onchange?: (change: SpeakerChange) => Promise<SpeakerChangeResult>
   }
 
   let { segment, segments, takes = [], onchange }: Props = $props()
@@ -28,6 +42,9 @@
   // svelte-ignore state_referenced_locally
   let appliedSpeaker = $state(segment.speaker)
   let note = $state("")
+  let renderingSegmentIds = $state<Set<number>>(new Set())
+  const busy = $derived(renderingSegmentIds.has(segment.id))
+  let error = $state("")
   let sourceSignature = $state("")
 
   const lastTake = $derived(takes.at(-1))
@@ -53,6 +70,7 @@
     appliedSpeaker = segment.speaker
     pendingSpeaker = undefined
     note = ""
+    error = ""
   })
 
   function formatFee(nanodollars: number): string {
@@ -65,31 +83,54 @@
 
   function choose(name: string): void {
     note = ""
+    error = ""
     pendingSpeaker = name === appliedSpeaker ? undefined : name
   }
 
   function cancel(): void {
     pendingSpeaker = undefined
     note = ""
+    error = ""
   }
 
-  function confirm(): void {
+  async function confirm(): Promise<void> {
     const choice = pendingSpeaker
     const take = estimateTake
+    const targetSegment = segment
     if (choice === undefined || take === undefined) return
+    if (!onchange) {
+      error = "Line re-rendering is unavailable for this workspace."
+      return
+    }
 
     const next = { ...segment, speaker: choice }
     appliedSpeaker = choice
     pendingSpeaker = undefined
     sourceSignature = `${segment.id}:${choice}`
-    note = `Line ${segment.id} now reads as ${choice}. The take is unchanged, so a re-render is still pending.`
-    onchange?.({
-      segment: next,
-      previousSpeaker: segment.speaker,
-      speaker: choice,
-      estimatedNanodollars,
-      takeFile: take.file
-    })
+    note = ""
+    error = ""
+    renderingSegmentIds = new Set(renderingSegmentIds).add(segment.id)
+    try {
+      const result = await onchange({
+        segment: next,
+        previousSpeaker: segment.speaker,
+        speaker: choice,
+        estimatedNanodollars,
+        takeFile: take.file
+      })
+      if (segment.id !== targetSegment.id) return
+      if ("error" in result) {
+        error = result.error
+        return
+      }
+      note = result.sentence || `Line ${targetSegment.id} re-rendered as ${result.take.file}.`
+    } catch {
+      error = "We could not re-render that line. The take is unchanged."
+    } finally {
+      const settled = new Set(renderingSegmentIds)
+      settled.delete(targetSegment.id)
+      renderingSegmentIds = settled
+    }
   }
 </script>
 
@@ -142,9 +183,9 @@
         <p class="basis">No take is recorded for this line, so no estimate exists.</p>
       {/if}
       <div class="actions">
-        <button onclick={cancel} type="button">Cancel</button>
-        <button class="confirm" disabled={!estimateTake} onclick={confirm} type="button">
-          Change speaker
+        <button onclick={cancel} type="button" disabled={busy}>Cancel</button>
+        <button class="confirm" disabled={!estimateTake || busy} onclick={confirm} type="button">
+          {busy ? "Re-rendering…" : "Change speaker"}
         </button>
       </div>
     </aside>
@@ -152,6 +193,10 @@
 
   {#if note}
     <p class="note" role="status">{note}</p>
+  {/if}
+
+  {#if error}
+    <p class="error" role="alert">{error}</p>
   {/if}
 
   <p class="hint">A new speaker needs a fresh voice render. The estimate uses the newest billed take, or reads zero when none is billed.</p>
@@ -264,6 +309,12 @@
   .note,
   .hint {
     color: var(--dim);
+    font-size: 11.5px;
+    margin: 12px 0 0;
+  }
+
+  .error {
+    color: var(--stop);
     font-size: 11.5px;
     margin: 12px 0 0;
   }

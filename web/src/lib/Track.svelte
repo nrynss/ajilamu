@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Line, Segment } from "./types"
+  import type { Line, Segment, Take } from "./types"
 
   type TrackProps = {
     label: string
@@ -32,6 +32,11 @@
     return `${slotStyle(segment)}; --audio-width: ${(measuredMs / 1000) * pixelsPerSecond}px`
   }
 
+  function ghostStyle(segment: Segment, take: Take, depth: number) {
+    const inset = Math.min(3 * (depth + 1), 14)
+    return `${audioStyle(segment, take.fit.measured_ms)}; --ghost-inset: ${inset}px`
+  }
+
   function peakX(index: number, length: number) {
     return ((index + 0.5) / length) * 100
   }
@@ -56,7 +61,8 @@
   <div class="track-lane" aria-label="{label} audio segments" style={`width: ${laneWidth}px`}>
     {#each segments as segment (segment.id)}
       {@const line = linesBySegment.get(segment.id)}
-      {@const take = line?.takes.at(-1)}
+      {@const takes = line?.takes ?? []}
+      {@const take = takes.at(-1)}
       <div
         class:flagged={line?.flagged}
         class="slot"
@@ -70,14 +76,30 @@
         {/if}
       </div>
 
+      {#each takes.slice(0, -1) as ghost, index (ghost.file)}
+        <div
+          class="ghost-take"
+          data-attempt={ghost.attempt}
+          data-duration-ms={ghost.fit.measured_ms}
+          data-file={ghost.file}
+          data-fit-state={ghost.fit.state}
+          data-segment-id={segment.id}
+          data-take-state="ghost"
+          style={ghostStyle(segment, ghost, takes.length - 2 - index)}
+          title="Line {segment.id}, attempt {ghost.attempt}, {ghost.fit.measured_ms} ms"
+        ></div>
+      {/each}
+
       {#if take}
         <div
           class:overrun={take.fit.delta_ms > 0}
           class="take"
+          data-attempt={take.attempt}
           data-duration-ms={take.fit.measured_ms}
           data-file={take.file}
           data-fit-state={take.fit.state}
           data-segment-id={segment.id}
+          data-take-state="active"
           style={audioStyle(segment, take.fit.measured_ms)}
           title="Line {segment.id}, {take.fit.measured_ms} ms"
         >
@@ -143,6 +165,7 @@
 
   .slot,
   .take,
+  .ghost-take,
   .short-tail {
     left: var(--slot-left);
     position: absolute;
@@ -186,6 +209,17 @@
   .take.overrun {
     background: var(--over);
     border-color: color-mix(in srgb, var(--over), var(--text) 16%);
+  }
+
+  .ghost-take {
+    background: transparent;
+    border: 1px dashed color-mix(in srgb, var(--fit), var(--text) 24%);
+    border-radius: 3px;
+    height: calc(32px + var(--ghost-inset, 0px) * 2);
+    opacity: 0.72;
+    top: calc(16px - var(--ghost-inset, 0px));
+    width: var(--audio-width);
+    z-index: 1;
   }
 
   .waveform {

@@ -127,8 +127,9 @@ one commit, and the response names the new take.
 requires:   T6.3, T6.5a
 fixture-ok: yes
 size:       S · mid
-owns:       web/src/routes/d/[id]/+page.svelte
-status:     not-started
+owns:       web/src/routes/d/[id]/+page.svelte, web/src/lib/Track.svelte,
+            web/src/lib/edit/Speaker.svelte
+status:     done
 ```
 Display the cost estimate before a re-render runs, and render older takes as ghost
 outlines on the timeline. The page calls T6.5a's route and keeps the active take as the
@@ -136,6 +137,32 @@ only audible one.
 
 **Done when:** The timeline shows ghost take history, both takes play independently, and
 the estimate shows before the call runs.
+
+
+Round one filed one H and two M. The H needs a server route, so it moved to T6.5c. The two
+M stay here: the ghost history must sit in the timeline lanes, and the Speaker note must
+stop claiming the take is unchanged once a re-render lands.
+
+---
+
+### T6.5c: Serve take audio ★
+```yaml
+requires:   T6.5, T6.5a
+fixture-ok: no
+size:       M · frontier
+owns:       internal/api/takes.go, internal/api/takes_test.go,
+            internal/api/server.go, cmd/ajilamu/main.go,
+            web/src/routes/d/[id]/+page.svelte
+status:     not-started
+```
+A ledger payload sets `Take.File` to an absolute server path, and no route serves a take
+file. Every take of a real project is unplayable, so the fixture hides the defect.
+
+Serve a take file over HTTP and resolve `take.file` to that route on the workspace page.
+Range requests keep scrubbing instant, and a path outside the storage root must fail.
+
+**Done when:** A real project's takes play from the served route, the fixture path is
+unchanged, and a traversal attempt is refused.
 
 ---
 
@@ -595,3 +622,64 @@ the expansion before the edit.
 `go test -count=1 ./internal/api ./internal/fit ./cmd/...` reports ok for all three
 packages.
 `npm --prefix web run check` reports 183 files, 0 errors and 0 warnings.
+
+### T6.5 ghost take history
+
+The page renders a take history strip for the selected line. The strip sits in the
+timeline editor section above the Timeline component. Each take is a button. Older takes
+render as ghost outlines. The active take renders as a solid chip.
+
+Measured on 2026-09-09 against a stand-in API server. The server served the built bundle
+and the fixture payload under the non-fixture id `t65-real-dub`. Line 3 has two takes.
+
+The ghost chip carries `data-take-file="seg_3_try1.wav"` and
+`data-take-state="ghost"`. Its computed style is a dashed border, a transparent
+background and opacity 0.72. The active chip carries
+`data-take-file="seg_3_stretched.wav"` and `data-take-state="active"`. Its computed
+style is a solid border and the `--fit` fill `rgb(143, 165, 140)`.
+
+Both takes play independently. A ghost click fetched
+`/_app/immutable/assets/seg_3_try1.xBIiyNfY.wav` with status 200 and type
+`audio/wav`. An active click fetched
+`/_app/immutable/assets/seg_3_stretched.ClDJvJby.wav` with status 200 and type
+`audio/wav`. Each click fetched exactly one take. `playTake` pauses the previous take
+first, so only one take is audible at a time.
+
+The speaker confirm now calls the re-render route. The Speaker panel shows the estimate
+before the call. The measured sequence is:
+
+1. Choosing `Mark Vande Hei` showed the fee `$0.0023182` from `seg_3_try1.wav` at
+   `t=1788910220727`. Zero POST requests existed then.
+2. Confirming sent `POST /api/dubs/t65-real-dub/lines/3/rerender` with the body
+   `{"language":"ml","speaker":"Mark Vande Hei"}` at `t=1788910221137`.
+3. The 201 answer appended `seg_3_try3.wav`. The note read
+   `Line 3 re-rendered as take seg_3_try3.wav.` The chips then read ghost, ghost,
+   active.
+
+The route records each take, so the older takes stay on disk and now render as ghosts.
+T6.2 measured zero API calls on a speaker confirm. That confirm calls the route now,
+because the T6.5a handoff assigns the call to T6.5. The re-roll path with an empty body
+stays unwired. No page control asks for one.
+
+A new take returns an absolute server path in `file`, so `fixtureTakeSource` cannot
+resolve it. `playTake` now names that gap instead of doing nothing. A click on the new
+take showed `The take /tmp/t65-storage/t65-real-dub/work/ml-IN/seg_3_try3.wav has no
+browser audio URL.` No HTTP route serves a take file yet, so the page cannot build a
+URL. A later task must add that route.
+
+The fixture id still loads the bundled fixture. `/d/fixture` made zero
+`/api/dubs/fixture` requests and rendered the same ghost and active chips for line 3.
+
+Seam. `Track.svelte` owns the timeline lanes and renders the active take plus every older
+take as a dashed ghost shape inside the lane. The owns line already lists `Track.svelte`,
+so the lane work needs no owns change. The page-owned strip stays as the keyboard and
+playback control. `LengthBar.svelte` already paints older takes as ghost shapes on its
+canvas at alpha 0.28.
+
+Surprise. The measurement browser ran `page.evaluate` in an isolated world. Window
+patches missed the app, so the first audio probes saw nothing. Network capture proved
+the real sources. The page was healthy the whole time.
+
+`npm --prefix web run check` reports 183 files, 0 errors and 0 warnings. The browser run
+raised zero console messages and zero page errors. The changed file carries no
+`export let`, no `$:` and no store.
