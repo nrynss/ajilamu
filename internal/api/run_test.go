@@ -1,10 +1,12 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -526,6 +528,74 @@ func TestRunFailureLeavesNoActiveRun(t *testing.T) {
 	defer second.Body.Close()
 	if second.StatusCode != http.StatusAccepted {
 		t.Fatalf("second start status = %d, want 202 after the failure", second.StatusCode)
+	}
+}
+
+// TestRunFailureLogsItsCause proves a failed run names the cause, the dub, and
+// the stage in the log at the failure, while the event stream carries only the
+// plain sentence and no internal detail.
+func TestRunFailureLogsItsCause(t *testing.T) {
+	const cause = "flush the ledger before the run commit: Code: 16. DB::Exception: " +
+		"No such column turn_id in table default.charges_raw"
+	cases := []struct {
+		name      string
+		runner    api.PipelineRunner
+		recorder  api.RunRecorder
+		wantStage string
+	}{
+		{
+			name: "persist failure",
+			runner: runFunc(func(_ context.Context, _ api.RunRequest, emit func(api.ProgressEvent)) (api.RunResult, error) {
+				emit(api.ProgressEvent{Type: api.EventDone, Stage: api.StageExporting, Sentence: "Dubbing pipeline completed successfully."})
+				return api.RunResult{TotalCost: 7}, nil
+			}),
+			recorder:  recordFunc(func(context.Context, api.RunRequest, api.RunResult) error { return errors.New(cause) }),
+			wantStage: api.StageMeasuring,
+		},
+		{
+			name: "pipeline failure",
+			runner: runFunc(func(_ context.Context, _ api.RunRequest, emit func(api.ProgressEvent)) (api.RunResult, error) {
+				emit(api.ProgressEvent{Type: api.EventError, Stage: api.StageExporting, Sentence: "The run could not finish."})
+				return api.RunResult{}, errors.New(cause)
+			}),
+			recorder:  recordFunc(func(context.Context, api.RunRequest, api.RunResult) error { return nil }),
+			wantStage: api.StageExporting,
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			storage := t.TempDir()
+			writeProjectSource(t, storage, "dub-cause")
+			var logs bytes.Buffer
+			base := newRunTestServer(t, api.ServerOptions{
+				Runner:     test.runner,
+				Recorder:   test.recorder,
+				StorageDir: storage,
+				Logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+
+			started := postRun(t, base, "dub-cause", "language=ml")
+			started.Body.Close()
+			if started.StatusCode != http.StatusAccepted {
+				t.Fatalf("start status = %d, want 202", started.StatusCode)
+			}
+			body := drainEvents(t, base, "dub-cause")
+
+			logged := logs.String()
+			for _, want := range []string{"run failed", "dub_id=dub-cause", "stage=" + test.wantStage, "turn_id"} {
+				if !strings.Contains(logged, want) {
+					t.Errorf("run log %q does not name %q", logged, want)
+				}
+			}
+			if !strings.Contains(body, `"sentence":"The run could not finish."`) {
+				t.Fatalf("event stream = %q, want the plain failure sentence", body)
+			}
+			for _, leak := range []string{"turn_id", "DB::Exception", "charges_raw"} {
+				if strings.Contains(body, leak) {
+					t.Fatalf("event stream leaked %q: %q", leak, body)
+				}
+			}
+		})
 	}
 }
 

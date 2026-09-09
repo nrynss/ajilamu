@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -269,17 +270,31 @@ func (s *Server) FlushLedger(ctx context.Context) error {
 	return nil
 }
 
-// probeDialTimeout bounds connection establishment for the readiness probe.
-// A refused or unresolved host fails here instead of waiting out the budget.
+// probeResolveTimeout bounds name resolution for the readiness probe. This
+// host answers a cold lookup through the systemd-resolved stub in about 6
+// seconds, so resolution needs a budget wider than the 2 second dial timeout.
+// A healthy ledger otherwise reports unreachable, while a dead resolver still
+// fails within this bound.
+var probeResolveTimeout = 10 * time.Second
+
+// probeDialTimeout bounds connection establishment for the readiness probe
+// once the host resolves. A refused host fails here instead of waiting out
+// the response budget.
 var probeDialTimeout = 2 * time.Second
 
-// probeResponseBudget bounds the whole readiness probe. Measured against the
-// live ClickHouse Cloud instance on 2026-09-08: a warm ping answered in under
-// a second, but the first ping on a cold route took 13 seconds. This budget
-// covers that cold ping with margin, so a waking service reports ready. An
-// idle authenticated call needed more than 25 seconds, so that case reports
-// waking rather than claiming ClickHouse did not answer.
+// probeResponseBudget bounds the ping phase of the readiness probe. It starts
+// after resolution, so a slow lookup never spends the ping budget. Measured
+// against the live ClickHouse Cloud instance on 2026-09-08: a warm ping
+// answered in under a second, but the first ping on a cold route took 13
+// seconds. This budget covers that cold ping with margin, so a waking service
+// reports ready. An idle authenticated call needed more than 25 seconds, so
+// that case reports waking rather than claiming ClickHouse did not answer.
 var probeResponseBudget = 15 * time.Second
+
+// probeLookup resolves the probe host to dialable addresses. It is a variable
+// so tests can drive a slow or failing resolver without touching the system
+// one.
+var probeLookup = net.DefaultResolver.LookupHost
 
 // probeClickHouse observes the ClickHouse HTTP interface that the durable
 // ledger writes through. It reports ready, waking, or unreachable so the
@@ -288,6 +303,17 @@ func probeClickHouse(ctx context.Context, cfg *config.Config) string {
 	scheme := "http"
 	if cfg.ClickHouseSecure {
 		scheme = "https"
+	}
+
+	// Resolve first under its own budget. Folding resolution into the dial
+	// timeout reported a healthy ledger unreachable on a host with a slow
+	// resolver. Folding it into the ping budget would let a cold lookup spend
+	// the budget that covers a cold ping.
+	resolveCtx, cancelResolve := context.WithTimeout(ctx, probeResolveTimeout)
+	addresses, resolveErr := probeLookup(resolveCtx, cfg.ClickHouseHost)
+	cancelResolve()
+	if resolveErr != nil || len(addresses) == 0 {
+		return ledgerStatusUnreachable
 	}
 
 	// A response timeout and a dial timeout look alike, so record whether the
@@ -313,7 +339,7 @@ func probeClickHouse(ctx context.Context, cfg *config.Config) string {
 			return http.ErrUseLastResponse
 		},
 		Transport: &http.Transport{
-			DialContext:       (&net.Dialer{Timeout: probeDialTimeout}).DialContext,
+			DialContext:       probeDialer(addresses, cfg.ClickHousePort),
 			DisableKeepAlives: true,
 		},
 	}
@@ -337,6 +363,26 @@ func probeClickHouse(ctx context.Context, cfg *config.Config) string {
 		return ledgerStatusUnreachable
 	}
 	return ledgerStatusReady
+}
+
+// probeDialer dials the resolved addresses under one connect budget. Trying
+// every address inside that budget keeps a host with several addresses from
+// stretching the probe, and keeps a host that never answers bounded.
+func probeDialer(addresses []string, port int) func(context.Context, string, string) (net.Conn, error) {
+	dialPort := strconv.Itoa(port)
+	return func(ctx context.Context, network, _ string) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(ctx, probeDialTimeout)
+		defer cancel()
+		var lastErr error
+		for _, address := range addresses {
+			conn, err := (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(address, dialPort))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
 }
 
 // probeTimedOut reports whether a probe failure ran out of time. Waking means

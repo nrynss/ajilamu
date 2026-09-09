@@ -23,7 +23,7 @@ requires:   P2, P3, P5, P7
 fixture-ok: no
 size:       M · frontier
 owns:       (integration, no exclusive paths)
-status:     not-started
+status:     claimed:t81live
 ```
 Drive the sample button through live services to a finished video. Keep the workspace
 responsive for the whole run.
@@ -121,3 +121,22 @@ the validation run could demonstrate neither.
 ## Handoff Log
 
 _(Fill on completion: record the end-to-end measurements and the deploy verification.)_
+
+### T8.1 live run 2026-09-09
+
+The first live run reached the export but ended in an error. Three findings came from it.
+
+**The C is provisioned.** The live ClickHouse Cloud `default` database carried the pre-T1.3
+validation shape, so `charges_raw` had no `turn_id` or `call_index` and its kind enum lacked
+`agent`. Every charge insert returned code 16. The schema guard refuses that shape by design.
+A fresh database `ajilamu` now holds `sql/schema.sql`, and `.env` points at it.
+
+**The two H findings are fixed.** The readiness probe now separates name resolution from its
+dial budget, so a healthy ledger on a slow resolver reports ready. A failed run now logs its
+cause with the run id, dub id and stage at the failure, while the browser sentence stays plain.
+
+**Two of the five claims do not hold yet.** The charges claim failed only because of the stale
+schema, and the fix above unblocks it. The repair claim failed because this run's live model
+output put every attempt outside the stretch budget, so `atempo` never ran. T8.1 stays open
+until a live re-run measures both. T8.2 proceeds at the user's direction, because the deploy
+proof re-runs the same pipeline from a clean instance.

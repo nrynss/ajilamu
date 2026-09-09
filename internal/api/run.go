@@ -404,15 +404,36 @@ func (r *runRegistry) start(req RunRequest) (*dubRun, error) {
 func (r *runRegistry) execute(ctx context.Context, run *dubRun, req RunRequest) {
 	result, err := r.runner.Run(ctx, req, run.emit)
 	if err != nil {
-		run.finish(terminalEvent(req, run.costSnapshot(), err, run.takePending()))
+		run.fail(req, run.costSnapshot(), err)
 		return
 	}
 	mintRunIdentity(req, &result)
 	if err := r.recorder.Persist(ctx, req, result); err != nil {
-		run.finish(terminalEvent(req, result.TotalCost, err, run.takePending()))
+		run.fail(req, result.TotalCost, err)
 		return
 	}
 	run.finish(terminalEvent(req, result.TotalCost, nil, run.takePending()))
+}
+
+// fail logs the cause of a failed run and reports the plain terminal event.
+// The log names the cause, the dub id, and the stage at the point of failure,
+// so the run does not hide its cause until the shutdown flush. The browser
+// sentence stays plain, because a SQL error, a host name, or a query must not
+// leak. A pipeline error event names the stage that failed, and the terminal
+// event names it otherwise.
+func (run *dubRun) fail(req RunRequest, total cost.Price, runErr error) {
+	pending := run.takePending()
+	event := terminalEvent(req, total, runErr, pending)
+	stage := event.Stage
+	if pending != nil && pending.Type == EventError && pending.Stage != "" {
+		stage = pending.Stage
+	}
+	run.logger.Error("run failed",
+		"run_id", run.id,
+		"dub_id", run.dubID,
+		"stage", stage,
+		"error", runErr)
+	run.finish(event)
 }
 
 // mintRunIdentity fills the identity fields the ledger requires. The api

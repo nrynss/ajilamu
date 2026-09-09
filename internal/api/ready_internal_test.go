@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -115,6 +116,64 @@ func TestLedgerReadyHonorsDialTimeout(t *testing.T) {
 	}
 }
 
+// TestLedgerReadySurvivesSlowResolution proves resolution runs under its own
+// budget rather than the dial timeout. The stand-in resolver takes longer than
+// probeDialTimeout to answer, so a probe that folded resolution into the dial
+// would report a healthy ledger unreachable.
+func TestLedgerReadySurvivesSlowResolution(t *testing.T) {
+	setProbeDialTimeout(t, 100*time.Millisecond)
+	setProbeResolveTimeout(t, 5*time.Second)
+	setProbeLookup(t, func(ctx context.Context, _ string) ([]string, error) {
+		select {
+		case <-time.After(300 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return []string{"127.0.0.1"}, nil
+	})
+
+	ping := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ping" {
+			_, _ = w.Write([]byte("Ok."))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(ping.Close)
+
+	code, status := ledgerReadyResult(t, readyServerURL(t, standInConfig(t, ping.URL)))
+	if code != http.StatusOK || status != "ready" {
+		t.Fatalf("ledger readiness = %d %q, want 200 ready after a slow resolution", code, status)
+	}
+}
+
+// TestLedgerReadyReportsUnreachableOnResolutionFailure proves a resolver that
+// never answers reports unreachable within the resolution budget rather than
+// holding the route open.
+func TestLedgerReadyReportsUnreachableOnResolutionFailure(t *testing.T) {
+	setProbeResolveTimeout(t, 150*time.Millisecond)
+	setProbeLookup(t, func(ctx context.Context, _ string) ([]string, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+
+	cfg := &config.Config{
+		ClickHouseHost:     "ledger.example",
+		ClickHousePort:     8123,
+		ClickHouseUser:     "fixture",
+		ClickHousePassword: "fixture",
+	}
+	started := time.Now()
+	status := ledgerReadyStatus(t, readyServerURL(t, cfg))
+	elapsed := time.Since(started)
+	if status != "unreachable" {
+		t.Fatalf("ledger readiness status = %q, want unreachable", status)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("ledger readiness took %s with a 150ms resolution budget, want a bounded failure", elapsed)
+	}
+}
+
 // setProbeResponseBudget sets the probe budget for one test. The cleanup runs
 // after every server the test starts has closed, so no handler reads the
 // budget while the test restores it.
@@ -197,6 +256,22 @@ func ledgerReadyStatus(t *testing.T, serverURL string) string {
 		t.Fatalf("ledger readiness = %d, want 503", code)
 	}
 	return status
+}
+
+// setProbeResolveTimeout sets the resolution budget for one test.
+func setProbeResolveTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	previous := probeResolveTimeout
+	t.Cleanup(func() { probeResolveTimeout = previous })
+	probeResolveTimeout = timeout
+}
+
+// setProbeLookup substitutes the probe resolver for one test.
+func setProbeLookup(t *testing.T, lookup func(context.Context, string) ([]string, error)) {
+	t.Helper()
+	previous := probeLookup
+	t.Cleanup(func() { probeLookup = previous })
+	probeLookup = lookup
 }
 
 // closedPort returns a port that nothing listens on.
