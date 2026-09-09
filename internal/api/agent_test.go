@@ -20,6 +20,12 @@ func (f agentFunc) Ask(ctx context.Context, id, question string) (agent.Reply, e
 	return f(ctx, id, question)
 }
 
+type agentChargeRecorderFunc func(context.Context, AgentChargeRecord) error
+
+func (f agentChargeRecorderFunc) RecordAgentTurn(ctx context.Context, record AgentChargeRecord) error {
+	return f(ctx, record)
+}
+
 func TestAgentRoutePreservesChargesAndDubContext(t *testing.T) {
 	charges := []cost.Charge{
 		{Kind: cost.ChargeAgent, PromptTokens: 10, CandidateTokens: 4, PromptUnitPrice: 150, CandidateUnitPrice: 600},
@@ -33,7 +39,12 @@ func TestAgentRoutePreservesChargesAndDubContext(t *testing.T) {
 		}
 		return agent.Reply{Text: "Line 3.", Charges: charges}, nil
 	})
-	server, err := NewServer(&config.Config{}, ServerOptions{Agent: editor})
+	var recorded []AgentChargeRecord
+	recorder := agentChargeRecorderFunc(func(_ context.Context, record AgentChargeRecord) error {
+		recorded = append(recorded, record)
+		return nil
+	})
+	server, err := NewServer(&config.Config{}, ServerOptions{Agent: editor, AgentCharges: recorder})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +62,36 @@ func TestAgentRoutePreservesChargesAndDubContext(t *testing.T) {
 			t.Fatalf("charge %d changed: %+v", i, got.Charges[i])
 		}
 	}
+	if len(recorded) != 1 || recorded[0].TurnID == "" || recorded[0].DubID != "dub-1" ||
+		len(recorded[0].Charges) != len(charges) {
+		t.Fatalf("recorded agent turn = %+v", recorded)
+	}
+}
+
+func TestAgentRouteMintsDistinctIdentitiesForIdenticalTurns(t *testing.T) {
+	charge := cost.Charge{Kind: cost.ChargeAgent, PromptTokens: 10, CandidateTokens: 4, PromptUnitPrice: 150, CandidateUnitPrice: 600}
+	editor := agentFunc(func(context.Context, string, string) (agent.Reply, error) {
+		return agent.Reply{Text: "Line 3.", Charges: []cost.Charge{charge}}, nil
+	})
+	var turns []AgentChargeRecord
+	recorder := agentChargeRecorderFunc(func(_ context.Context, record AgentChargeRecord) error {
+		turns = append(turns, record)
+		return nil
+	})
+	handler := AgentHandler(editor, recorder, nil)
+	for range 2 {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"question":"Which line?"}`))
+		req.SetPathValue("id", "dub-1")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	if len(turns) != 2 || turns[0].TurnID == "" || turns[1].TurnID == "" ||
+		turns[0].TurnID == turns[1].TurnID {
+		t.Fatalf("turn identities = %+v, want two distinct values", turns)
+	}
 }
 
 func TestAgentRouteRejectsMalformedQuestionsBeforeCalling(t *testing.T) {
@@ -63,7 +104,7 @@ func TestAgentRouteRejectsMalformedQuestionsBeforeCalling(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 			req.SetPathValue("id", "dub-1")
 			rec := httptest.NewRecorder()
-			AgentHandler(editor, nil).ServeHTTP(rec, req)
+			AgentHandler(editor, nil, nil).ServeHTTP(rec, req)
 			if rec.Code != 400 {
 				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 			}
@@ -82,7 +123,7 @@ func TestAgentRouteHidesProviderFailureAndNormalizesEmptyCharges(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"question":"x"}`))
 		req.SetPathValue("id", "dub-1")
 		rec := httptest.NewRecorder()
-		AgentHandler(editor, nil).ServeHTTP(rec, req)
+		AgentHandler(editor, nil, nil).ServeHTTP(rec, req)
 		if fail {
 			if rec.Code != 502 || strings.Contains(rec.Body.String(), "private") {
 				t.Fatalf("failure: %d %s", rec.Code, rec.Body.String())
@@ -90,5 +131,25 @@ func TestAgentRouteHidesProviderFailureAndNormalizesEmptyCharges(t *testing.T) {
 		} else if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"charges":[]`) || !strings.Contains(rec.Body.String(), `"total_nanodollars":0`) {
 			t.Fatalf("empty charges: %s", rec.Body.String())
 		}
+	}
+}
+
+func TestAgentRouteReportsRecorderFailure(t *testing.T) {
+	editor := agentFunc(func(context.Context, string, string) (agent.Reply, error) {
+		return agent.Reply{Text: "Line 3.", Charges: []cost.Charge{{
+			Kind: cost.ChargeAgent, PromptTokens: 10, PromptUnitPrice: 150,
+		}}}, nil
+	})
+	recorder := agentChargeRecorderFunc(func(context.Context, AgentChargeRecord) error {
+		return errors.New("ClickHouse refused the row")
+	})
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"question":"x"}`))
+	req.SetPathValue("id", "dub-1")
+	rec := httptest.NewRecorder()
+	AgentHandler(editor, recorder, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError ||
+		!strings.Contains(rec.Body.String(), "charge could not be recorded") ||
+		strings.Contains(rec.Body.String(), "ClickHouse") {
+		t.Fatalf("recorder failure: %d %s", rec.Code, rec.Body.String())
 	}
 }

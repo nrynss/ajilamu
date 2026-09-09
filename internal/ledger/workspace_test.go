@@ -53,10 +53,11 @@ func workspacePayloads() map[string]string {
 	return map[string]string{
 		selectWorkspaceTakes:       `{"language":"ml","commit_id":"c1","segment_index":1,"attempt":1,"voice":"voice-a","text":"hello","audio_path":"a.wav","repair":"none","peaks":[],"slot_ms":1820,"measured_ms":1680,"delta_ms":-140,"created_ms":1000}` + "\n",
 		selectWorkspaceTakeCharges: `{"language":"ml","commit_id":"c1","segment_index":1,"attempt":1,"kind":"translate","unit":"prompt_tokens","units":21,"unit_price_nanodollars":100}` + "\n",
-		selectWholePassCharges:     `{"commit_id":"c1","kind":"segment","unit":"prompt_tokens","units":670,"unit_price_nanodollars":100}` + "\n",
-		selectRunningTotal:         `{"total_nanodollars":993100,"segment_calls":1,"translate_calls":2,"synthesize_calls":3}` + "\n",
-		selectWorkspaceLanguages:   `{"language":"ml","take_count":1}` + "\n",
-		selectProjectMetadata:      `{"commit_count":2,"created_ms":1788897588404,"updated_ms":1788897589404,"languages":["ml"]}` + "\n",
+		selectWholePassCharges: `{"commit_id":"","kind":"agent","unit":"turns","units":1,"unit_price_nanodollars":0,"total_nanodollars":2400}` + "\n" +
+			`{"commit_id":"c1","kind":"segment","unit":"prompt_tokens","units":670,"unit_price_nanodollars":100,"total_nanodollars":67000}` + "\n",
+		selectRunningTotal:       `{"total_nanodollars":995500,"segment_calls":1,"translate_calls":2,"synthesize_calls":3,"agent_calls":1}` + "\n",
+		selectWorkspaceLanguages: `{"language":"ml","take_count":1}` + "\n",
+		selectProjectMetadata:    `{"commit_count":2,"created_ms":1788897588404,"updated_ms":1788897589404,"languages":["ml"]}` + "\n",
 	}
 }
 
@@ -71,9 +72,9 @@ func quoteWorkspacePayload(statement, payload string) string {
 	case selectWorkspaceTakeCharges:
 		fields = []string{"units", "unit_price_nanodollars"}
 	case selectWholePassCharges:
-		fields = []string{"units", "unit_price_nanodollars"}
+		fields = []string{"units", "unit_price_nanodollars", "total_nanodollars"}
 	case selectRunningTotal:
-		fields = []string{"total_nanodollars", "segment_calls", "translate_calls", "synthesize_calls"}
+		fields = []string{"total_nanodollars", "segment_calls", "translate_calls", "synthesize_calls", "agent_calls"}
 	case selectWorkspaceLanguages:
 		fields = []string{"take_count"}
 	case selectProjectMetadata:
@@ -173,19 +174,20 @@ func TestWorkspaceReadsSurviveQuotedIntegers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WholePassCharges: %v", err)
 	}
-	if len(wholePass) != 1 || wholePass[0].Kind != "segment" || wholePass[0].SegmentID != nil ||
-		wholePass[0].TakeFile != "" || wholePass[0].TotalNanodollars != cost.Price(67000) {
-		t.Errorf("whole-pass charges = %+v, want one segment charge of 67000 nanodollars", wholePass)
+	if len(wholePass) != 2 || wholePass[0].Kind != "agent" || wholePass[1].Kind != "segment" ||
+		wholePass[0].SegmentID != nil || wholePass[0].TakeFile != "" ||
+		wholePass[0].TotalNanodollars != cost.Price(2400) {
+		t.Errorf("whole-pass charges = %+v, want agent and segment charges", wholePass)
 	}
 
 	total, err := client.RunningTotal(ctx, fixtureDub)
 	if err != nil {
 		t.Fatalf("RunningTotal: %v", err)
 	}
-	if total.TotalNanodollars != cost.Price(993100) {
-		t.Errorf("running total = %d, want 993100", total.TotalNanodollars)
+	if total.TotalNanodollars != cost.Price(995500) {
+		t.Errorf("running total = %d, want 995500", total.TotalNanodollars)
 	}
-	if total.Covers != "1 segment call, 2 translation calls, and 3 render calls." {
+	if total.Covers != "1 segment call, 2 translation calls, 3 render calls, and 1 agent call." {
 		t.Errorf("running total covers = %q", total.Covers)
 	}
 
@@ -421,8 +423,40 @@ func TestWorkspaceQueriesBindAndShape(t *testing.T) {
 	if !strings.Contains(selectWorkspaceTakeCharges, "kind IN ('translate', 'synthesize')") {
 		t.Error("itemized charge statement does not exclude the whole-pass kind")
 	}
-	if !strings.Contains(selectWholePassCharges, "kind = 'segment'") {
-		t.Error("whole-pass statement does not select the whole-pass kind")
+	if !strings.Contains(selectWholePassCharges, "kind = 'segment'") ||
+		!strings.Contains(selectWholePassCharges, "kind = 'agent'") {
+		t.Error("whole-pass statement does not select both whole-pass kinds")
+	}
+	if !strings.Contains(selectWholePassCharges, "uniqExact(turn_id)") ||
+		!strings.Contains(selectWholePassCharges, "HAVING count() > 0") {
+		t.Error("whole-pass statement does not fold agent turns into one display row")
+	}
+	if !strings.Contains(selectRunningTotal, "uniqExactIf(tuple(turn_id, call_index), kind = 'agent')") {
+		t.Error("running total does not count distinct agent calls")
+	}
+	for _, kind := range []string{"segment", "translate", "synthesize"} {
+		if !strings.Contains(selectRunningTotal, "uniqExactIf(tuple(language, commit_id, segment_index, attempt, kind, provider), kind = '"+kind+"')") {
+			t.Errorf("running total does not count %s by call identity", kind)
+		}
+	}
+}
+
+func TestWholePassChargesFoldsIdenticalAgentTurns(t *testing.T) {
+	t.Parallel()
+
+	client, _ := workspaceStandIn(t, map[string]string{
+		selectWholePassCharges: `{"commit_id":"","kind":"agent","unit":"turns","units":2,"unit_price_nanodollars":0,"total_nanodollars":768000}` + "\n",
+	})
+	charges, err := client.WholePassCharges(context.Background(), fixtureDub)
+	if err != nil {
+		t.Fatalf("WholePassCharges: %v", err)
+	}
+	if len(charges) != 1 {
+		t.Fatalf("whole-pass charges = %+v, want one folded agent row", charges)
+	}
+	if charges[0].Kind != "agent" || charges[0].Units != 2 ||
+		charges[0].TotalNanodollars != cost.Price(768000) {
+		t.Errorf("folded agent charge = %+v", charges[0])
 	}
 }
 
@@ -458,7 +492,7 @@ func TestRunningTotalWithNoCharges(t *testing.T) {
 	t.Parallel()
 
 	client, _ := workspaceStandIn(t, map[string]string{
-		selectRunningTotal: `{"total_nanodollars":0,"segment_calls":0,"translate_calls":0,"synthesize_calls":0}` + "\n",
+		selectRunningTotal: `{"total_nanodollars":0,"segment_calls":0,"translate_calls":0,"synthesize_calls":0,"agent_calls":0}` + "\n",
 	})
 	total, err := client.RunningTotal(context.Background(), fixtureDub)
 	if err != nil {
@@ -467,7 +501,7 @@ func TestRunningTotalWithNoCharges(t *testing.T) {
 	if total.TotalNanodollars != 0 {
 		t.Errorf("running total = %d, want 0", total.TotalNanodollars)
 	}
-	if total.Covers != "0 segment calls, 0 translation calls, and 0 render calls." {
+	if total.Covers != "0 segment calls, 0 translation calls, 0 render calls, and 0 agent calls." {
 		t.Errorf("running total covers = %q", total.Covers)
 	}
 }

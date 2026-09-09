@@ -16,8 +16,6 @@ import (
 
 const takeInsert = "INSERT INTO takes_raw (take_id, commit_id, project_id, dub_id, owner_id, language, segment_index, attempt, speaker, voice, text, slot_start_ms, slot_ms, measured_ms, delta_ms, repair, repair_detail, audio_path, peaks) FORMAT JSONEachRow"
 
-const chargeInsert = "INSERT INTO charges_raw (take_id, commit_id, project_id, dub_id, owner_id, language, segment_index, attempt, kind, provider, unit, units, unit_price_usd) FORMAT JSONEachRow"
-
 // TakeAttempt contains the provenance of one rendered take and its own API charges.
 // Charges never include a project running total.
 type TakeAttempt struct {
@@ -80,6 +78,8 @@ type chargeRow struct {
 	Language     string `json:"language"`
 	SegmentIndex int32  `json:"segment_index"`
 	Attempt      uint8  `json:"attempt"`
+	TurnID       string `json:"turn_id"`
+	CallIndex    uint16 `json:"call_index"`
 	Kind         string `json:"kind"`
 	Provider     string `json:"provider"`
 	Unit         string `json:"unit"`
@@ -242,6 +242,8 @@ func (a TakeAttempt) chargeRows() ([]chargeRow, error) {
 			if charge.CandidateTokens > 0 || charge.CandidateUnitPrice != 0 {
 				rows = append(rows, chargeRowWithCost(base, "candidate_tokens", int64(charge.CandidateTokens), charge.CandidateUnitPrice))
 			}
+		default:
+			return nil, fmt.Errorf("take charge kind %q does not belong to a take", base.Kind)
 		}
 	}
 	return rows, nil

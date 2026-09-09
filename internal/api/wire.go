@@ -406,7 +406,8 @@ type AgentRequest struct {
 
 // AgentResponse preserves every model call's token counts and unit prices.
 // Charges uses cost.Charge's exported field names and numeric ChargeKind values.
-// The total prices this turn only and does not change the workspace ledger.
+// The total prices this turn only. A configured recorder writes the turn's
+// charges to the workspace ledger.
 type AgentResponse struct {
 	Answer           string        `json:"answer"`
 	Charges          []cost.Charge `json:"charges"`

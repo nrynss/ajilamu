@@ -11,7 +11,7 @@ Where a phase document and specification conflict, the specification wins. Recor
 
 Each document provides complete context for an engineer starting cold.
 
-**Current status:** Follow-up tasks T5.5a, T6.6a, T6.6b, T6.7a and T7.3d have landed. P5, P6 and P7 each need a new close review. P8 Ship has not started.
+**Current status:** Follow-up tasks T5.5a, T6.6a, T6.6b, T6.7a and T7.3d have landed. T6.6c is in the tree and awaits re-review. P5 remediations await another close review. P7 close review approved. P8 Ship has not started.
 
 ---
 
@@ -192,9 +192,9 @@ Protect this core flow above auxiliary features.
 | P2 | 10 / 10 | Complete. Close review approved with zero residue. See [p2-close-round1.md](adversarial-review/p2-close-round1.md). |
 | P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
 | P4 | 8 / 8 | Complete. Close review approved with zero residue. See [p4-close-round2.md](adversarial-review/p4-close-round2.md). |
-| P5 | 8 / 8 | All tasks landed. T5.5a passed fresh review. A new phase-close review remains before declaring P5 complete. |
-| P6 | 13 / 13 | All tasks landed. T6.6b passed fresh review. A new phase-close review remains before declaring P6 complete. |
-| P7 | 21 / 21 | All tasks landed. T7.3d passed fresh review. A new phase-close review remains before declaring P7 complete. |
+| P5 | 8 / 8 | All tasks landed. Close remediations for the grid, tooltip, and scroll findings await another close review. |
+| P6 | 13 / 14 | T6.6c writer is in the tree and awaits re-review. Close round 5 approved the overlap fix. |
+| P7 | 21 / 21 | Complete. Close review approved with zero residue. See [p7-close-round6.md](adversarial-review/p7-close-round6.md). |
 | P8 | 0 / 4 | Not started. |
 
 **Concept validation:** Complete. Recorded in [observations.md](observations.md) and reviewed in [adversarial-review](adversarial-review/2026-09-07-pipeline-and-claims.md).
@@ -202,4 +202,7 @@ Protect this core flow above auxiliary features.
 ### Follow-up wave update 2026-09-09
 
 T5.5a, T6.6a, T6.6b, T6.7a and T7.3d landed after fresh reviews approved with zero
-findings. P5, P6 and P7 each still need a new close review.
+findings. P7 close review approved. P5 remediations await another close review.
+
+The P6 close round 4 filed T6.6c from its second finding. The writer and the round 1
+remediations are in the tree. The task stays open because the re-review was stopped.

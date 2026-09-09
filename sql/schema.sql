@@ -36,10 +36,10 @@
 -- instead, because commit_id is the commit's own identity rather than a delivery id.
 -- Children reference it through parent_commit_id, so a resend repeats the same value.
 --
--- The natural identity of a charge covers the take, the attempt, the kind, the provider,
--- the unit, the count and the price. Two calls differing in any of those stay two rows. A
--- genuine second call that repeats every one of them must raise attempt, otherwise the
--- ledger reads it as one call delivered twice.
+-- The natural identity of a take charge covers the take, attempt, kind, provider, unit,
+-- count and price. Agent calls add a turn id and call index because they own no take.
+-- A genuine second take call that repeats every identity field must raise attempt.
+-- Otherwise the ledger reads it as one call delivered twice.
 --
 -- That collapse does not weaken append-only. Append-only forbids overwriting a different
 -- logical event. Two rows sharing a natural identity are one event delivered twice, and
@@ -111,7 +111,9 @@ WITH
         ('charges_raw', 'language', 'LowCardinality(String)'),
         ('charges_raw', 'segment_index', 'Int32'),
         ('charges_raw', 'attempt', 'UInt8'),
-        ('charges_raw', 'kind', 'Enum8(\'segment\' = 1, \'translate\' = 2, \'synthesize\' = 3)'),
+        ('charges_raw', 'turn_id', 'String'),
+        ('charges_raw', 'call_index', 'UInt16'),
+        ('charges_raw', 'kind', 'Enum8(\'segment\' = 1, \'translate\' = 2, \'synthesize\' = 3, \'agent\' = 4)'),
         ('charges_raw', 'provider', 'LowCardinality(String)'),
         ('charges_raw', 'unit', 'LowCardinality(String)'),
         ('charges_raw', 'units', 'Decimal(18, 4)'),
@@ -198,16 +200,18 @@ WITH
             ('actions_raw', 'segment_index', 'DEFAULT', '-1'),
             ('actions_raw', 'take_id', 'DEFAULT', '\'\''),
             ('charges_raw', 'attempt', 'DEFAULT', '0'),
+            ('charges_raw', 'call_index', 'DEFAULT', '0'),
             ('charges_raw', 'charge_id', 'DEFAULT', '\'\''),
             ('charges_raw', 'commit_id', 'DEFAULT', '\'\''),
             ('charges_raw', 'cost_usd', 'MATERIALIZED', 'toDecimal128(units, 4) * unit_price_usd'),
             ('charges_raw', 'created_at', 'DEFAULT', 'now64(3)'),
-            ('charges_raw', 'event_key', 'MATERIALIZED', 'lower(hex(sipHash128(dub_id, toString(language), commit_id, toString(segment_index), toString(attempt), toString(kind), toString(provider), toString(unit), toString(units), toString(unit_price_usd))))'),
+            ('charges_raw', 'event_key', 'MATERIALIZED', 'lower(hex(sipHash128(dub_id, toString(language), commit_id, toString(segment_index), toString(attempt), turn_id, toString(call_index), toString(kind), toString(provider), toString(unit), toString(units), toString(unit_price_usd))))'),
             ('charges_raw', 'ingested_at', 'MATERIALIZED', 'now64(3)'),
             ('charges_raw', 'language', 'DEFAULT', '\'\''),
             ('charges_raw', 'provider', 'DEFAULT', '\'\''),
             ('charges_raw', 'segment_index', 'DEFAULT', '-1'),
             ('charges_raw', 'take_id', 'DEFAULT', '\'\''),
+            ('charges_raw', 'turn_id', 'DEFAULT', '\'\''),
             ('charges_raw', 'unit', 'DEFAULT', '\'\''),
             ('commits_raw', 'branch', 'DEFAULT', '\'main\''),
             ('commits_raw', 'created_at', 'DEFAULT', 'now64(3)'),
@@ -755,11 +759,9 @@ ORDER BY (dub_id, commit_id, event_key);
 -- takes_raw shares that prefix, so a branch cost rollup never merges two commits' rows.
 -- kind splits the call types a cost rollup groups.
 --
--- event_key hashes the natural identity of a billed call, which is the identity of the
--- take it paid for plus the call facts. The take identity covers the dub, the language,
--- the commit, the segment and the attempt. The call facts add the kind, the provider,
--- the unit, the count and the price. take_id and charge_id stay on the row as delivery
--- ids and never decide dedup, so a reconnect that regenerates either id still collapses.
+-- event_key hashes the take identity and call facts. Agent rows also hash turn_id and
+-- call_index. A queue retry keeps those values, while identical later turns stay distinct.
+-- A genuine repeated take call must raise attempt so it stays distinct from a retry.
 CREATE TABLE IF NOT EXISTS charges_raw
 (
     -- The id the client gave this delivery. Informational, and never the dedup key.
@@ -776,8 +778,12 @@ CREATE TABLE IF NOT EXISTS charges_raw
     segment_index  Int32 DEFAULT -1,
     -- The attempt of the take that paid for this call. Whole pass rows carry 0.
     attempt        UInt8 DEFAULT 0,
-    -- What we paid for. T1.2 fixes these three kinds.
-    kind           Enum8('segment' = 1, 'translate' = 2, 'synthesize' = 3),
+    -- Agent rows share one turn id and use call_index to distinguish model calls.
+    -- Take and segmentation rows leave both fields at their defaults.
+    turn_id        String DEFAULT '',
+    call_index     UInt16 DEFAULT 0,
+    -- What we paid for.
+    kind           Enum8('segment' = 1, 'translate' = 2, 'synthesize' = 3, 'agent' = 4),
     -- The model or voice that billed us, such as gemini-3.8-flash or chirp-3-hd.
     provider       LowCardinality(String) DEFAULT '',
     -- What we counted, such as characters, input_tokens, output_tokens or seconds.
@@ -792,7 +798,7 @@ CREATE TABLE IF NOT EXISTS charges_raw
     -- The natural identity of this billed call, hashed. The take it paid for and the
     -- call facts decide the key. A regenerated take id never changes it, and the server
     -- computes it, so a client cannot defeat dedup by inventing a new id.
-    event_key      String MATERIALIZED lower(hex(sipHash128(dub_id, toString(language), commit_id, toString(segment_index), toString(attempt), toString(kind), toString(provider), toString(unit), toString(units), toString(unit_price_usd)))),
+    event_key      String MATERIALIZED lower(hex(sipHash128(dub_id, toString(language), commit_id, toString(segment_index), toString(attempt), turn_id, toString(call_index), toString(kind), toString(provider), toString(unit), toString(units), toString(unit_price_usd)))),
 
     -- A negative count or a negative price means a broken caller, not a refund.
     CONSTRAINT units_are_positive CHECK units >= 0,

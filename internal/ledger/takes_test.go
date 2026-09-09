@@ -170,6 +170,17 @@ func TestRecordTakeFixtureCapture(t *testing.T) {
 		t.Fatalf("129 peaks made %d transport requests, want none", got-beforeInvalid)
 	}
 
+	beforeInvalid = captureCount(&captured, &capturedMu)
+	invalid = attempts[0]
+	invalid.Charges = append([]cost.Charge(nil), invalid.Charges...)
+	invalid.Charges[0].Kind = cost.ChargeAgent
+	if err := client.RecordTake(context.Background(), invalid); err == nil {
+		t.Fatal("RecordTake accepted an agent charge")
+	}
+	if got := captureCount(&captured, &capturedMu); got != beforeInvalid {
+		t.Fatalf("agent charge on take made %d transport requests, want none", got-beforeInvalid)
+	}
+
 	beforeRetry := captureCount(&captured, &capturedMu)
 	if err := client.RecordTake(context.Background(), attempts[9]); err != nil {
 		t.Fatalf("retry RecordTake: %v", err)

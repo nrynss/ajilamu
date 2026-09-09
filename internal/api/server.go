@@ -36,6 +36,7 @@ type HistoryReader interface {
 // ServerOptions supplies dependencies owned by other API tasks.
 type ServerOptions struct {
 	Agent            EditorAgent
+	AgentCharges     AgentChargeRecorder
 	FrontendRoot     string
 	Ledger           LedgerFlusher
 	Index            http.Handler
@@ -199,7 +200,7 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	mux.Handle("POST /api/dubs/{id}/edits", EditsHandler(options.Edits, options.History, logger))
 	mux.Handle("GET /api/dubs/{id}/takes/{language}/{name}", TakeAudioHandler(options.StorageDir, logger))
 	mux.Handle("POST /api/editor/commands/preview", NewCommandPreviewHandler())
-	mux.Handle("POST /api/dubs/{id}/agent", AgentHandler(options.Agent, logger))
+	mux.Handle("POST /api/dubs/{id}/agent", AgentHandler(options.Agent, options.AgentCharges, logger))
 	mux.Handle("/api/", http.NotFoundHandler())
 	mux.Handle("/", frontend)
 

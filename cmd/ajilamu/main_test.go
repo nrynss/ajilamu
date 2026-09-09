@@ -197,6 +197,81 @@ func TestNewRunRecorderReturnsNilForNilClient(t *testing.T) {
 	}
 }
 
+func TestNewAgentChargeRecorderReturnsNilForNilClient(t *testing.T) {
+	if recorder := newAgentChargeRecorder(nil, "gemini-3.8-flash"); recorder != nil {
+		t.Fatalf("newAgentChargeRecorder(nil) = %T, want nil interface", recorder)
+	}
+	client := &ledger.Client{}
+	recorder := newAgentChargeRecorder(client, "gemini-3.8-flash")
+	adapter, ok := recorder.(*agentChargeRecorder)
+	if !ok || adapter.client != client {
+		t.Fatalf("newAgentChargeRecorder(client) = %T, want adapter with client", recorder)
+	}
+}
+
+func TestAgentChargeRecorderUsesEmptyCommitSentinel(t *testing.T) {
+	client, captured := standInClickHouse(t, "")
+	defer client.Close()
+	recorder := newAgentChargeRecorder(client, "gemini-3.8-flash")
+	err := recorder.RecordAgentTurn(context.Background(), api.AgentChargeRecord{
+		TurnID: "turn-1",
+		DubID:  "dub-agent",
+		Charges: []cost.Charge{{
+			Kind: cost.ChargeAgent, PromptTokens: 1200, CandidateTokens: 340,
+			PromptUnitPrice: 150, CandidateUnitPrice: 600,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("RecordAgentTurn: %v", err)
+	}
+	rows := insertRows(t, captured(), "charges_raw")
+	if len(rows) != 2 {
+		t.Fatalf("agent charge rows = %d, want prompt and candidate rows", len(rows))
+	}
+	for _, row := range rows {
+		assertField(t, row, "turn_id", "turn-1")
+		assertField(t, row, "commit_id", "")
+		assertField(t, row, "project_id", "dub-agent")
+		assertField(t, row, "dub_id", "dub-agent")
+		assertField(t, row, "owner_id", "local")
+		assertField(t, row, "segment_index", float64(-1))
+		assertField(t, row, "kind", "agent")
+	}
+}
+
+func TestAgentChargeRecorderJournalsBeforeFailedFlush(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	endpoint := server.URL
+	server.Close()
+	client, err := ledger.New(&config.Config{
+		ClickHouseHost:     "fixture.invalid",
+		ClickHousePort:     8443,
+		ClickHouseUser:     "fixture",
+		ClickHousePassword: "fixture",
+		ClickHouseDatabase: "fixture",
+	}, t.TempDir(), ledger.WithEndpoint(endpoint))
+	if err != nil {
+		t.Fatalf("new ledger client: %v", err)
+	}
+	defer client.Close()
+
+	recorder := newAgentChargeRecorder(client, "gemini-3.8-flash")
+	err = recorder.RecordAgentTurn(context.Background(), api.AgentChargeRecord{
+		TurnID: "turn-outage",
+		DubID:  "dub-agent",
+		Charges: []cost.Charge{{
+			Kind: cost.ChargeAgent, PromptTokens: 1200, CandidateTokens: 340,
+			PromptUnitPrice: 150, CandidateUnitPrice: 600,
+		}},
+	})
+	if err == nil {
+		t.Fatal("RecordAgentTurn during outage = nil, want delivery error")
+	}
+	if pending, pendingErr := client.Pending(); pendingErr != nil || pending != 2 {
+		t.Fatalf("Pending after outage = %d, %v, want 2, nil", pending, pendingErr)
+	}
+}
+
 // A runner without its Google Cloud dependency must stay a nil interface,
 // because a typed nil would answer 500 instead of the 503 the routes expect.
 func TestNewPipelineRunnerReturnsNilWithoutDependencies(t *testing.T) {

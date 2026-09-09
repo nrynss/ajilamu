@@ -37,11 +37,12 @@ const selectWorkspaceTakeCharges = "SELECT language, commit_id, segment_index, a
 
 // selectWholePassCharges lists the charges that no single take owns.
 //
-// The segmentation pass is the only whole-pass work the pipeline bills. It
-// carries kind segment. T7.3 attributes the row to the first rendered take,
-// because charges_raw keys every row by take, so the -1 segment sentinel no
-// longer survives the write path.
-const selectWholePassCharges = "SELECT commit_id, toString(kind) AS kind, toString(unit) AS unit, toInt64(round(units)) AS units, toInt64(round(unit_price_usd * 1000000000)) AS unit_price_nanodollars FROM charges WHERE dub_id = {dub_id:String} AND kind = 'segment' ORDER BY commit_id ASC, segment_index ASC, kind ASC, unit ASC FORMAT JSONEachRow"
+// The shipped writer attributes segmentation to the first rendered take even
+// though the call serves the whole dub. Agent calls own no take.
+//
+// Agent rows collapse into one display charge. The wire has no turn identity,
+// and the Details tab keys these rows by kind and units.
+const selectWholePassCharges = "SELECT commit_id, kind, unit, units, unit_price_nanodollars, total_nanodollars FROM (SELECT commit_id, toString(kind) AS kind, toString(unit) AS unit, toInt64(round(units)) AS units, toInt64(round(unit_price_usd * 1000000000)) AS unit_price_nanodollars, toInt64(round(cost_usd * 1000000000)) AS total_nanodollars FROM charges WHERE dub_id = {dub_id:String} AND kind = 'segment' UNION ALL SELECT '' AS commit_id, 'agent' AS kind, 'turns' AS unit, toInt64(uniqExact(turn_id)) AS units, toInt64(0) AS unit_price_nanodollars, toInt64(sum(toInt64(round(cost_usd * 1000000000)))) AS total_nanodollars FROM charges WHERE dub_id = {dub_id:String} AND kind = 'agent' HAVING count() > 0) ORDER BY commit_id ASC, kind ASC, unit ASC FORMAT JSONEachRow"
 
 // selectRunningTotal sums every charge for one dub in exact nanodollars.
 //
@@ -49,7 +50,7 @@ const selectWholePassCharges = "SELECT commit_id, toString(kind) AS kind, toStri
 // counts each billed row once. The counts name what the total covers. A dub with
 // no charges still returns one row, because every aggregate over an empty set
 // answers zero.
-const selectRunningTotal = "SELECT toInt64(sum(toInt64(round(cost_usd * 1000000000)))) AS total_nanodollars, toUInt64(countIf(kind = 'segment')) AS segment_calls, toUInt64(countIf(kind = 'translate')) AS translate_calls, toUInt64(countIf(kind = 'synthesize')) AS synthesize_calls FROM charges WHERE dub_id = {dub_id:String} FORMAT JSONEachRow"
+const selectRunningTotal = "SELECT toInt64(sum(toInt64(round(cost_usd * 1000000000)))) AS total_nanodollars, toUInt64(uniqExactIf(tuple(language, commit_id, segment_index, attempt, kind, provider), kind = 'segment')) AS segment_calls, toUInt64(uniqExactIf(tuple(language, commit_id, segment_index, attempt, kind, provider), kind = 'translate')) AS translate_calls, toUInt64(uniqExactIf(tuple(language, commit_id, segment_index, attempt, kind, provider), kind = 'synthesize')) AS synthesize_calls, toUInt64(uniqExactIf(tuple(turn_id, call_index), kind = 'agent')) AS agent_calls FROM charges WHERE dub_id = {dub_id:String} FORMAT JSONEachRow"
 
 // selectWorkspaceLanguages lists the target languages one dub holds a take for.
 //
@@ -103,6 +104,7 @@ type wholePassChargeRow struct {
 	Unit                 string `json:"unit"`
 	Units                int64  `json:"units"`
 	UnitPriceNanodollars int64  `json:"unit_price_nanodollars"`
+	TotalNanodollars     int64  `json:"total_nanodollars"`
 }
 
 // runningTotalRow is the single JSONEachRow line from selectRunningTotal.
@@ -111,6 +113,7 @@ type runningTotalRow struct {
 	SegmentCalls     uint64 `json:"segment_calls"`
 	TranslateCalls   uint64 `json:"translate_calls"`
 	SynthesizeCalls  uint64 `json:"synthesize_calls"`
+	AgentCalls       uint64 `json:"agent_calls"`
 }
 
 // languageRow is one JSONEachRow line from selectWorkspaceLanguages.
@@ -188,7 +191,7 @@ func (c *Client) WholePassCharges(ctx context.Context, dubID string) ([]api.Char
 			Kind:                 row.Kind,
 			Units:                row.Units,
 			UnitPriceNanodollars: cost.Price(row.UnitPriceNanodollars),
-			TotalNanodollars:     cost.Price(row.Units * row.UnitPriceNanodollars),
+			TotalNanodollars:     cost.Price(row.TotalNanodollars),
 		})
 	}
 	return out, nil
@@ -216,10 +219,11 @@ func (c *Client) RunningTotal(ctx context.Context, dubID string) (api.Total, err
 	row := rows[0]
 	return api.Total{
 		TotalNanodollars: cost.Price(row.TotalNanodollars),
-		Covers: fmt.Sprintf("%s, %s, and %s.",
+		Covers: fmt.Sprintf("%s, %s, %s, and %s.",
 			countPhrase(row.SegmentCalls, "segment call", "segment calls"),
 			countPhrase(row.TranslateCalls, "translation call", "translation calls"),
-			countPhrase(row.SynthesizeCalls, "render call", "render calls")),
+			countPhrase(row.SynthesizeCalls, "render call", "render calls"),
+			countPhrase(row.AgentCalls, "agent call", "agent calls")),
 	}, nil
 }
 

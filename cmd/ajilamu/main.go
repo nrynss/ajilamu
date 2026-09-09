@@ -61,6 +61,7 @@ func run() error {
 	var workspace api.WorkspaceReader
 	var runRecorder api.RunRecorder
 	var editRecorder api.EditRecorder
+	var agentChargeRecorder api.AgentChargeRecorder
 	var pipelineRunner api.PipelineRunner
 	var lineRenderer api.LineRenderer
 	if cfg.RequireClickHouse() == nil {
@@ -74,6 +75,7 @@ func run() error {
 		workspace = newWorkspaceReader(eventLedger)
 		runRecorder = newRunRecorder(eventLedger, cfg.GeminiModel, slog.Default())
 		editRecorder = newEditRecorder(eventLedger)
+		agentChargeRecorder = newAgentChargeRecorder(eventLedger, cfg.GeminiModel)
 	}
 	if cfg.RequireGoogleCloud() == nil {
 		runner, err := newPipelineRunner(cfg, cost.DefaultRateCard())
@@ -108,6 +110,7 @@ func run() error {
 	}
 	server, err := api.NewServer(cfg, api.ServerOptions{
 		Agent:        editor,
+		AgentCharges: agentChargeRecorder,
 		FrontendRoot: frontendRoot(cfg),
 		Ledger:       ledgerFlusher,
 		History:      history,
@@ -1139,6 +1142,39 @@ func (r *editRecorder) RecordEdit(ctx context.Context, edit api.EditRecord) erro
 		return fmt.Errorf("flush the ledger after the edit: %w", err)
 	}
 	return nil
+}
+
+// agentChargeRecorder adapts completed agent turns onto the durable ledger.
+type agentChargeRecorder struct {
+	client   *ledger.Client
+	provider string
+}
+
+var _ api.AgentChargeRecorder = (*agentChargeRecorder)(nil)
+
+// newAgentChargeRecorder returns nil when the server has no ledger.
+func newAgentChargeRecorder(client *ledger.Client, provider string) api.AgentChargeRecorder {
+	if client == nil {
+		return nil
+	}
+	return &agentChargeRecorder{client: client, provider: provider}
+}
+
+// RecordAgentTurn journals one turn against the empty commit sentinel.
+// Agent charges can exist before the first run creates a commit.
+func (r *agentChargeRecorder) RecordAgentTurn(ctx context.Context, record api.AgentChargeRecord) error {
+	if r.client == nil {
+		return errors.New("agent charge recorder has no ledger client")
+	}
+	return r.client.RecordAgentTurn(ctx, ledger.AgentTurn{
+		TurnID:    record.TurnID,
+		CommitID:  "",
+		ProjectID: record.DubID,
+		DubID:     record.DubID,
+		OwnerID:   "local",
+		Provider:  r.provider,
+		Charges:   record.Charges,
+	})
 }
 
 // newEditorAgent keeps missing or unusable MCP settings from stopping the workspace.

@@ -18,8 +18,21 @@ type EditorAgent interface {
 	Ask(context.Context, string, string) (agent.Reply, error)
 }
 
+// AgentChargeRecorder persists the measured calls from one completed turn.
+// The adapter lives in cmd/ajilamu so this package never imports the ledger.
+type AgentChargeRecorder interface {
+	RecordAgentTurn(context.Context, AgentChargeRecord) error
+}
+
+// AgentChargeRecord carries one route-minted turn identity and its measured calls.
+type AgentChargeRecord struct {
+	TurnID  string
+	DubID   string
+	Charges []cost.Charge
+}
+
 // AgentHandler serves one question and preserves its measured charges.
-func AgentHandler(editor EditorAgent, logger *slog.Logger) http.Handler {
+func AgentHandler(editor EditorAgent, recorder AgentChargeRecorder, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -59,6 +72,16 @@ func AgentHandler(editor EditorAgent, logger *slog.Logger) http.Handler {
 		charges := reply.Charges
 		if charges == nil {
 			charges = []cost.Charge{}
+		}
+		if recorder != nil && len(charges) > 0 {
+			record := AgentChargeRecord{TurnID: newRunID(), DubID: id, Charges: charges}
+			if err := recorder.RecordAgentTurn(r.Context(), record); err != nil {
+				if logger != nil {
+					logger.Error("record editor agent charges", "dub_id", id, "error", err)
+				}
+				writeHistoryFailure(w, http.StatusInternalServerError, "The editor agent charge could not be recorded.")
+				return
+			}
 		}
 		var total cost.Price
 		for _, charge := range charges {
