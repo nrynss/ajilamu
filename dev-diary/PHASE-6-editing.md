@@ -292,6 +292,32 @@ token counts the response reported. `.env.example` starts a listening server as 
 
 ---
 
+### T6.7: Record boundary and command edits as commits ★
+```yaml
+requires:   T6.1, T6.4, T6.5c, T4.5
+fixture-ok: no
+size:       M · frontier
+owns:       internal/api/mutations.go, internal/api/mutations_test.go,
+            internal/api/server.go, cmd/ajilamu/main.go,
+            cmd/ajilamu/main_test.go,
+            web/src/routes/d/[id]/+page.svelte
+status:     done
+```
+The P6 close review filed one H. `handleBoundaryChange` and `confirmCommand` in the
+workspace page write browser state only and send no request, so a boundary drag or a
+command-bar confirmation never reaches the ledger. The History tab never shows it, and a
+reload loses it. Exit criterion five is unmet.
+
+`internal/ledger/actions.go` already accepts `boundary_nudged` with the `manual_ui` author
+and `user_command` with the `command_bar` author. `HistoryTab.svelte` already renders both
+sentences. Add the write path: one route that records the edit as a commit, an action and a
+timeline snapshot, and wire the two page confirmations to it.
+
+**Done when:** A boundary drag and a command confirmation each write one commit, one action
+and one timeline snapshot, the History tab shows both, and the edit survives a reload.
+
+---
+
 ## Exit Criteria
 
 - [ ] Boundaries, speakers, and text support manual user editing.
@@ -737,3 +763,73 @@ directory.
 
 `internal/api/takes_test.go` covers the served bytes, the range answer, three escapes,
 and an unwired storage root.
+
+### T6.7 boundary and command edits reach the ledger
+
+The route is `POST /api/dubs/{id}/edits`. `internal/api/server.go` mounts it with
+`EditsHandler(options.Edits, options.History, logger)`. The handler lives in
+`internal/api/mutations.go`.
+
+The body names one kind.
+
+```json
+{"kind":"boundary","language":"ml-IN","segment_id":1,"start_ms":0,"end_ms":2950}
+{"kind":"command","language":"ml-IN","command":"shift line 2 right by 250ms","duration_ms":75008}
+```
+
+A boundary carries the dragged `start_ms` and `end_ms`. A command carries the instruction
+and the timeline length the validator bounds against.
+
+The handler reads the head timeline, derives the result, and records it through
+`api.EditRecorder`. The adapter in `cmd/ajilamu/main.go` writes one commit, one action and
+one timeline snapshot. A boundary writes `boundary_nudged` with the `manual_ui` author
+and an empty prompt. A command writes `user_command` with the `command_bar` author and
+the instruction verbatim as the prompt.
+
+The route never trusts a browser-supplied result. It validates a boundary against the
+head timeline and derives a command through `internal/command`. A rejected edit answers
+400 or 422 with the validator sentence and writes nothing.
+
+The 201 body carries the commit id, the action, the author, the resulting segment and a
+sentence.
+
+```json
+{"commit_id":"d84ee6ac...","action":"user_command","author":"command_bar",
+ "segment":{"id":2,"start_ms":3750,"end_ms":8250,"duration_ms":4500,"speaker":"Suni"},
+ "sentence":"Saved the command. Line 2 now runs from 3.750s to 8.250s."}
+```
+
+The page calls the route from `recordEdit` in `web/src/routes/d/[id]/+page.svelte`.
+`handleBoundaryChange` sends a boundary. `confirmCommand` sends the previewed command.
+Both apply the returned segment to `dub.segments` only after the write succeeds. A failed
+write sets `lineNote` to the server sentence and remounts `Boundary`, so the editor
+cannot show a boundary that never saved.
+
+Measured on 2026-09-09 against `cmd/ajilamu` on port 8080 and ClickHouse 26.8.2.7 through
+`sql/schema.sql`. The dub `t67-real-dub` seeded one commit, three timeline rows and three
+takes.
+
+1. A drag on line 1's end handle from 3000ms to 2950ms wrote commit version 2. The action
+   row reads `boundary_nudged`, `manual_ui`, empty prompt,
+   `before_value {"start_ms":0,"end_ms":3000,"speaker":"Mark"}` and
+   `after_value {"start_ms":0,"end_ms":2950,"speaker":"Mark"}`. One timeline snapshot
+   records line 1 at 0..2950 and copies the source text, target text and take id forward.
+2. A confirmed command `shift line 2 right by 250ms` wrote commit version 3. The action
+   row reads `user_command`, `command_bar`, prompt `shift line 2 right by 250ms`, and
+   `after_value {"start_ms":3750,"end_ms":8250,"speaker":"Suni"}`. One timeline snapshot
+   records line 2 at 3750..8250.
+3. The History tab listed three saved changes. It read `A line boundary was adjusted.`
+   under `you` and `shift line 2 right by 250ms` under `editor command`.
+4. After a reload the boundary panel read `0:00.000 to 0:02.950` for line 1 and
+   `0:03.750 to 0:08.250` for line 2. The workspace payload served those bounds.
+5. A failed write never reports success. A drag that overlapped line 3 answered 400 with
+   `That boundary would overlap another line.` The page showed that sentence and the
+   handle returned to `0:03.750 to 0:08.250`. With ClickHouse stopped, a drag answered
+   500 with `Could not read the project ledger.` The page showed that sentence and the
+   handle returned to `0:00.000 to 0:02.950`. The dub still held three commits, two
+   actions and five snapshots.
+6. `go test -count=1 ./internal/api ./cmd/...` reports `ok` for both packages.
+   `npm --prefix web run check` reports 183 files, 0 errors and 0 warnings.
+
+`internal/api/mutations_test.go` covers the boundary row, the command row, an invalid
+command, an overlapping boundary, a failed recorder, and a project with no timeline.

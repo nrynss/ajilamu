@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -960,5 +961,281 @@ func TestRenderLineCorrectedTargetMissNeverTranslates(t *testing.T) {
 	}
 	if !result.Flagged {
 		t.Error("flagged = false, want a flagged line")
+	}
+}
+
+// lockRaceCommit is one commits_raw row the stand-in store holds. The action
+// fields stay zero, so the ledger reader collapses each commit to one row.
+type lockRaceCommit struct {
+	CommitID          string `json:"commit_id"`
+	ParentCommitID    string `json:"parent_commit_id"`
+	VersionSeq        uint64 `json:"version_seq"`
+	CreatedAtMs       int64  `json:"created_at_ms"`
+	HasAction         uint8  `json:"has_action"`
+	ActionType        string `json:"action_type"`
+	Author            string `json:"author"`
+	Prompt            string `json:"prompt"`
+	ActionCreatedAtMs int64  `json:"action_created_at_ms"`
+	EventKey          string `json:"event_key"`
+}
+
+// lockRaceStore is a stateful stand-in ClickHouse for the shared-lock pin. It
+// holds the commits the two real writers append and answers the head read, the
+// timeline read and the identity and parent lookups from that set.
+type lockRaceStore struct {
+	mu       sync.Mutex
+	commits  []lockRaceCommit
+	requests int
+}
+
+// noteRequest counts one request the stand-in served.
+func (s *lockRaceStore) noteRequest() {
+	s.mu.Lock()
+	s.requests++
+	s.mu.Unlock()
+}
+
+// requestCount returns how many requests the stand-in served.
+func (s *lockRaceStore) requestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.requests
+}
+
+// add records one appended commit.
+func (s *lockRaceStore) add(commit lockRaceCommit) {
+	commit.CreatedAtMs = 1788825600000 + int64(commit.VersionSeq)
+	s.mu.Lock()
+	s.commits = append(s.commits, commit)
+	s.mu.Unlock()
+}
+
+// rows returns the commits in the order the ledger reader expects, oldest
+// first, with the greatest (version_seq, commit_id) last.
+func (s *lockRaceStore) rows() []lockRaceCommit {
+	s.mu.Lock()
+	rows := append([]lockRaceCommit(nil), s.commits...)
+	s.mu.Unlock()
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].VersionSeq != rows[j].VersionSeq {
+			return rows[i].VersionSeq < rows[j].VersionSeq
+		}
+		return rows[i].CommitID < rows[j].CommitID
+	})
+	return rows
+}
+
+// newLockRaceStore seeds one root commit and serves the queries the run and
+// edit writers issue. Unknown queries answer empty, which is what the run
+// recorder's take, action and snapshot inserts need.
+func newLockRaceStore(t *testing.T, dubID string) (*lockRaceStore, *httptest.Server) {
+	t.Helper()
+	store := &lockRaceStore{commits: []lockRaceCommit{{
+		CommitID:    dubID + "-root",
+		VersionSeq:  1,
+		CreatedAtMs: 1788825600000,
+	}}}
+	timeline := `{"segment_index":1,"start_ms":0,"end_ms":3000,"speaker":"Mark","emotion":"Warm","source_text":"one","text":"onnu","take_id":"t1","state_version_seq":1}` + "\n" +
+		`{"segment_index":2,"start_ms":3500,"end_ms":8000,"speaker":"Suni","emotion":"Calm","source_text":"two","text":"randu","take_id":"t2","state_version_seq":1}` + "\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		store.noteRequest()
+		query := strings.TrimSpace(r.URL.Query().Get("query"))
+		if strings.HasPrefix(query, "INSERT INTO commits_raw") {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "read body", http.StatusInternalServerError)
+				return
+			}
+			for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+				if line == "" {
+					continue
+				}
+				var commit lockRaceCommit
+				if err := json.Unmarshal([]byte(line), &commit); err != nil {
+					t.Errorf("decode commit row %q: %v", line, err)
+					http.Error(w, "decode row", http.StatusBadRequest)
+					return
+				}
+				store.add(commit)
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		switch {
+		case strings.Contains(query, "timeline_at_commit"):
+			_, _ = io.WriteString(w, timeline)
+		case strings.Contains(query, "has_action"):
+			for _, row := range store.rows() {
+				payload, err := json.Marshal(row)
+				if err != nil {
+					t.Errorf("encode commit row: %v", err)
+					return
+				}
+				_, _ = w.Write(append(payload, '\n'))
+			}
+		case strings.Contains(query, "FROM commits_raw FINAL WHERE"):
+			want := r.URL.Query().Get("param_commit_id")
+			for _, row := range store.rows() {
+				if row.CommitID != want {
+					continue
+				}
+				payload, err := json.Marshal(row)
+				if err != nil {
+					t.Errorf("encode commit lookup: %v", err)
+					return
+				}
+				_, _ = w.Write(append(payload, '\n'))
+				break
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	return store, server
+}
+
+// newLockRaceClient points one durable ledger client at the stand-in store.
+func newLockRaceClient(t *testing.T, endpoint string) *ledger.Client {
+	t.Helper()
+	client, err := ledger.New(&config.Config{
+		ClickHouseHost:     "fixture.invalid",
+		ClickHousePort:     8443,
+		ClickHouseUser:     "fixture",
+		ClickHousePassword: "fixture",
+		ClickHouseDatabase: "fixture",
+	}, t.TempDir(), ledger.WithEndpoint(endpoint))
+	if err != nil {
+		t.Fatalf("new ledger client: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+// TestRunPersistAndEditShareDubCommitLock proves the real run commit path and
+// the real edit path take one shared per-dub commit lock. The test holds that
+// lock, starts runRecorder.Persist and an edit POST together, and proves
+// neither reaches the ledger while the lock is held. It releases the lock and
+// proves both commits chain. Removing the lock from persist or from
+// EditsHandler reddens it.
+func TestRunPersistAndEditShareDubCommitLock(t *testing.T) {
+	const dubID = "dub-fresh"
+	store, ledgerServer := newLockRaceStore(t, dubID)
+	runClient := newLockRaceClient(t, ledgerServer.URL)
+	editClient := newLockRaceClient(t, ledgerServer.URL)
+	runRecorder := newRunRecorder(runClient, "gemini-3.8-flash", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server, err := api.NewServer(&config.Config{Env: "development"}, api.ServerOptions{
+		History:  newHistoryReader(editClient),
+		Edits:    newEditRecorder(editClient),
+		Recorder: runRecorder,
+		Ledger:   editClient,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	editURL := httpServer.URL + "/api/dubs/" + dubID + "/edits"
+
+	request, result := persistFixture()
+	if request.DubID != dubID {
+		t.Fatalf("persist fixture dub = %q, want %q", request.DubID, dubID)
+	}
+	const editBody = `{"kind":"boundary","language":"ml","segment_id":1,"start_ms":0,"end_ms":2950}`
+
+	unlock := api.LockDubCommit(dubID)
+	released := false
+	defer func() {
+		if !released {
+			unlock()
+		}
+	}()
+
+	before := store.requestCount()
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	var persistErr error
+	var editStatus int
+	var editErr error
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		<-start
+		persistErr = runRecorder.Persist(context.Background(), request, result)
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		response, err := http.Post(editURL, "application/json", strings.NewReader(editBody))
+		if err != nil {
+			editErr = err
+			return
+		}
+		editStatus = response.StatusCode
+		response.Body.Close()
+	}()
+	close(start)
+
+	reached := false
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if store.requestCount() > before {
+			reached = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	unlock()
+	released = true
+	wait.Wait()
+
+	if reached {
+		t.Fatal("a writer reached the ledger while the shared dub commit lock was held")
+	}
+	if editErr != nil {
+		t.Fatalf("edit: %v", editErr)
+	}
+	if editStatus != http.StatusCreated {
+		t.Fatalf("edit status = %d, want 201", editStatus)
+	}
+	if persistErr != nil {
+		t.Fatalf("Persist: %v", persistErr)
+	}
+	rows := store.rows()
+	if len(rows) != 3 {
+		t.Fatalf("commits = %d, want the root, the edit and the run commit", len(rows))
+	}
+	versions := make(map[uint64]int, len(rows))
+	parent := make(map[string]string, len(rows))
+	for _, row := range rows {
+		versions[row.VersionSeq]++
+		parent[row.CommitID] = row.ParentCommitID
+	}
+	for version := uint64(1); version <= 3; version++ {
+		if versions[version] != 1 {
+			t.Errorf("version_seq %d appears %d times, want once", version, versions[version])
+		}
+	}
+	head := rows[len(rows)-1]
+	held := 0
+	runOnHead := false
+	editOnHead := false
+	for id := head.CommitID; id != ""; id = parent[id] {
+		held++
+		switch id {
+		case dubID + "-root":
+		case result.CommitID:
+			runOnHead = true
+		default:
+			editOnHead = true
+		}
+	}
+	if held != len(rows) {
+		t.Errorf("head ancestry = %d commits, want %d", held, len(rows))
+	}
+	if !runOnHead {
+		t.Error("the head chain dropped the run commit")
+	}
+	if !editOnHead {
+		t.Error("the head chain dropped the edit commit")
 	}
 }

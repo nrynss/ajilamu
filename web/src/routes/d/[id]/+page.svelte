@@ -64,6 +64,32 @@
     take: RerenderTakePayload
   }
 
+  interface EditSegment {
+    id: number
+    start_ms: number
+    end_ms: number
+    duration_ms: number
+    speaker: string
+  }
+
+  interface EditPayload {
+    commit_id: string
+    action: string
+    author: string
+    segment: EditSegment
+    sentence: string
+  }
+
+  interface EditRequest {
+    kind: "boundary" | "command"
+    language: string
+    segmentId?: number
+    startMs?: number
+    endMs?: number
+    command?: string
+    durationMs?: number
+  }
+
   interface LineRerenderRequest {
     segmentId: number
     language: string
@@ -133,6 +159,7 @@
   let runCost = $state<number | undefined>()
   let runSentence = $state("")
   let lineNote = $state("")
+  let boundaryRevision = $state(0)
 
   let lineRows = $derived(dub ? fixtureLineRows(dub, activeLanguage) : [])
   let selectedRow = $derived(lineRows.find((row) => row.segment.id === selectedSegmentId))
@@ -264,13 +291,93 @@
     if (hit) selectSegment(hit.id, "playhead")
   }
 
-  function handleBoundaryChange(change: BoundaryChange): void {
+  async function handleBoundaryChange(change: BoundaryChange): Promise<void> {
     if (!dub) return
     commandPreview = undefined
+    lineNote = ""
+    const reply = await recordEdit({
+      kind: "boundary",
+      language: activeLanguage,
+      segmentId: change.segment.id,
+      startMs: change.segment.start_ms,
+      endMs: change.segment.end_ms
+    })
+    if ("error" in reply) {
+      // Remount Boundary from the unchanged payload, so a failed write
+      // never leaves the editor showing a boundary that never saved.
+      lineNote = reply.error
+      boundaryRevision += 1
+      return
+    }
+    applyEditedSegment(reply.segment)
+  }
+
+  // recordEdit sends one confirmed edit to the ledger write path. It returns
+  // the saved segment, or an honest sentence when the write failed.
+  async function recordEdit(request: EditRequest): Promise<{ segment: EditSegment } | { error: string }> {
+    const body: Record<string, unknown> = { kind: request.kind, language: request.language }
+    if (request.segmentId !== undefined) body.segment_id = request.segmentId
+    if (request.startMs !== undefined) body.start_ms = request.startMs
+    if (request.endMs !== undefined) body.end_ms = request.endMs
+    if (request.command !== undefined) body.command = request.command
+    if (request.durationMs !== undefined) body.duration_ms = request.durationMs
+
+    try {
+      const response = await fetch(`/api/dubs/${encodeURIComponent(projectID)}/edits`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      })
+      if (!response.ok) return { error: await editFailureSentence(response) }
+      const payload: unknown = await response.json().catch(() => undefined)
+      if (!isEditPayload(payload)) {
+        return { error: "The saved edit answer was incomplete. The timeline is unchanged." }
+      }
+      return { segment: payload.segment }
+    } catch {
+      return { error: "We could not reach the server, so the edit was not saved." }
+    }
+  }
+
+  async function editFailureSentence(response: Response): Promise<string> {
+    try {
+      const body = (await response.json()) as { error?: unknown }
+      if (typeof body.error === "string" && body.error.length > 0) return body.error
+    } catch {
+      // The failure body was not JSON, so the sentence below stands.
+    }
+    return `The edit was not saved (${response.status}).`
+  }
+
+  function isEditPayload(value: unknown): value is EditPayload {
+    if (typeof value !== "object" || value === null) return false
+    const payload = value as Partial<EditPayload>
+    const segment = payload.segment
+    if (typeof segment !== "object" || segment === null) return false
+    return typeof payload.commit_id === "string"
+      && typeof payload.sentence === "string"
+      && typeof segment.id === "number"
+      && typeof segment.start_ms === "number"
+      && typeof segment.end_ms === "number"
+      && typeof segment.duration_ms === "number"
+      && typeof segment.speaker === "string"
+  }
+
+  function applyEditedSegment(segment: EditSegment): void {
+    const currentDub = dub
+    if (!currentDub) return
     dub = {
-      ...dub,
-      segments: dub.segments.map((segment) => (
-        segment.id === change.segment.id ? change.segment : segment
+      ...currentDub,
+      segments: currentDub.segments.map((candidate) => (
+        candidate.id === segment.id
+          ? {
+              ...candidate,
+              start_ms: segment.start_ms,
+              end_ms: segment.end_ms,
+              duration_ms: segment.duration_ms,
+              speaker: segment.speaker
+            }
+          : candidate
       ))
     }
   }
@@ -451,20 +558,26 @@
     }
   }
 
-  function confirmCommand(intent: CommandIntent): void {
+  async function confirmCommand(intent: CommandIntent): Promise<void> {
     const currentDub = dub
     const previewResult = commandPreview
     if (!currentDub || !previewResult || previewResult.command !== intent.command) {
       throw new Error("Please preview this command again before confirming it.")
     }
-    dub = {
-      ...currentDub,
-      segments: currentDub.segments.map((segment) => (
-        segment.id === previewResult.segment.id ? { ...segment, ...previewResult.segment } : segment
-      ))
+    lineNote = ""
+    const reply = await recordEdit({
+      kind: "command",
+      language: activeLanguage,
+      command: intent.command,
+      durationMs: pictureDurationMs(currentDub)
+    })
+    if ("error" in reply) {
+      lineNote = reply.error
+      throw new Error(reply.error)
     }
     commandPreview = undefined
-    void selectSegment(previewResult.segment.id)
+    applyEditedSegment(reply.segment)
+    void selectSegment(reply.segment.id)
   }
 
   async function commandPreviewError(response: Response): Promise<string> {
@@ -803,13 +916,15 @@
           <CommandBar bind:this={commandBar} parse={previewCommand} onconfirm={confirmCommand} />
           {#if selectedRow}
             <div class="editor-panels">
-              <Boundary
-                segment={selectedRow.segment}
-                segments={dub.segments}
-                takes={selectedRow.line?.takes ?? []}
-                timelineDurationMs={sharedPictureDurationMs}
-                onchange={handleBoundaryChange}
-              />
+              {#key boundaryRevision}
+                <Boundary
+                  segment={selectedRow.segment}
+                  segments={dub.segments}
+                  takes={selectedRow.line?.takes ?? []}
+                  timelineDurationMs={sharedPictureDurationMs}
+                  onchange={handleBoundaryChange}
+                />
+              {/key}
               <Speaker
                 segment={selectedRow.segment}
                 segments={dub.segments}

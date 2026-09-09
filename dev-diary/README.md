@@ -193,7 +193,7 @@ Protect this core flow above auxiliary features.
 | P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
 | P4 | 8 / 8 | Complete. Close review approved with zero residue. See [p4-close-round2.md](adversarial-review/p4-close-round2.md). |
 | P5 | 7 / 7 | Complete. Workspace renders from offline fixtures. See [PHASE-5-workspace.md](PHASE-5-workspace.md). |
-| P6 | 9 / 9 | Complete. All tasks approved. Close review pending. See [t6.5c-round2.md](adversarial-review/t6.5c-round2.md). |
+| P6 | 10 / 10 | Complete. All tasks approved. Close re-review pending. See [t6.7-round3.md](adversarial-review/t6.7-round3.md). |
 | P7 | 20 / 20 | Complete. Close review approved with zero residue. See [p7-close-round4.md](adversarial-review/p7-close-round4.md). |
 | P8 | 0 / 4 | Not started. |
 

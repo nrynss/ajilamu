@@ -59,6 +59,7 @@ func run() error {
 	var history api.HistoryReader
 	var workspace api.WorkspaceReader
 	var runRecorder api.RunRecorder
+	var editRecorder api.EditRecorder
 	var pipelineRunner api.PipelineRunner
 	var lineRenderer api.LineRenderer
 	if cfg.RequireClickHouse() == nil {
@@ -71,6 +72,7 @@ func run() error {
 		history = newHistoryReader(eventLedger)
 		workspace = newWorkspaceReader(eventLedger)
 		runRecorder = newRunRecorder(eventLedger, cfg.GeminiModel, slog.Default())
+		editRecorder = newEditRecorder(eventLedger)
 	}
 	if cfg.RequireGoogleCloud() == nil {
 		runner, err := newPipelineRunner(cfg, cost.DefaultRateCard())
@@ -110,6 +112,7 @@ func run() error {
 		Runner:       pipelineRunner,
 		Rerender:     lineRenderer,
 		Recorder:     runRecorder,
+		Edits:        editRecorder,
 		StorageDir:   uploadDir,
 		Upload:       api.NewUploadHandler(uploadDir),
 		Sample:       api.NewSampleHandler(uploadDir),
@@ -921,10 +924,15 @@ func (r *runRecorder) PersistCorrected(ctx context.Context, req api.RunRequest, 
 
 // persist writes one commit with its action, takes, charges and timeline
 // snapshots. The caller names the action, the author and the commit message.
+// It holds the dub's shared commit lock across the head read, the append and
+// the final flush, so a run or re-render commit never shares a parent and a
+// version_seq with a concurrent edit. PersistCorrected shares this path.
 func (r *runRecorder) persist(ctx context.Context, req api.RunRequest, result api.RunResult, actionType, author string, segmentIndex int32, message string) error {
 	if r.client == nil {
 		return errors.New("run recorder has no ledger client")
 	}
+	unlock := api.LockDubCommit(req.DubID)
+	defer unlock()
 	if err := r.client.Flush(ctx); err != nil {
 		return fmt.Errorf("flush the ledger before the run commit: %w", err)
 	}
@@ -1035,4 +1043,96 @@ func attributeWholePass(charges []cost.Charge, segmentID int) []cost.Charge {
 		out[i] = charge
 	}
 	return out
+}
+
+// editRecorder adapts the ledger client onto api.EditRecorder.
+// The adapter is the only seam, so internal/api never imports internal/ledger.
+type editRecorder struct {
+	client *ledger.Client
+}
+
+var _ api.EditRecorder = (*editRecorder)(nil)
+
+// newEditRecorder returns nil for a nil client, so a typed nil never reaches a route.
+func newEditRecorder(client *ledger.Client) api.EditRecorder {
+	if client == nil {
+		return nil
+	}
+	return &editRecorder{client: client}
+}
+
+// RecordEdit writes one edit in ledger order. It flushes the durable queue
+// first, so a parent commit still queued is delivered before the head read,
+// and again at the end, so every row reaches ClickHouse before the route
+// reports success. The route holds the dub's edit lock across this call, so
+// the head read and the append never interleave with another edit of the
+// same dub.
+func (r *editRecorder) RecordEdit(ctx context.Context, edit api.EditRecord) error {
+	if r.client == nil {
+		return errors.New("edit recorder has no ledger client")
+	}
+	if err := r.client.Flush(ctx); err != nil {
+		return fmt.Errorf("flush the ledger before the edit commit: %w", err)
+	}
+	commits, err := r.client.ListCommits(ctx, edit.DubID)
+	if err != nil {
+		return fmt.Errorf("read the dub head: %w", err)
+	}
+	parent := ""
+	version := uint64(1)
+	if len(commits) > 0 {
+		head := commits[len(commits)-1]
+		parent = head.CommitID
+		version = head.VersionSeq + 1
+	}
+	if err := r.client.AppendCommit(ctx, ledger.Commit{
+		CommitID:       edit.CommitID,
+		ParentCommitID: parent,
+		ProjectID:      edit.ProjectID,
+		DubID:          edit.DubID,
+		OwnerID:        edit.OwnerID,
+		Branch:         runBranch,
+		Language:       edit.Language,
+		VersionSeq:     version,
+		Message:        edit.Message,
+	}); err != nil {
+		return fmt.Errorf("append the edit commit: %w", err)
+	}
+	if err := r.client.RecordAction(ctx, ledger.Action{
+		CommitID:     edit.CommitID,
+		ProjectID:    edit.ProjectID,
+		DubID:        edit.DubID,
+		OwnerID:      edit.OwnerID,
+		Language:     edit.Language,
+		SegmentIndex: int32(edit.Segment.SegmentIndex),
+		ActionType:   edit.Action,
+		Author:       edit.Author,
+		Prompt:       edit.Prompt,
+		BeforeValue:  edit.BeforeValue,
+		AfterValue:   edit.AfterValue,
+	}); err != nil {
+		return fmt.Errorf("record the edit action: %w", err)
+	}
+	if err := r.client.RecordSegmentState(ctx, ledger.TimelineSegment{
+		CommitID:     edit.CommitID,
+		ProjectID:    edit.ProjectID,
+		DubID:        edit.DubID,
+		OwnerID:      edit.OwnerID,
+		Language:     edit.Language,
+		VersionSeq:   version,
+		SegmentIndex: int32(edit.Segment.SegmentIndex),
+		StartMs:      edit.Segment.StartMs,
+		EndMs:        edit.Segment.EndMs,
+		Speaker:      edit.Segment.Speaker,
+		Emotion:      edit.Segment.Emotion,
+		SourceText:   edit.Segment.SourceText,
+		Text:         edit.Segment.Text,
+		TakeID:       edit.Segment.TakeID,
+	}); err != nil {
+		return fmt.Errorf("record the edit timeline snapshot: %w", err)
+	}
+	if err := r.client.Flush(ctx); err != nil {
+		return fmt.Errorf("flush the ledger after the edit: %w", err)
+	}
+	return nil
 }
