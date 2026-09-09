@@ -1,9 +1,10 @@
 # Ajilamu deployment
 
-This directory rebuilds the whole host from an empty project. It creates the
-Google Cloud resources, builds the release bundle, ships it, installs the
-services and measures the result. Every step is a script in this directory,
-so nobody reconstructs the host from shell history.
+This directory rebuilds the whole deployment from an empty project. It creates
+the Google Cloud resources, creates the ClickHouse ledger database and loads
+its schema, builds the release bundle, ships it, installs the services and
+measures the result. Every step is a script in this directory, so nobody
+reconstructs the deployment from shell history.
 
 ## What runs on the host
 
@@ -70,8 +71,9 @@ script calls that function, so no script hardcodes that name.
    `CLICKHOUSE_KEY_ID`, `CLICKHOUSE_KEY_SECRET` and the ClickHouse Cloud
    host, service id and organisation id. The `.env` file stays on the
    operator machine and never reaches the host.
-4. The live ClickHouse Cloud service must already hold `sql/schema.sql` in
-   the `ajilamu` database. See `dev-diary/adversarial-review/t8.1-ledger-provisioning.md`.
+4. `deploy/clickhouse-schema.sh` creates the `ajilamu` database, loads
+   `sql/schema.sql` and provisions `mcp_readonly` on the first run. No manual
+   SQL step exists.
 
 ## The operator path
 
@@ -79,14 +81,20 @@ Run each step from the repository root. `deploy/deploy.sh` runs all six in
 order.
 
 ```bash
-deploy/provision.sh          # every Google Cloud resource
-deploy/clickhouse-readonly.sh # the mcp_readonly user and its SELECT grant
+deploy/clickhouse-schema.sh  # the ledger database, schema and mcp_readonly user
 deploy/build.sh              # the release bundle
 deploy/ship.sh               # copy the bundle to /opt/ajilamu
 gcloud compute ssh ajilamu --zone us-central1-a --command 'sudo /opt/ajilamu/deploy/bootstrap.sh'
 deploy/verify.sh             # independent measurements over TLS
 deploy/run-sample.sh         # the sample dub, end to end
 ```
+
+`clickhouse-schema.sh` creates the database when it is absent, loads
+`sql/schema.sql` with `clickhouse client --queries-file`, and calls
+`deploy/clickhouse-readonly.sh`. The schema file owns `IF NOT EXISTS` and
+`OR REPLACE`, so a second run keeps every row. The operator machine needs the
+`clickhouse` client or docker. The load uses the native protocol on port 9440,
+because the HTTP endpoint refuses a multi statement body.
 
 To rebuild the virtual machine on a clean boot disk, keep the address and the
 data disk, and rerun the path:
@@ -96,6 +104,9 @@ deploy/provision.sh --recreate-vm
 deploy/build.sh && deploy/ship.sh
 gcloud compute ssh ajilamu --zone us-central1-a --command 'sudo /opt/ajilamu/deploy/bootstrap.sh'
 ```
+
+The ledger lives in ClickHouse Cloud, so it survives the rebuild. Run
+`deploy/clickhouse-schema.sh` when the database is absent.
 
 `bootstrap.sh` is idempotent. It installs the packages, formats the data disk
 only when it carries no filesystem, builds the mcp-clickhouse image, installs

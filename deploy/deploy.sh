@@ -4,7 +4,7 @@
 # The steps run in order and each one is idempotent:
 #
 #   1. provision.sh          every Google Cloud resource
-#   2. clickhouse-readonly.sh the mcp_readonly database user
+#   2. clickhouse-schema.sh  the ledger database, the schema, the read-only user
 #   3. build.sh              the release bundle
 #   4. ship.sh               copy the bundle to the host
 #   5. bootstrap.sh          install and start on the host
@@ -31,8 +31,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log "== provision"
 "$HERE/provision.sh" "${RECREATE[@]}"
 
-log "== clickhouse read-only user"
-"$HERE/clickhouse-readonly.sh"
+log "== clickhouse ledger"
+"$HERE/clickhouse-schema.sh"
 
 log "== build"
 "$HERE/build.sh"

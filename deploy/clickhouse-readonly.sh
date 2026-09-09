@@ -2,9 +2,10 @@
 # Create the ClickHouse Cloud read-only user that mcp-clickhouse uses.
 #
 # The password lives in Secret Manager under
-# ajilamu-clickhouse-readonly-password. This script reads it, creates or
-# repairs the user, and grants SELECT on the ajilamu database only. A probe
-# then proves the grant allows a read and refuses a write.
+# ajilamu-clickhouse-readonly-password. A value in CLICKHOUSE_READONLY_PASSWORD
+# wins over Secret Manager. This script creates or repairs the user and grants
+# SELECT on the ledger database only. A probe then proves the grant allows a
+# read and refuses a write.
 #
 # Run it from the operator machine after deploy/provision.sh. It sources the
 # local .env for the writer credential and never prints any password.
@@ -15,7 +16,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-require_tools gcloud curl
+require_tools curl
 source_env
 
 : "${CLICKHOUSE_HOST:?CLICKHOUSE_HOST is required in .env}"
@@ -24,12 +25,24 @@ source_env
 : "${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD is required in .env}"
 
 DATABASE="${CLICKHOUSE_DATABASE:-ajilamu}"
-SCHEME=https
 READONLY_USER=mcp_readonly
 SECRET=ajilamu-clickhouse-readonly-password
 
-READONLY_PASSWORD="$(gcloud secrets versions access latest \
-  --secret="$SECRET" --project="$PROJECT")"
+# The scheme follows CLICKHOUSE_SECURE, so a scratch service on plain HTTP
+# runs the same probes as the Cloud service over TLS.
+SCHEME=https
+if [ "${CLICKHOUSE_SECURE:-true}" = false ]; then
+  SCHEME=http
+fi
+
+# The password comes from Secret Manager. A value already in the environment
+# wins, so a scratch run reuses this script without reaching gcloud.
+READONLY_PASSWORD="${CLICKHOUSE_READONLY_PASSWORD:-}"
+if [ -z "$READONLY_PASSWORD" ]; then
+  require_tools gcloud
+  READONLY_PASSWORD="$(gcloud secrets versions access latest \
+    --secret="$SECRET" --project="$PROJECT")"
+fi
 [ -n "$READONLY_PASSWORD" ] || die "secret $SECRET holds no value"
 
 WRITER_CONFIG="$(mktemp)"
