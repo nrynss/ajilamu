@@ -225,12 +225,26 @@
     else preview?.pause()
   }
 
+  // The fixture bundles its takes as built asset URLs. A real project stores
+  // an absolute server path, so the page names the take through the served
+  // route and never needs the server's path.
+  function takeAudioSource(take: Take): string {
+    if (isFixtureID(projectID)) return fixtureTakeSource(take)
+    return servedTakeURL(take)
+  }
+
+  function servedTakeURL(take: Take): string {
+    const name = take.file.split(/[\\/]/).pop() ?? ""
+    if (!name || !activeLanguage) return ""
+    return `/api/dubs/${encodeURIComponent(projectID)}/takes/${encodeURIComponent(activeLanguage)}/${encodeURIComponent(name)}`
+  }
+
   function playTake(take: Take): void {
     preview?.pause()
     stopTake()
-    const source = fixtureTakeSource(take)
+    const source = takeAudioSource(take)
     if (!source) {
-      lineNote = `The take ${take.file} has no browser audio URL.`
+      lineNote = `Try ${take.attempt} on this line has no playable audio.`
       return
     }
     lineNote = ""

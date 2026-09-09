@@ -153,7 +153,7 @@ size:       M · frontier
 owns:       internal/api/takes.go, internal/api/takes_test.go,
             internal/api/server.go, cmd/ajilamu/main.go,
             web/src/routes/d/[id]/+page.svelte
-status:     not-started
+status:     done
 ```
 A ledger payload sets `Take.File` to an absolute server path, and no route serves a take
 file. Every take of a real project is unplayable, so the fixture hides the defect.
@@ -683,3 +683,57 @@ the real sources. The page was healthy the whole time.
 `npm --prefix web run check` reports 183 files, 0 errors and 0 warnings. The browser run
 raised zero console messages and zero page errors. The changed file carries no
 `export let`, no `$:` and no store.
+
+### T6.5c serve take audio
+
+The route is `GET /api/dubs/{id}/takes/{language}/{name}`. `internal/api/server.go`
+mounts it with `TakeAudioHandler(options.StorageDir, logger)`. The handler lives in
+`internal/api/takes.go`.
+
+`language` resolves through `runWorkDirFor`, the same resolver the run route and the
+re-render route use. `name` must be one path segment. The handler rejects a separator, a
+dot, or a double dot. It then requires the joined path to stay inside the storage root.
+A missing file answers 404. An unwired storage root answers 503.
+
+`http.ServeContent` answers a range request with 206 and `Content-Range`. It sets
+`Content-Type` from the extension and `Accept-Ranges: bytes`.
+
+The page resolves a take in `takeAudioSource`. A fixture id still calls
+`fixtureTakeSource`. A real project calls `servedTakeURL`. That helper takes the last
+path segment of `take.file` and builds
+`/api/dubs/{project}/takes/{activeLanguage}/{name}`. The chips and the `Play this take`
+control both call `playTake`, so both use the route. The page never sends the server path
+to the browser. The old gap sentence is gone.
+
+Measured on 2026-09-09 against `cmd/ajilamu` on port 8799 with `AJILAMU_DATA_DIR`
+holding a real project.
+
+1. The request `GET /api/dubs/t65clive/takes/ml-IN/seg_3_try1.wav` answered 200 with
+   `Content-Type: audio/wav` and 183096 bytes. `ffprobe` read the served bytes as wav,
+   5.720375 seconds.
+2. `Range: bytes=1000-2999` answered 206 with `Content-Range: bytes 1000-2999/183096`,
+   `Content-Length: 2000` and `Content-Type: audio/wav`.
+3. The encoded relative escape
+   `..%2F..%2F..%2F..%2F..%2Ftmp%2Ft65c-outside%2Fsecret.wav` answered 404. The encoded
+   absolute path `%2Fetc%2Fpasswd` answered 404. A language escape answered 404. A raw
+   `..` path answered 307 and then 404.
+4. `/d/fixture` still plays bundled assets. A chip click requested
+   `/_app/immutable/assets/seg_1_try1.CwhAvsFF.wav` and no `/takes/` route.
+5. Headless Chromium on the built bundle played a real project from both controls. The
+   `Try 1` chip requested `GET /api/dubs/t65clive/takes/ml/seg_3_try1.wav` with
+   `Range: bytes=0-`, status 206 and `Content-Range: bytes 0-183095/183096`. The `Play
+   this take` control requested `GET /api/dubs/t65clive/takes/ml/seg_3_try2.wav`,
+   status 206 and `Content-Range: bytes 0-53815/53816`. The language read `ml` because
+   the stand-in payload carried the sample code.
+6. `go test -count=1 ./internal/api ./cmd/...` reports `ok` for both packages.
+   `npm --prefix web run check` reports 183 files, 0 errors and 0 warnings.
+
+Seam. `cmd/ajilamu/main.go` needed no change. It already passes `uploadDir` as
+`StorageDir`, the same root the run and re-render routes write takes into.
+
+Surprise. The route carries the language because a take basename is not unique across
+language tracks. The page names the active language, so the resolver finds the right work
+directory.
+
+`internal/api/takes_test.go` covers the served bytes, the range answer, three escapes,
+and an unwired storage root.

@@ -193,6 +193,7 @@ func NewServer(cfg *config.Config, options ServerOptions) (*Server, error) {
 	mux.Handle("POST /api/dubs/{id}/run/cancel", RunCancelHandler(runs))
 	mux.Handle("GET /api/dubs/{id}/events", EventsHandler(runs))
 	mux.Handle("POST /api/dubs/{id}/lines/{segment}/rerender", RerenderHandler(options.Rerender, options.Recorder, options.History, options.StorageDir, runs.active, logger))
+	mux.Handle("GET /api/dubs/{id}/takes/{language}/{name}", TakeAudioHandler(options.StorageDir, logger))
 	mux.Handle("POST /api/editor/commands/preview", NewCommandPreviewHandler())
 	mux.Handle("/api/", http.NotFoundHandler())
 	mux.Handle("/", frontend)
