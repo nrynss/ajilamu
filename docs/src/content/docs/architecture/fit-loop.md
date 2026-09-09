@@ -26,9 +26,9 @@ The repair evaluator chooses one of four deterministic actions based on the sign
 
 | Signed Delta | Action Taken | API Cost |
 | :--- | :--- | :--- |
-| **Within ±8%** | ffmpeg `atempo` adjusts speed without altering pitch. | $0.00 |
+| **Within +8% or -5%** | ffmpeg `atempo` adjusts speed without altering pitch. | $0.00 |
 | **Longer than +8%** | Gemini rewrites the translated phrase shorter. | Standard token rate |
-| **Shorter than -8%** | Gemini rewrites the translated phrase fuller. | Standard token rate |
+| **Shorter than -5%** | Gemini rewrites the translated phrase fuller. | Standard token rate |
 | **Fails 3 attempts** | System flags line for manual creator review in UI. | No additional retries |
 
 ---
@@ -40,12 +40,12 @@ The following diagram traces the evaluation flow for each take:
 <Mermaid code={`
 flowchart TD
     M[ffprobe Reads WAV Duration] --> C[Calculate Signed Delta\nDelta = t_measured - t_slot]
-    C --> T{Within ±8%?}
+    C --> T{Within +8% or -5%?}
     T -- Yes --> A[ffmpeg atempo\nSpeed Up / Slow Down]
     A --> S[Pass: Stage Take]
     T -- No --> AT{Attempt Count < 3?}
     AT -- Yes: Long (> +8%) --> R1[Gemini Rewrite Shorter]
-    AT -- Yes: Short (< -8%) --> R2[Gemini Rewrite Fuller]
+    AT -- Yes: Short (< -5%) --> R2[Gemini Rewrite Fuller]
     R1 --> SYN[Chirp 3 HD Re-Synthesize]
     R2 --> SYN
     SYN --> M

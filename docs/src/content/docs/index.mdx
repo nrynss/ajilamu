@@ -27,9 +27,9 @@ flowchart LR
     B --> C[Gemini 3.8 Flash\nTranslate to Slot]
     C --> D[Google Cloud Chirp 3 HD\nVoice Synthesis]
     D --> E[ffprobe\nMeasure Signed Delta]
-    E --> F{Fit Check\nWithin ±8%?}
-    F -- Yes: |Δ| ≤ 8% --> G[ffmpeg atempo\nTime Stretch]
-    F -- No: |Δ| > 8% --> H[Gemini Rewrite\nShorter / Fuller]
+    E --> F{Fit Check\nWithin +8% or -5%?}
+    F -- Yes: within budget --> G[ffmpeg atempo\nTime Stretch]
+    F -- No: beyond budget --> H[Gemini Rewrite\nShorter / Fuller]
     H --> D
     G --> I[ffmpeg Mux\nPreserve Audio Bed]
     I --> J[Dubbed Video]
