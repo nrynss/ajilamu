@@ -131,6 +131,95 @@ func TestValidateRejectsUnsafeReferencesAndLeavesTimelineUnchanged(t *testing.T)
 	}
 }
 
+// TestConfirmedOverlapAcceptsSpeakerChangeAndRejectsNewOverlap pins the P6
+// close round 4 finding. The boundary editor lets a creator confirm an overlap,
+// so an overlapping timeline is valid stored state. A command that moves no
+// boundary must still validate on either overlapping line. A command that
+// reaches further into another line must still fail.
+func TestConfirmedOverlapAcceptsSpeakerChangeAndRejectsNewOverlap(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutation Mutation
+		want     Segment
+	}{
+		{
+			name:     "speaker change on the line that overruns",
+			mutation: Mutation{Kind: ChangeSpeaker, SegmentID: 1, Speaker: "Suni"},
+			want:     Segment{ID: 1, StartMs: 0, EndMs: 4_500, Speaker: "Suni Williams"},
+		},
+		{
+			name:     "speaker change on the line that is overrun",
+			mutation: Mutation{Kind: ChangeSpeaker, SegmentID: 2, Speaker: "Mark"},
+			want:     Segment{ID: 2, StartMs: 4_000, EndMs: 8_000, Speaker: "Mark Vande Hei"},
+		},
+		{
+			name:     "shift that shrinks the confirmed overlap",
+			mutation: Mutation{Kind: Shift, SegmentID: 2, DeltaMs: 250, Anchor: Right},
+			want:     Segment{ID: 2, StartMs: 4_250, EndMs: 8_250, Speaker: "Suni Williams"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			timeline := overlappingTimeline()
+			if err := Validate(timeline, test.mutation); err != nil {
+				t.Fatalf("Validate(%#v): %v", test.mutation, err)
+			}
+			updated, err := Apply(timeline, test.mutation)
+			if err != nil {
+				t.Fatalf("Apply(%#v): %v", test.mutation, err)
+			}
+			index, ok := segmentAt(updated, test.mutation.SegmentID)
+			if !ok || updated.Segments[index] != test.want {
+				t.Fatalf("Apply(%#v) line %d = %#v, want %#v", test.mutation, test.mutation.SegmentID, updated.Segments[index], test.want)
+			}
+		})
+	}
+
+	rejected := []struct {
+		name     string
+		mutation Mutation
+	}{
+		{
+			name:     "move deeper into the overlapped line",
+			mutation: Mutation{Kind: Move, SegmentID: 1, PositionMs: 4_000, Anchor: Left},
+		},
+		{
+			name:     "shift a clear line onto the overlapping pair",
+			mutation: Mutation{Kind: Shift, SegmentID: 3, DeltaMs: 1_500, Anchor: Left},
+		},
+	}
+
+	for _, test := range rejected {
+		t.Run(test.name, func(t *testing.T) {
+			timeline := overlappingTimeline()
+			if err := Validate(timeline, test.mutation); err == nil {
+				t.Fatalf("Validate(%#v) succeeded on a new overlap", test.mutation)
+			}
+			if _, err := Apply(timeline, test.mutation); err == nil {
+				t.Fatalf("Apply(%#v) succeeded on a new overlap", test.mutation)
+			}
+			if !reflect.DeepEqual(timeline, overlappingTimeline()) {
+				t.Fatalf("Apply(%#v) changed the supplied timeline: %#v", test.mutation, timeline)
+			}
+		})
+	}
+}
+
+// overlappingTimeline reproduces the state the close review measured. Line 1
+// runs to 4.500s while line 2 starts at 4.000s, so the two share 500ms. Line 3
+// sits clear of both.
+func overlappingTimeline() Timeline {
+	return Timeline{
+		DurationMs: 20_000,
+		Segments: []Segment{
+			{ID: 1, StartMs: 0, EndMs: 4_500, Speaker: "Mark Vande Hei"},
+			{ID: 2, StartMs: 4_000, EndMs: 8_000, Speaker: "Suni Williams"},
+			{ID: 3, StartMs: 9_000, EndMs: 10_000, Speaker: "Maya"},
+		},
+	}
+}
+
 func commandTimeline() Timeline {
 	return Timeline{
 		DurationMs: 20_000,

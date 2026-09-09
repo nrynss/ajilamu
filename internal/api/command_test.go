@@ -69,6 +69,40 @@ func TestCommandPreviewHandlerRejectsUnsafeTimelineMutations(t *testing.T) {
 	}
 }
 
+// TestCommandPreviewHandlerAllowsCommandsOnAConfirmedOverlap pins the P6 close
+// round 4 finding at the route. The reviewer confirmed an overlap in the
+// boundary editor and then received 422 for a speaker-only command on either
+// overlapping line. A command that moves no boundary must now preview, and a
+// command that reaches into another line must still fail.
+func TestCommandPreviewHandlerAllowsCommandsOnAConfirmedOverlap(t *testing.T) {
+	response := previewCommandRequest(t, CommandPreviewRequest{
+		Command:  "change speaker for line 2 to Mark.",
+		Timeline: confirmedOverlapTimeline(),
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("speaker status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var preview CommandPreview
+	if err := json.NewDecoder(response.Body).Decode(&preview); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	want := CommandPreviewSegment{ID: 2, StartMs: 4_000, EndMs: 8_000, DurationMs: 4_000, Speaker: "Mark Vande Hei"}
+	if preview.Segment != want {
+		t.Fatalf("segment = %#v, want the unchanged bounds with the new speaker", preview.Segment)
+	}
+
+	response = previewCommandRequest(t, CommandPreviewRequest{
+		Command:  "shift line 3 left by 1500ms.",
+		Timeline: confirmedOverlapTimeline(),
+	})
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("new overlap status = %d, want %d: %s", response.Code, http.StatusUnprocessableEntity, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "would overlap line 2") {
+		t.Fatalf("body = %q, want the overlap sentence for line 2", response.Body.String())
+	}
+}
+
 func TestCommandPreviewHandlerIsMountedOnTheServer(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<main>fixture workspace</main>"), 0o644); err != nil {
@@ -133,6 +167,19 @@ func previewCommandRequest(t *testing.T, input CommandPreviewRequest) *httptest.
 		bytes.NewReader(body),
 	))
 	return response
+}
+
+// confirmedOverlapTimeline is the state the close review saved through the
+// boundary editor. Line 1 runs to 4.500s while line 2 starts at 4.000s.
+func confirmedOverlapTimeline() editorcommand.Timeline {
+	return editorcommand.Timeline{
+		DurationMs: 20_000,
+		Segments: []editorcommand.Segment{
+			{ID: 1, StartMs: 0, EndMs: 4_500, Speaker: "Mark Vande Hei"},
+			{ID: 2, StartMs: 4_000, EndMs: 8_000, Speaker: "Suni Williams"},
+			{ID: 3, StartMs: 9_000, EndMs: 10_000, Speaker: "Maya"},
+		},
+	}
 }
 
 func commandPreviewTimeline() editorcommand.Timeline {

@@ -80,6 +80,10 @@ func Parse(input string) (Mutation, error) {
 }
 
 // Validate rejects references and values that cannot safely change timeline.
+//
+// It rejects an overlap the mutation would introduce or deepen. It accepts an
+// overlap the stored timeline already holds, because the creator confirms one
+// through the boundary editor and the result is valid stored state.
 func Validate(timeline Timeline, mutation Mutation) error {
 	if err := validateTimeline(timeline); err != nil {
 		return err
@@ -425,16 +429,35 @@ func mutate(timeline Timeline, index int, mutation Mutation) Segment {
 	return segment
 }
 
+// overlapping returns the first line the candidate would newly overlap or
+// overlap more deeply than the stored segment already does.
+//
+// The comparison runs per line rather than against a flat rule. A speaker change
+// moves no boundary, so every comparison holds equal and the mutation passes. A
+// move or a shift that reaches into another line grows one comparison and fails.
+// A mutation that shrinks a confirmed overlap also passes.
 func overlapping(segments []Segment, current int, candidate Segment) (Segment, bool) {
+	stored := segments[current]
 	for index, other := range segments {
 		if index == current {
 			continue
 		}
-		if candidate.StartMs < other.EndMs && candidate.EndMs > other.StartMs {
+		if overlapMs(candidate, other) > overlapMs(stored, other) {
 			return other, true
 		}
 	}
 	return Segment{}, false
+}
+
+// overlapMs returns the milliseconds two slots share. Slots that only touch at a
+// boundary share nothing, so the function returns zero for them.
+func overlapMs(first, second Segment) int64 {
+	start := max(first.StartMs, second.StartMs)
+	end := min(first.EndMs, second.EndMs)
+	if end <= start {
+		return 0
+	}
+	return end - start
 }
 
 func formatTime(milliseconds int64) string {

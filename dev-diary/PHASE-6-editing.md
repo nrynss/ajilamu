@@ -350,6 +350,78 @@ mutates the timeline directly.
 
 ---
 
+### T6.6c: Record agent charges in the ledger ★
+```yaml
+requires:   T6.6a, T6.6b, T4.1
+fixture-ok: no
+size:       M · frontier
+owns:       sql/schema.sql,
+            internal/ledger/charges.go, internal/ledger/charges_test.go,
+            internal/ledger/takes.go, internal/ledger/takes_test.go,
+            internal/ledger/workspace.go, internal/ledger/workspace_test.go,
+            internal/api/agent.go, internal/api/agent_test.go,
+            internal/api/server.go, internal/api/server_test.go,
+            internal/api/wire.go,
+            cmd/ajilamu/main.go, cmd/ajilamu/main_test.go
+status:     claimed:gpt-5.6-sol
+```
+The P6 close round 4 filed this. An agent turn calls Gemini and bills tokens, and no durable
+writer records that spend. The project running total therefore omits every agent call.
+
+T6.6 added `cost.ChargeAgent` and T6.6a returned the measured charges on the wire. Neither
+task reached storage. T6.6a scoped ledger recording out on purpose, and its text says so.
+
+#### What is broken today
+
+`charges_raw.kind` is `Enum8('segment' = 1, 'translate' = 2, 'synthesize' = 3)`. An insert of
+kind `agent` fails with ClickHouse code 691. The close review measured that failure directly.
+
+`internal/ledger/takes.go` holds the only charge writer, and it hangs every row off a take.
+Its switch maps three kinds and drops an unknown one silently. The T6.6 handoff recorded that
+gap and named this task's shape.
+
+`selectRunningTotal` in `internal/ledger/workspace.go` counts segment, translate and synthesize
+calls. Its `covers` sentence names those three, so the displayed number does not lie today. UI
+rule 7 still asks for every billed call once, so the number stays incomplete.
+
+#### The read and write split does not move
+
+The agent package stays read-only. `internal/agent` never imports the ledger and never composes
+SQL that inserts. The `mcp_readonly` grant stays SELECT only, and the container keeps its
+`CLICKHOUSE_ALLOW_WRITE_ACCESS=false` flag.
+
+Ledger writes stay on `internal/ledger`, the single writer. The route in `internal/api/agent.go`
+gains a recorder seam in the style `internal/api` already uses. `cmd/ajilamu/main.go` adapts the
+ledger client onto that seam. A server with no ledger keeps answering the route and records
+nothing, exactly as a server with no MCP settings keeps serving the workspace.
+
+#### An agent turn owns no take
+
+A charge row keys by take, and an agent turn renders nothing. Use the whole-pass shape the
+segmentation charge already uses. `take_id` defaults to the empty string and `segment_index`
+defaults to `-1`, so the columns accept a turn with no take.
+
+Two identical turns collide. `charges_raw` is a `ReplacingMergeTree` whose `event_key` hashes
+the dub, language, commit, segment index, attempt, kind, provider, unit, units and unit price.
+Two turns that report the same token counts against one commit therefore produce one row and
+collapse into a single charge. Give each turn a distinct identity before the write, and pin the
+count with two identical turns rather than two different ones.
+
+#### The total must move too
+
+Extend `selectRunningTotal` to count agent turns and extend the `covers` sentence to name them.
+`WholePassCharges` filters `kind = 'segment'`, so decide whether an agent charge belongs in that
+list or in a channel of its own. `web/src/lib/tabs/DetailsTab.svelte` already labels the kind as
+`Editor agent turn`, so no frontend task blocks this one.
+
+**Done when:** A fresh database built from `sql/schema.sql` accepts a charge row of kind `agent`.
+One agent turn through `POST /api/dubs/{id}/agent` writes its measured charges to `charges_raw`,
+read back by SQL. The running total for that dub grows by the turn's nanodollars, and the
+`covers` sentence names the agent calls. Two identical turns record two charges rather than one.
+`internal/agent` still imports no writer, and the `mcp_readonly` grant still refuses an INSERT.
+
+---
+
 ### T6.7: Record boundary and command edits as commits ★
 ```yaml
 requires:   T6.1, T6.4, T6.5c, T4.5
@@ -424,7 +496,9 @@ A trailing period is optional. `0:0005` is five padded seconds, so 5000ms.
 Durations end in `ms` or `s`. `0.5s` is 500ms.
 
 `Validate` then `Apply` do the arithmetic. They reject unknown lines, unknown or
-ambiguous speakers, non-positive durations, out-of-timeline bounds, and overlaps.
+ambiguous speakers, non-positive durations, out-of-timeline bounds, and any overlap
+the command would introduce or deepen. A creator may confirm an overlap in the
+boundary editor, so `Validate` accepts an overlap the stored timeline already holds.
 `Describe` is the confirmation sentence. The browser must show it before it writes
 the Go-derived segment.
 
@@ -972,3 +1046,38 @@ One observation sits with the next P6 close. Agent spend never reaches the proje
 running total, because T6.6a scoped ledger recording out. The `covers` sentence
 still names only segment, translation and render calls, so the meter does not lie.
 The close should weigh a new task.
+
+The P6 close round 4 weighed it and filed T6.6c. That task extends the schema enum,
+the durable charge writer and the running total. The agent stays read-only.
+
+### P6 close round 4 remediation 2026-09-09
+
+The close review filed two M findings. Both are closed.
+
+**The command validator now accepts a confirmed overlap.** T6.7 lets a creator save an
+overlap through the boundary editor with `allow_overlap`, so an overlapping timeline is
+valid stored state. `command.Validate` rejected every command on either overlapping line,
+because it tested the candidate against a flat no-overlap rule. A speaker change moves no
+boundary, so the creator lost the command path on a state the product allows.
+
+`overlapping` in `internal/command/parse.go` now compares per line. It measures the
+milliseconds the candidate shares with each other line and the milliseconds the stored
+segment already shares with that line. It fails only where the candidate number is larger.
+
+Three consequences follow. A speaker change validates on either overlapping line, because
+every comparison holds equal. A move or a shift that reaches into another line still fails.
+A command that shrinks a confirmed overlap now validates, which gives the creator a way to
+repair one from the bar.
+
+Measured by mutation on 2026-09-09. Restoring the flat rule as
+`overlapMs(candidate, other) > 0` makes the parser test
+`TestConfirmedOverlapAcceptsSpeakerChangeAndRejectsNewOverlap` fail with
+`line 1 would overlap line 2`. It also makes
+`TestCommandPreviewHandlerAllowsCommandsOnAConfirmedOverlap` fail with the route answering
+422 and the sentence `line 2 would overlap line 1`, which is the sentence Chrome received
+in the close review. `go test -count=1 ./internal/command ./internal/api` reports ok for
+both packages with the fix in place.
+
+**Agent charges became T6.6c rather than a silent feature.** The remediation filed the task
+and wrote no writer code. `sql/schema.sql` still rejects a charge of kind `agent`, and the
+running total still omits every turn, until T6.6c lands.
