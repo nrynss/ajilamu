@@ -331,7 +331,7 @@ requires:   T6.6a, T6.4, T5.5a
 fixture-ok: yes
 size:       S · mid
 owns:       web/src/lib/edit/CommandBar.svelte, web/src/routes/d/[id]/+page.svelte
-status:     not-started
+status:     done
 ```
 The command bar parses instructions through `POST /api/editor/commands/preview`. Text the
 parser rejects stops at the 422 sentence. Give that text a second path. When the parser
@@ -956,3 +956,19 @@ The workspace page is free. T6.6b can start.
 Two notes sit outside this task. The fixture page still posts `/api/dubs/fixture/run`.
 The four sentences also move a picture-area collapse that base already hits at a
 shorter viewport. Neither is a T6.7a finding.
+
+### T6.6b landed 2026-09-09
+
+A parser 422 now offers to ask the editor agent. The bar shows the dollar rate card
+before the turn and the measured charge after it. The page posts the rejected text
+to `POST /api/dubs/{id}/agent`. An answer that proposes a command re-enters the
+preview path unchanged. The agent writes nothing.
+
+Fresh review `adversarial-review/t6.6b-round2.md` approves with zero findings at
+every severity. Round 1 H1, M1 and L1 have zero residue. T6.6a and T6.7a keep
+zero residue.
+
+One observation sits with the next P6 close. Agent spend never reaches the project
+running total, because T6.6a scoped ledger recording out. The `covers` sentence
+still names only segment, translation and render calls, so the meter does not lie.
+The close should weigh a new task.

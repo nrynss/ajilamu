@@ -11,7 +11,7 @@ Where a phase document and specification conflict, the specification wins. Recor
 
 Each document provides complete context for an engineer starting cold.
 
-**Current status:** Phases P0 to P7 are complete and reviewed. P8 Ship has not started. T6.6b is the last open follow-up task.
+**Current status:** Follow-up tasks T5.5a, T6.6a, T6.6b, T6.7a and T7.3d have landed. P5, P6 and P7 each need a new close review. P8 Ship has not started.
 
 ---
 
@@ -193,7 +193,7 @@ Protect this core flow above auxiliary features.
 | P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
 | P4 | 8 / 8 | Complete. Close review approved with zero residue. See [p4-close-round2.md](adversarial-review/p4-close-round2.md). |
 | P5 | 8 / 8 | All tasks landed. T5.5a passed fresh review. A new phase-close review remains before declaring P5 complete. |
-| P6 | 12 / 13 | T5.5a, T6.6a and T6.7a landed. T6.6b is unstarted and can take the workspace page. |
+| P6 | 13 / 13 | All tasks landed. T6.6b passed fresh review. A new phase-close review remains before declaring P6 complete. |
 | P7 | 21 / 21 | All tasks landed. T7.3d passed fresh review. A new phase-close review remains before declaring P7 complete. |
 | P8 | 0 / 4 | Not started. |
 
@@ -201,5 +201,5 @@ Protect this core flow above auxiliary features.
 
 ### Follow-up wave update 2026-09-09
 
-T5.5a, T6.6a, T6.7a and T7.3d landed after fresh reviews approved with zero findings.
-T6.6b is unstarted. The workspace page is free.
+T5.5a, T6.6a, T6.6b, T6.7a and T7.3d landed after fresh reviews approved with zero
+findings. P5, P6 and P7 each still need a new close review.

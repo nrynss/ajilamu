@@ -13,6 +13,7 @@
   import Speaker, { type SpeakerChange, type SpeakerChangeResult } from "$lib/edit/Speaker.svelte"
   import Text, { type TextRerenderReply } from "$lib/edit/Text.svelte"
   import CommandBar, {
+    type AgentTurn,
     type CommandIntent,
     type CommandParseFailure
   } from "$lib/edit/CommandBar.svelte"
@@ -25,7 +26,7 @@
   import { PanelState, ProcessingBanner, type PanelViewState, type ProcessingStep } from "$lib/states"
   import { createShortcutManager } from "$lib/shortcuts"
   import Timeline from "$lib/Timeline.svelte"
-  import type { Charge, Dub, Fit, ProgressEvent, RepairKind, Segment, Take } from "$lib/types"
+  import type { AgentResponse, Charge, Dub, Fit, ProgressEvent, RepairKind, Segment, Take } from "$lib/types"
 
   type SelectionSource = "user" | "playhead"
 
@@ -571,7 +572,12 @@
           }
         })
       })
-      if (!response.ok) return { error: await commandPreviewError(response) }
+      if (!response.ok) {
+        return {
+          error: await commandPreviewError(response),
+          canAskAgent: response.status === 422
+        }
+      }
       const result = await response.json() as CommandPreview
       if (!isCommandPreview(result, command)) return { error: "The command preview was incomplete. No timeline change was made." }
       commandPreview = result
@@ -579,6 +585,51 @@
     } catch {
       return { error: "We could not validate that command. No timeline change was made." }
     }
+  }
+
+  async function askEditorAgent(question: string): Promise<AgentTurn | CommandParseFailure> {
+    if (readOnly) return { error: fixtureReadOnlySentence }
+    if (!dub) return { error: "This timeline is not ready for the editor agent." }
+
+    try {
+      const response = await fetch(`/api/dubs/${encodeURIComponent(projectID)}/agent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question })
+      })
+      if (!response.ok) return { error: await agentFailureSentence(response) }
+      const payload: unknown = await response.json().catch(() => undefined)
+      if (!isAgentResponse(payload)) {
+        return { error: "The editor agent answer was incomplete. No timeline change was made." }
+      }
+      return {
+        answer: payload.answer,
+        totalNanodollars: payload.total_nanodollars
+      }
+    } catch {
+      return { error: "We could not reach the editor agent. No timeline change was made." }
+    }
+  }
+
+  async function agentFailureSentence(response: Response): Promise<string> {
+    try {
+      const body = (await response.json()) as { error?: unknown }
+      if (typeof body.error === "string" && body.error.length > 0) return body.error
+    } catch {
+      // The failure body was not JSON, so the sentence below stands.
+    }
+    return `The editor agent could not answer (${response.status}).`
+  }
+
+  function isAgentResponse(value: unknown): value is AgentResponse {
+    if (typeof value !== "object" || value === null) return false
+    const payload = value as Partial<AgentResponse>
+    return typeof payload.answer === "string"
+      && payload.answer.length > 0
+      && Array.isArray(payload.charges)
+      && typeof payload.total_nanodollars === "number"
+      && Number.isSafeInteger(payload.total_nanodollars)
+      && payload.total_nanodollars >= 0
   }
 
   async function confirmCommand(intent: CommandIntent): Promise<void> {
@@ -939,7 +990,7 @@
         <section class="editor" aria-label="Timeline editor">
           <fieldset class="edit-control" disabled={readOnly} aria-label="Editor command" aria-describedby={readOnly ? "command-read-only" : undefined}>
             {#if readOnly}<p class="read-only-note" id="command-read-only">{fixtureReadOnlySentence}</p>{/if}
-            <CommandBar bind:this={commandBar} parse={previewCommand} onconfirm={confirmCommand} />
+            <CommandBar bind:this={commandBar} parse={previewCommand} askagent={askEditorAgent} onconfirm={confirmCommand} />
           </fieldset>
           {#if selectedRow}
             <div class="editor-panels">
