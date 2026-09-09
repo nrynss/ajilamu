@@ -151,6 +151,5 @@ We would rather you read this than find it yourself.
 
 ## See it work
 
-The demo runbook shows the two shots that make the honest-instrument argument visible
-(`docs/demo-runbook.md`). A length bar catches a take that runs too short. The ledger reports
-what one line cost.
+The demo shows the two shots that make the honest-instrument argument visible. A length bar
+catches a take that runs too short. The ledger reports what one line cost.
