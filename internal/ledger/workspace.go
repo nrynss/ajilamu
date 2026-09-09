@@ -40,9 +40,12 @@ const selectWorkspaceTakeCharges = "SELECT language, commit_id, segment_index, a
 // The shipped writer attributes segmentation to the first rendered take even
 // though the call serves the whole dub. Agent calls own no take.
 //
-// Agent rows collapse into one display charge. The wire has no turn identity,
-// and the Details tab keys these rows by kind and units.
-const selectWholePassCharges = "SELECT commit_id, kind, unit, units, unit_price_nanodollars, total_nanodollars FROM (SELECT commit_id, toString(kind) AS kind, toString(unit) AS unit, toInt64(round(units)) AS units, toInt64(round(unit_price_usd * 1000000000)) AS unit_price_nanodollars, toInt64(round(cost_usd * 1000000000)) AS total_nanodollars FROM charges WHERE dub_id = {dub_id:String} AND kind = 'segment' UNION ALL SELECT '' AS commit_id, 'agent' AS kind, 'turns' AS unit, toInt64(uniqExact(turn_id)) AS units, toInt64(0) AS unit_price_nanodollars, toInt64(sum(toInt64(round(cost_usd * 1000000000)))) AS total_nanodollars FROM charges WHERE dub_id = {dub_id:String} AND kind = 'agent' HAVING count() > 0) ORDER BY commit_id ASC, kind ASC, unit ASC FORMAT JSONEachRow"
+// Agent rows collapse into one display charge. The wire has no turn identity.
+// The Details tab keys these rows by kind, units, unit price, total and
+// position, so two rows that agree on kind and units stay distinct.
+//
+// The agent filter names charges.kind so the 'agent' alias cannot shadow it.
+const selectWholePassCharges = "SELECT commit_id, kind, unit, units, unit_price_nanodollars, total_nanodollars FROM (SELECT commit_id, toString(kind) AS kind, toString(unit) AS unit, toInt64(round(units)) AS units, toInt64(round(unit_price_usd * 1000000000)) AS unit_price_nanodollars, toInt64(round(cost_usd * 1000000000)) AS total_nanodollars FROM charges WHERE dub_id = {dub_id:String} AND kind = 'segment' UNION ALL SELECT '' AS commit_id, 'agent' AS kind, 'turns' AS unit, toInt64(uniqExact(turn_id)) AS units, toInt64(0) AS unit_price_nanodollars, toInt64(sum(toInt64(round(cost_usd * 1000000000)))) AS total_nanodollars FROM charges WHERE dub_id = {dub_id:String} AND charges.kind = 'agent' HAVING count() > 0) ORDER BY commit_id ASC, kind ASC, unit ASC FORMAT JSONEachRow"
 
 // selectRunningTotal sums every charge for one dub in exact nanodollars.
 //
@@ -169,7 +172,7 @@ func (c *Client) WorkspaceTakes(ctx context.Context, dubID string) ([]api.Langua
 }
 
 // WholePassCharges returns the charges that no single take owns, ordered by
-// commit, segment, kind, then unit. Each charge carries a nil segment id and an
+// commit, kind, then unit. Each charge carries a nil segment id and an
 // empty take file, which is how the wire marks whole-pass work.
 func (c *Client) WholePassCharges(ctx context.Context, dubID string) ([]api.Charge, error) {
 	if err := validateWorkspaceDub(dubID); err != nil {

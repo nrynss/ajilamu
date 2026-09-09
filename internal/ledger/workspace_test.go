@@ -424,8 +424,8 @@ func TestWorkspaceQueriesBindAndShape(t *testing.T) {
 		t.Error("itemized charge statement does not exclude the whole-pass kind")
 	}
 	if !strings.Contains(selectWholePassCharges, "kind = 'segment'") ||
-		!strings.Contains(selectWholePassCharges, "kind = 'agent'") {
-		t.Error("whole-pass statement does not select both whole-pass kinds")
+		!strings.Contains(selectWholePassCharges, "charges.kind = 'agent'") {
+		t.Error("whole-pass statement does not select both whole-pass kinds by their real column")
 	}
 	if !strings.Contains(selectWholePassCharges, "uniqExact(turn_id)") ||
 		!strings.Contains(selectWholePassCharges, "HAVING count() > 0") {
@@ -441,11 +441,46 @@ func TestWorkspaceQueriesBindAndShape(t *testing.T) {
 	}
 }
 
+// TestWholePassChargesFoldsIdenticalAgentTurns derives the fold from the
+// itemized agent rows the writer records, then drives the client row mapping.
+// The expected units and total come from the seed rather than a canned number.
 func TestWholePassChargesFoldsIdenticalAgentTurns(t *testing.T) {
 	t.Parallel()
 
+	// The writer records one prompt row and one candidate row per agent turn,
+	// so two identical turns seed four itemized rows.
+	type agentUnit struct {
+		turn    string
+		units   int64
+		priceNs int64
+	}
+	seed := []agentUnit{
+		{turn: "turn-1", units: 1200, priceNs: 150},
+		{turn: "turn-1", units: 340, priceNs: 600},
+		{turn: "turn-2", units: 1200, priceNs: 150},
+		{turn: "turn-2", units: 340, priceNs: 600},
+	}
+	turns := map[string]bool{}
+	var totalNs int64
+	for _, unit := range seed {
+		turns[unit.turn] = true
+		totalNs += unit.units * unit.priceNs
+	}
+	if len(turns) != 2 || totalNs != 768000 {
+		t.Fatalf("seed folds to %d turns and %d nanodollars, want 2 and 768000", len(turns), totalNs)
+	}
+
+	folded, err := json.Marshal(wholePassChargeRow{
+		Kind:             "agent",
+		Unit:             "turns",
+		Units:            int64(len(turns)),
+		TotalNanodollars: totalNs,
+	})
+	if err != nil {
+		t.Fatalf("marshal folded row: %v", err)
+	}
 	client, _ := workspaceStandIn(t, map[string]string{
-		selectWholePassCharges: `{"commit_id":"","kind":"agent","unit":"turns","units":2,"unit_price_nanodollars":0,"total_nanodollars":768000}` + "\n",
+		selectWholePassCharges: string(folded) + "\n",
 	})
 	charges, err := client.WholePassCharges(context.Background(), fixtureDub)
 	if err != nil {
@@ -454,9 +489,12 @@ func TestWholePassChargesFoldsIdenticalAgentTurns(t *testing.T) {
 	if len(charges) != 1 {
 		t.Fatalf("whole-pass charges = %+v, want one folded agent row", charges)
 	}
-	if charges[0].Kind != "agent" || charges[0].Units != 2 ||
-		charges[0].TotalNanodollars != cost.Price(768000) {
-		t.Errorf("folded agent charge = %+v", charges[0])
+	if charges[0].Kind != "agent" || charges[0].Units != int64(len(turns)) ||
+		charges[0].UnitPriceNanodollars != 0 || charges[0].TotalNanodollars != cost.Price(totalNs) {
+		t.Errorf("folded agent charge = %+v, want agent with %d turns and %d nanodollars", charges[0], len(turns), totalNs)
+	}
+	if charges[0].SegmentID != nil || charges[0].TakeFile != "" {
+		t.Errorf("folded agent charge carries take identity: %+v", charges[0])
 	}
 }
 

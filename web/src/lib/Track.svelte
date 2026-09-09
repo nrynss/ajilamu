@@ -76,7 +76,7 @@
         {/if}
       </div>
 
-      {#each takes.slice(0, -1) as ghost, index (ghost.file)}
+      {#each takes.slice(0, -1) as ghost, index (`${ghost.file}-${index}`)}
         <div
           class="ghost-take"
           data-attempt={ghost.attempt}

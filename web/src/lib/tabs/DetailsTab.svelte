@@ -86,8 +86,8 @@
 
     <h3>What this line cost</h3>
     <ul class="charges">
-      {#each line?.takes ?? [] as take (take.file)}
-        {#each take.charges as charge (`${take.file}-${charge.kind}`)}
+      {#each line?.takes ?? [] as take, takeIndex (`${take.file}-${takeIndex}`)}
+        {#each take.charges as charge, chargeIndex (`${take.file}-${charge.kind}-${charge.units}-${charge.unit_price_nanodollars}-${charge.total_nanodollars}-${chargeIndex}`)}
           <li>
             <span>{chargeName(charge)} for try <span class="numeric">{take.attempt}</span></span>
             <span class="numeric">{formatMoney(charge.total_nanodollars)}</span>
@@ -106,7 +106,7 @@
     <p>{total.covers}</p>
     {#if projectCharges.length > 0}
       <ul class="charges project-charges">
-        {#each projectCharges as charge (`project-${charge.kind}-${charge.units}`)}
+        {#each projectCharges as charge, chargeIndex (`project-${charge.kind}-${charge.units}-${charge.unit_price_nanodollars}-${charge.total_nanodollars}-${chargeIndex}`)}
           <li><span>{chargeName(charge)}</span><span class="numeric">{formatMoney(charge.total_nanodollars)}</span></li>
         {/each}
       </ul>

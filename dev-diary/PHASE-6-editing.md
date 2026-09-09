@@ -362,8 +362,13 @@ owns:       sql/schema.sql,
             internal/api/agent.go, internal/api/agent_test.go,
             internal/api/server.go, internal/api/server_test.go,
             internal/api/wire.go,
+            internal/ledger/workspace_live_test.go,
+            web/src/lib/tabs/DetailsTab.svelte,
+            web/src/routes/d/[id]/+page.svelte,
+            web/src/lib/edit/Speaker.svelte,
+            web/src/lib/Track.svelte,
             cmd/ajilamu/main.go, cmd/ajilamu/main_test.go
-status:     claimed:gpt-5.6-sol
+status:     done
 ```
 The P6 close round 4 filed this. An agent turn calls Gemini and bills tokens, and no durable
 writer records that spend. The project running total therefore omits every agent call.
@@ -1081,3 +1086,50 @@ both packages with the fix in place.
 **Agent charges became T6.6c rather than a silent feature.** The remediation filed the task
 and wrote no writer code. `sql/schema.sql` still rejects a charge of kind `agent`, and the
 running total still omits every turn, until T6.6c lands.
+
+### T6.6c owns expansion 2026-09-09
+
+The T6.6c round 2 review filed a C against `web/src/lib/tabs/DetailsTab.svelte`. Two charges
+from one translate call share a key, so Svelte throws `each_key_duplicate` and the Details
+panel renders nothing on any dub with a translation. That blocks the T6.6c exit criterion,
+which needs the panel to render with the agent charges present.
+
+The task also gains `internal/ledger/workspace_live_test.go`. The round 2 review found the
+shipped tests cannot fail on the whole-pass SQL, because they feed the client a canned
+payload. The live test executes the statement against ClickHouse behind the `live` build tag.
+
+T5.5 owns `DetailsTab.svelte` and is done, so the expansion collides with no concurrent task.
+
+### T6.6c owns expansion, round 3 2026-09-09
+
+The round 3 review filed an H against four keyed take lists. A second run of a dub reuses the
+per-dub work directory and the same take file, so one line can hold two takes with one
+`audio_path`. Every keyed each on `take.file` then throws `each_key_duplicate`, and the
+workspace page renders no rail. The fix touches the page, `Speaker.svelte` and `Track.svelte`,
+so T6.6c gains those three paths.
+
+Phase 5 and T6.7 own those files and all are done, so the expansion collides with no
+concurrent task.
+
+### T6.6c landed 2026-09-09
+
+T6.6c landed after four review rounds. Round 4 filed one stale doc comment, which the
+orchestrator closed directly under the L exemption. Rounds 1 to 3 each filed real defects and
+every one is fixed.
+
+**The shipped behaviour is complete.** `sql/schema.sql` accepts kind `agent`. The agent route
+journals every charge row to the durable queue before its first flush, then the reconciler
+writes them through the ledger client. `selectRunningTotal` counts agent calls by
+`(turn_id, call_index)` and the `covers` sentence names them. `selectWholePassCharges` folds
+the agent rows into one display charge with the true units and total.
+
+**Two defects surprised the loop.** Round 1 removed a duplicate project charge by folding
+agent rows in SQL. The fold filtered an alias instead of the column, so it summed the whole
+dub. Round 2 found it. Round 3 then found four keyed take lists sharing one key when a second
+run reused a take file. No program log showed either defect.
+
+**Three facts spare the next agent the same work.** A SELECT alias named `kind` shadows the
+column in the same statement's WHERE, because `prefer_column_name_to_alias` defaults to 0. The
+live fold test behind `//go:build live` pins the arithmetic against a real ClickHouse. A second
+run of a dub reuses the per-dub work directory, so two take rows can share one `audio_path`,
+and every keyed take list appends the array position to stay unique.

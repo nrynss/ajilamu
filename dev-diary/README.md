@@ -11,7 +11,7 @@ Where a phase document and specification conflict, the specification wins. Recor
 
 Each document provides complete context for an engineer starting cold.
 
-**Current status:** Follow-up tasks T5.5a, T6.6a, T6.6b, T6.7a and T7.3d have landed. T6.6c is in the tree and awaits re-review. P5 close review approved with zero residue. P7 close review approved. P8 Ship has not started.
+**Current status:** T6.6c has landed after four review rounds. P5 close review approved with zero residue. P7 close review approved. The P6 close review is next. P8 Ship has not started.
 
 ---
 
@@ -193,7 +193,7 @@ Protect this core flow above auxiliary features.
 | P3 | 5 / 5 | Complete. Close review approved with zero residue. See [p3-close-round1.md](adversarial-review/p3-close-round1.md). |
 | P4 | 8 / 8 | Complete. Close review approved with zero residue. See [p4-close-round2.md](adversarial-review/p4-close-round2.md). |
 | P5 | 8 / 8 | Complete. Close review approved with zero residue. See [p5-close-round3.md](adversarial-review/p5-close-round3.md). |
-| P6 | 13 / 14 | T6.6c writer is in the tree and awaits re-review. Close round 5 approved the overlap fix. |
+| P6 | 14 / 14 | All tasks landed. T6.6c landed after four review rounds. Close review pending. |
 | P7 | 21 / 21 | Complete. Close review approved with zero residue. See [p7-close-round6.md](adversarial-review/p7-close-round6.md). |
 | P8 | 0 / 4 | Not started. |
 
@@ -204,5 +204,6 @@ Protect this core flow above auxiliary features.
 T5.5a, T6.6a, T6.6b, T6.7a and T7.3d landed after fresh reviews approved with zero
 findings. P7 close review approved. P5 close review approved with zero residue.
 
-The P6 close round 4 filed T6.6c from its second finding. The writer and the round 1
-remediations are in the tree. The task stays open because the re-review was stopped.
+T6.6c landed on 2026-09-09 after four review rounds. Round 1 filed a duplicate project
+charge, round 2 a whole-dub fold, round 3 four duplicate take keys, and round 4 one stale
+comment. The P6 close review is next.

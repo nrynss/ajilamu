@@ -1037,7 +1037,7 @@
               <p class="label">Take history</p>
               {#if takes.length > 0}
                 <div class="take-list">
-                  {#each takes as take, index (take.file)}
+                  {#each takes as take, index (`${take.file}-${index}`)}
                     {@const isActive = index === takes.length - 1}
                     <button
                       type="button"

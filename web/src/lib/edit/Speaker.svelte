@@ -162,7 +162,7 @@
   {#if takes.length > 0}
     <p class="takes">
       Takes on this line:
-      {#each takes as take (take.file)}
+      {#each takes as take, takeIndex (`${take.file}-${takeIndex}`)}
         <span class="numeric" data-take={take.file}>{take.file}</span>
       {/each}
     </p>
