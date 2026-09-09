@@ -921,20 +921,6 @@ because nothing in the server constructs it. T6.6b reaches that route from the c
 T6.7a makes the fixture workspace read-only, which the P6 close round 3 notes had recorded.
 No code changed with this filing.
 
-### Wave handoff 2026-09-09
-
-T6.6a implementation exists in the working tree. The implementer reported passing offline route integration and startup gating checks.
-The workspace spend cap stopped the worker before its final handoff. No fresh review has run.
-The accepted contract adds `internal/agent/route_test.go` for offline integration without importing ADK outside that package.
-See `adversarial-review/t6.6a-contract.md`.
-
-T6.7a implementation exists in the workspace page. Browser measurements covered all fixture aliases and observed zero POST requests after editing attempts.
-A mocked real-project response preserved the boundary request path. A fresh reviewer must still verify a real ledger commit.
-
-The spend cap blocks fresh reviews for both tasks. Neither task has landed.
-T6.6b remains unstarted until T6.6a, T5.5a and T6.7a have approved commits.
-Resume the required review loops with fresh agents.
-
 ### T6.7a validation constraint 2026-09-09
 
 The user declined pulling or running a local ClickHouse container. Keep the real-ledger acceptance check blocked.
@@ -950,3 +936,6 @@ The route never writes to the ledger. Wire examples and TypeScript mirror the na
 Fresh review `adversarial-review/t6.6a-round1.md` approves with zero findings at every severity.
 An independent real-agent HTTP probe measured two model calls, one MCP read and zero writer calls.
 Its token arithmetic reconciled to 16650 nanodollars. Startup probes and scoped Go and Node 26 checks passed.
+
+T6.6b remains unstarted until T6.7a passes its required durable-ledger acceptance check and
+lands. That task retains ownership of the shared workspace page.

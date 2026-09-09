@@ -194,17 +194,12 @@ Two leftovers sit outside this task. T5.2 still needs a per-language mix before 
 A grounding review filed T5.5a after the P5 close. The T6.6 handoff had recorded the charge
 label gap and named T5.5 as the owner of `web/src/lib/tabs/`. No code changed with this filing.
 
-### T5.5a wave handoff 2026-09-09
-
-Implementation exists in the working tree. All four charge kinds have explicit labels.
-The implementer measured rendered labels and a failing exhaustiveness mutation in an isolated copy.
-A fresh reviewer started independent checks but stopped before writing a verdict.
-The workspace spend cap blocked the reviewer. T5.5a remains unlanded and blocks T6.6b.
-Resume with a fresh review and land only after APPROVE with zero findings.
-
 ### T5.5a landed 2026-09-09
 
-Details labels every charge kind explicitly. Agent charges read "Editor agent turn". Existing labels remain unchanged.
-The exhaustive switch needs no shared type change. An isolated added kind fails at the never guard.
+Details labels every charge kind explicitly. Agent charges read "Editor agent turn". Existing
+labels remain unchanged. The exhaustive switch needs no shared type change. An isolated added
+kind fails at the never guard.
+
 Fresh review `adversarial-review/t5.5a-round1.md` approves with zero findings at every severity.
-Independent rendered HTML checks cover both line and project charges. Node 26 Svelte checking passes.
+Independent rendered HTML checks cover both line and project charges. Node 26 Svelte checking
+passes.

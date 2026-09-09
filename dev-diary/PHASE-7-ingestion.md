@@ -410,7 +410,7 @@ requires:   T7.3c, T0.4
 fixture-ok: yes
 size:       XS · light
 owns:       internal/media/media_test.go
-status:     claimed:gpt-6-astra
+status:     done
 ```
 `findFixture` in `media_test.go` reads `scratch/takes/*.wav` and `assets/source/clip.mp4`.
 Both paths are gitignored, so six tests fail on a clean clone and `go test ./...` exits 1.
@@ -1050,3 +1050,12 @@ that failure was environmental.
 A grounding review filed T7.3d after the P7 close. All four P7 close rounds recorded that the
 `internal/media` tests need gitignored fixtures and none filed a finding. `go test ./...` fails
 on a clean clone until it lands. No code changed with this filing.
+
+### T7.3d landed 2026-09-09
+
+Media tests use only committed fixtures. Direct ffprobe measurements read 5.720375 seconds and
+5.337563 seconds for the two pinned takes. They round to 5720 ms and 5338 ms.
+
+Fresh review `adversarial-review/t7.3d-round1.md` approves with zero findings at every severity.
+It ran the full Go suite from a clean baseline archive with no `scratch/` or `assets/` directory.
+Restoring the legacy paths in an isolated copy failed the six affected tests.

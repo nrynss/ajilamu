@@ -26,11 +26,12 @@ func findFixture(t *testing.T, rel string) string {
 }
 
 func TestDurationSeg3Try1(t *testing.T) {
-	path := findFixture(t, "scratch/takes/seg_3_try1.wav")
+	path := findFixture(t, "testdata/takes/seg_3_try1.wav")
 	dur, err := Duration(t.Context(), path)
 	if err != nil {
 		t.Fatalf("Duration(%s) failed: %v", path, err)
 	}
+	// ffprobe reports 5.720375 seconds for the committed fixture.
 	const wantMs = 5720
 	if gotMs := dur.Milliseconds(); gotMs != wantMs {
 		t.Errorf("Duration(%s) = %d ms, want %d ms", path, gotMs, wantMs)
@@ -38,11 +39,12 @@ func TestDurationSeg3Try1(t *testing.T) {
 }
 
 func TestDurationSeg3Stretched(t *testing.T) {
-	path := findFixture(t, "scratch/takes/seg_3_stretched.wav")
+	path := findFixture(t, "testdata/takes/seg_3_stretched.wav")
 	dur, err := Duration(t.Context(), path)
 	if err != nil {
 		t.Fatalf("Duration(%s) failed: %v", path, err)
 	}
+	// ffprobe reports 5.337563 seconds for the committed fixture.
 	const wantMs = 5338
 	if gotMs := dur.Milliseconds(); gotMs != wantMs {
 		t.Errorf("Duration(%s) = %d ms, want %d ms", path, gotMs, wantMs)
@@ -50,7 +52,7 @@ func TestDurationSeg3Stretched(t *testing.T) {
 }
 
 func TestAtempoSlowDownSeg8(t *testing.T) {
-	in := findFixture(t, "scratch/takes/seg_8_try1.wav")
+	in := findFixture(t, "testdata/takes/seg_8_try1.wav")
 	origDur, err := Duration(t.Context(), in)
 	if err != nil {
 		t.Fatalf("Duration(%s) failed: %v", in, err)
@@ -74,7 +76,7 @@ func TestAtempoSlowDownSeg8(t *testing.T) {
 }
 
 func TestAtempoRatioLimits(t *testing.T) {
-	in := findFixture(t, "scratch/takes/seg_8_try1.wav")
+	in := findFixture(t, "testdata/takes/seg_8_try1.wav")
 	tmpDir := t.TempDir()
 
 	tests := []struct {
@@ -105,7 +107,7 @@ func TestAtempoRatioLimits(t *testing.T) {
 
 func TestAudioFormat(t *testing.T) {
 	t.Run("wav_take", func(t *testing.T) {
-		path := findFixture(t, "scratch/takes/seg_3_try1.wav")
+		path := findFixture(t, "testdata/takes/seg_3_try1.wav")
 		format, err := AudioFormat(t.Context(), path)
 		if err != nil {
 			t.Fatalf("AudioFormat(%s) failed: %v", path, err)
@@ -128,7 +130,7 @@ func TestAudioFormat(t *testing.T) {
 	})
 
 	t.Run("source_clip", func(t *testing.T) {
-		path := findFixture(t, "assets/source/clip.mp4")
+		path := findFixture(t, "testdata/clip.mp4")
 		format, err := AudioFormat(t.Context(), path)
 		if err != nil {
 			t.Fatalf("AudioFormat(%s) failed: %v", path, err)
@@ -152,7 +154,7 @@ func TestAudioFormat(t *testing.T) {
 }
 
 func TestDemux(t *testing.T) {
-	videoPath := findFixture(t, "assets/source/clip.mp4")
+	videoPath := findFixture(t, "testdata/clip.mp4")
 	outWav := filepath.Join(t.TempDir(), "extracted.wav")
 
 	if err := Demux(t.Context(), videoPath, outWav); err != nil {
